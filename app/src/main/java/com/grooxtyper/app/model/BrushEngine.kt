@@ -10,10 +10,13 @@ import android.graphics.Path
 import android.graphics.PathMeasure
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RadialGradient
 import android.graphics.Shader
 import androidx.compose.ui.geometry.Offset
+import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 
 enum class BrushType(val displayName: String) {
     FELT_TIP_PEN("Felt Tip Pen"),
@@ -30,9 +33,9 @@ enum class RulerType {
 }
 
 class ForceFadeConfig(
-    val isEnabled: Boolean = false,
-    val startFade: Float = 0.2f, // 0.0 to 1.0
-    val endFade: Float = 0.2f     // 0.0 to 1.0
+    var isEnabled: Boolean = false,
+    var startFade: Float = 0.3f, // 0.0 to 1.0 (start taper percentage)
+    var endFade: Float = 0.3f     // 0.0 to 1.0 (end taper percentage)
 )
 
 class RulerGuide(
@@ -49,7 +52,7 @@ class RulerGuide(
                 val dy = endPos.y - startPos.y
                 val lenSq = dx * dx + dy * dy
                 if (lenSq == 0f) return p
-                val t = max(0f, minOf(1f, ((p.x - startPos.x) * dx + (p.y - startPos.y) * dy) / lenSq))
+                val t = max(0f, min(1f, ((p.x - startPos.x) * dx + (p.y - startPos.y) * dy) / lenSq))
                 Offset(startPos.x + t * dx, startPos.y + t * dy)
             }
             RulerType.CIRCLE -> {
@@ -81,43 +84,45 @@ class BrushEngine {
             strokeJoin = Paint.Join.ROUND
             strokeWidth = size
             color = this@BrushEngine.color
-            alpha = (this@BrushEngine.opacity * 255).toInt()
+            alpha = (this@BrushEngine.opacity * 255).toInt().coerceIn(0, 255)
         }
 
         when (brushType) {
             BrushType.FELT_TIP_PEN -> {
                 paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
             }
             BrushType.DIP_PEN -> {
-                paint.strokeCap = Paint.Cap.SQUARE
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
             }
             BrushType.AIRBRUSH -> {
-                paint.maskFilter = BlurMaskFilter(max(1f, size / 2f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.maskFilter = BlurMaskFilter(max(2f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
+                paint.alpha = (this@BrushEngine.opacity * 128).toInt().coerceIn(0, 255)
             }
             BrushType.ERASER -> {
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
             }
             BrushType.BLUR -> {
-                // Blur brush handled via special tile sampling
+                // Blur brush handled via pixel blur sampling
             }
         }
         return paint
     }
 
     fun strokePathOnLayer(layer: DrawingLayer, rawPath: Path) {
-        val snappedPath = Path()
         val measure = PathMeasure(rawPath, false)
-        val pos = FloatArray(2)
-        val tan = FloatArray(2)
         val length = measure.length
-
         if (length == 0f) return
 
+        val snappedPath = Path()
         if (rulerGuide.type != RulerType.OFF) {
             var step = 0f
             var first = true
+            val pos = FloatArray(2)
             while (step <= length) {
-                measure.getPosTan(step, pos, tan)
+                measure.getPosTan(step, pos, null)
                 val snapped = rulerGuide.snapPoint(Offset(pos[0], pos[1]))
                 if (first) {
                     snappedPath.moveTo(snapped.x, snapped.y)
@@ -146,8 +151,17 @@ class BrushEngine {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
 
-        if (forceFade.isEnabled && length > 0) {
-            drawFadedPathSegments(baseCanvas, snappedPath, paint, forceFade)
+        // Apply Dip Pen Taper or Force Fade
+        val isDipPen = brushType == BrushType.DIP_PEN
+        val isForceFadeActive = forceFade.isEnabled || isDipPen
+
+        if (isForceFadeActive) {
+            val fadeConfig = if (isDipPen && !forceFade.isEnabled) {
+                ForceFadeConfig(isEnabled = true, startFade = 0.25f, endFade = 0.25f)
+            } else {
+                forceFade
+            }
+            drawFadedPathSegments(baseCanvas, snappedPath, paint, fadeConfig)
         } else {
             baseCanvas.drawPath(snappedPath, paint)
         }
@@ -160,7 +174,7 @@ class BrushEngine {
         val length = measure.length
         if (length <= 0) return
 
-        val step = max(2f, size / 4f)
+        val step = max(2f, size / 6f)
         var distance = 0f
         val pos = FloatArray(2)
         var prevX = 0f
@@ -182,11 +196,11 @@ class BrushEngine {
                 } else if (distance > (length - endFadeLen) && endFadeLen > 0) {
                     factor = (length - distance) / endFadeLen
                 }
-                factor = max(0.05f, minOf(1.0f, factor))
+                factor = max(0.08f, min(1.0f, factor))
 
                 val segPaint = Paint(basePaint).apply {
                     strokeWidth = basePaint.strokeWidth * factor
-                    alpha = (basePaint.alpha * factor).toInt()
+                    alpha = (basePaint.alpha * factor).toInt().coerceIn(0, 255)
                 }
                 canvas.drawLine(prevX, prevY, curX, curY, segPaint)
             } else {
@@ -204,7 +218,7 @@ class BrushEngine {
         val blurred = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
         val blurCanvas = Canvas(blurred)
         val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            maskFilter = BlurMaskFilter(max(2f, size / 2f), BlurMaskFilter.Blur.NORMAL)
+            maskFilter = BlurMaskFilter(max(3f, size / 2f), BlurMaskFilter.Blur.NORMAL)
         }
         blurCanvas.drawBitmap(bmp, 0f, 0f, blurPaint)
 
@@ -220,16 +234,15 @@ class BrushEngine {
         maskCanvas.drawPath(path, strokePaint)
 
         val layerCanvas = Canvas(bmp)
-        val clipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_OVER)
-        }
-        // Composite blurred result inside path bounds
         val tempLayer = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
         val tempCanvas = Canvas(tempLayer)
         tempCanvas.drawBitmap(blurred, 0f, 0f, null)
         val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
         tempCanvas.drawBitmap(maskBmp, 0f, 0f, dstIn)
 
+        val clipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_OVER)
+        }
         layerCanvas.drawBitmap(tempLayer, 0f, 0f, clipPaint)
     }
 }
