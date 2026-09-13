@@ -1,5 +1,8 @@
 package com.grooxtyper.app.ui
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,12 +19,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brush
-import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -30,13 +32,11 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +45,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -60,6 +61,7 @@ data class ArtworkProject(
 fun GalleryScreen(
     onOpenCanvas: (width: Int, height: Int) -> Unit
 ) {
+    val context = LocalContext.current
     val projects = remember {
         mutableStateListOf(
             ArtworkProject("1", "Illustration 1", 1280, 1280),
@@ -70,6 +72,19 @@ fun GalleryScreen(
     var showCreateDialog by remember { mutableStateOf(false) }
     var inputWidth by remember { mutableStateOf("1280") }
     var inputHeight by remember { mutableStateOf("1280") }
+
+    // Import Image directly from Homepage
+    val homepageImagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            val inputStream = context.contentResolver.openInputStream(it)
+            val bmp = BitmapFactory.decodeStream(inputStream)
+            bmp?.let { loaded ->
+                onOpenCanvas(loaded.width, loaded.height)
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -99,6 +114,15 @@ fun GalleryScreen(
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
+                Spacer(modifier = Modifier.weight(1f))
+                Button(
+                    onClick = { homepageImagePicker.launch("image/*") },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2C2C2C))
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = "Import Image", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Import Picture", color = Color.White, fontSize = 12.sp)
+                }
             }
 
             // Navigation Tabs
@@ -159,7 +183,7 @@ fun GalleryScreen(
             }
         }
 
-        // FAB to add new canvas
+        // FAB to create new canvas
         FloatingActionButton(
             onClick = { showCreateDialog = true },
             modifier = Modifier
