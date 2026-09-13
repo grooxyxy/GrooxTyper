@@ -74,14 +74,13 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.28.3"
+            version = "3.22.1"
         }
     }
 
     packaging {
         resources {
-            excludes += "/META-競技/**"
-            excludes += "META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
 }
