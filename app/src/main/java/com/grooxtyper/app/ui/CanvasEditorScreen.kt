@@ -2,6 +2,7 @@ package com.grooxtyper.app.ui
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
 import android.graphics.Path
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,31 +26,37 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Palette
-import androidx.compose.material.icons.filled.Rule
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -59,7 +66,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -69,6 +75,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -81,11 +88,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.ml.DetectedTextRegion
 import com.grooxtyper.app.ml.MLMaskType
 import com.grooxtyper.app.ml.MLTextDetector
 import com.grooxtyper.app.model.BrushEngine
@@ -96,23 +105,23 @@ import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.ForceFadeConfig
 import com.grooxtyper.app.model.InpaintingManager
-import com.grooxtyper.app.model.LayerBlendMode
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
-import com.grooxtyper.app.model.TextConfig
-import com.grooxtyper.app.model.TextEffectPreset
+import com.grooxtyper.app.model.StackableTextConfig
 import com.grooxtyper.app.model.TextEngine
 import com.grooxtyper.app.model.UndoRedoManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class ActiveTool {
     BRUSH,
     ERASER,
     LASSO,
     TEXT,
-    INPAINT
+    EYEDROPPER
 }
 
 @Composable
@@ -140,7 +149,7 @@ fun CanvasEditorScreen(
         mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
     }
 
-    var refreshCanvasTrigger by remember { mutableStateOf(0) }
+    var refreshCanvasTrigger by remember { mutableIntStateOf(0) }
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
@@ -155,6 +164,16 @@ fun CanvasEditorScreen(
     var showExportMenu by remember { mutableStateOf(false) }
     var showLassoMenu by remember { mutableStateOf(false) }
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // ML Kit & Inpainting Action State
+    var showMLInpaintDialog by remember { mutableStateOf(false) }
+    var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
+    var selectedMaskType by remember { mutableStateOf(MLMaskType.REFINED_TEXT) }
+
+    // Rename Layer Dialog
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameLayerTarget by remember { mutableStateOf<LayerItem?>(null) }
+    var newLayerNameText by remember { mutableStateOf("") }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -174,14 +193,15 @@ fun CanvasEditorScreen(
         }
     }
 
-    var currentTouchPath by remember { mutableStateOf<Path?>(null) }
+    var previousTouchPoint by remember { mutableStateOf<Offset?>(null) }
+    var currentLassoPath by remember { mutableStateOf<Path?>(null) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF121212))
     ) {
-        // Main Canvas Workspace
+        // Main Interactive Canvas Area
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -193,45 +213,54 @@ fun CanvasEditorScreen(
                         viewState.rotation += rotation
                     }
                 }
-                .pointerInput(refreshCanvasTrigger, activeTool) {
+                .pointerInput(activeTool) {
                     detectDragGestures(
                         onDragStart = { offset ->
                             val activeLayer = layerManager.getActiveLayer() ?: return@detectDragGestures
                             undoRedoManager.saveSnapshot(activeLayer)
 
                             val canvasOffset = viewState.windowToCanvasCoordinates(offset.x, offset.y)
-                            val path = Path()
-                            path.moveTo(canvasOffset.x, canvasOffset.y)
-                            currentTouchPath = path
+                            previousTouchPoint = canvasOffset
 
-                            if (activeTool == ActiveTool.TEXT) {
+                            if (activeTool == ActiveTool.LASSO) {
+                                val p = Path()
+                                p.moveTo(canvasOffset.x, canvasOffset.y)
+                                currentLassoPath = p
+                            } else if (activeTool == ActiveTool.EYEDROPPER) {
+                                val x = canvasOffset.x.toInt().coerceIn(0, canvasWidth - 1)
+                                val y = canvasOffset.y.toInt().coerceIn(0, canvasHeight - 1)
+                                val pickedColor = compositeBitmap.getPixel(x, y)
+                                brushEngine.color = pickedColor
+                                activeTool = ActiveTool.BRUSH
+                            } else if (activeTool == ActiveTool.TEXT) {
                                 showTextDialog = true
                             }
                         },
                         onDrag = { change, _ ->
-                            val canvasOffset = viewState.windowToCanvasCoordinates(
+                            val currentPoint = viewState.windowToCanvasCoordinates(
                                 change.position.x,
                                 change.position.y
                             )
-                            currentTouchPath?.lineTo(canvasOffset.x, canvasOffset.y)
 
-                            val activeLayer = layerManager.getActiveLayer()
-                            if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && activeLayer != null && currentTouchPath != null) {
-                                brushEngine.brushType = if (activeTool == ActiveTool.ERASER) BrushType.ERASER else brushEngine.brushType
-                                brushEngine.strokePathOnLayer(activeLayer, currentTouchPath!!)
-                                refreshComposite()
+                            if (activeTool == ActiveTool.LASSO && currentLassoPath != null) {
+                                currentLassoPath?.lineTo(currentPoint.x, currentPoint.y)
+                            } else {
+                                val activeLayer = layerManager.getActiveLayer()
+                                if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && activeLayer != null && previousTouchPoint != null) {
+                                    brushEngine.brushType = if (activeTool == ActiveTool.ERASER) BrushType.ERASER else brushEngine.brushType
+                                    brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, currentPoint)
+                                    refreshComposite()
+                                }
                             }
+                            previousTouchPoint = currentPoint
                         },
                         onDragEnd = {
-                            val activeLayer = layerManager.getActiveLayer()
-                            if (activeTool == ActiveTool.LASSO && currentTouchPath != null) {
-                                selectionEngine.setLassoPath(currentTouchPath!!)
-                            } else if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && activeLayer != null && currentTouchPath != null) {
-                                brushEngine.brushType = if (activeTool == ActiveTool.ERASER) BrushType.ERASER else brushEngine.brushType
-                                brushEngine.strokePathOnLayer(activeLayer, currentTouchPath!!)
+                            if (activeTool == ActiveTool.LASSO && currentLassoPath != null) {
+                                selectionEngine.setLassoPath(currentLassoPath!!)
+                                currentLassoPath = null
                                 refreshComposite()
                             }
-                            currentTouchPath = null
+                            previousTouchPoint = null
                         }
                     )
                 },
@@ -262,52 +291,20 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Left Quick Sliders (Brush Size & Opacity) - ibisPaint style
-        Column(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 12.dp)
-                .background(Color(0xCC1F1F1F), RoundedCornerShape(16.dp))
-                .padding(vertical = 12.dp, horizontal = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("${brushEngine.size.toInt()}px", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            Slider(
-                value = brushEngine.size,
-                onValueChange = { brushEngine.size = it },
-                valueRange = 1f..150f,
-                modifier = Modifier
-                    .height(140.dp)
-                    .graphicsLayer { rotationZ = -90f },
-                colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text("${(brushEngine.opacity * 100).toInt()}%", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            Slider(
-                value = brushEngine.opacity,
-                onValueChange = { brushEngine.opacity = it },
-                valueRange = 0.05f..1.0f,
-                modifier = Modifier
-                    .height(140.dp)
-                    .graphicsLayer { rotationZ = -90f },
-                colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
-            )
-        }
-
-        // Top Control Bar
+        // Top Navigation Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp)
                 .background(Color(0xFF1F1F1F))
                 .align(Alignment.TopCenter)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBackToGallery) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
 
             IconButton(
                 onClick = {
@@ -332,7 +329,7 @@ fun CanvasEditorScreen(
             Spacer(modifier = Modifier.weight(1f))
 
             IconButton(onClick = { showRulerDialog = true }) {
-                Icon(Icons.Default.Rule, contentDescription = "Ruler Guides", tint = if (brushEngine.rulerGuide.type != RulerType.OFF) Color(0xFFFF9800) else Color.White)
+                Icon(Icons.AutoMirrored.Filled.Rule, contentDescription = "Ruler Guides", tint = if (brushEngine.rulerGuide.type != RulerType.OFF) Color(0xFFFF9800) else Color.White)
             }
 
             IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
@@ -363,127 +360,88 @@ fun CanvasEditorScreen(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(60.dp)
+                .height(56.dp)
                 .background(Color(0xFF1A1A1A))
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Tool Toggle (Brush / Eraser)
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
                     .background(Color(0xFF2C2C2C))
-                    .padding(4.dp)
+                    .padding(2.dp)
             ) {
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeTool == ActiveTool.BRUSH) Color(0xFFFF9800) else Color.Transparent)
                         .clickable { activeTool = ActiveTool.BRUSH; showBrushSettings = true }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Icon(Icons.Default.Brush, contentDescription = "Brush", tint = if (activeTool == ActiveTool.BRUSH) Color.Black else Color.White, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Brush, contentDescription = "Brush", tint = if (activeTool == ActiveTool.BRUSH) Color.Black else Color.White, modifier = Modifier.size(18.dp))
                 }
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeTool == ActiveTool.ERASER) Color(0xFFFF9800) else Color.Transparent)
                         .clickable { activeTool = ActiveTool.ERASER }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
-                    Text("Erase", color = if (activeTool == ActiveTool.ERASER) Color.Black else Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Icon(Icons.Default.Delete, contentDescription = "Eraser", tint = if (activeTool == ActiveTool.ERASER) Color.Black else Color.White, modifier = Modifier.size(18.dp))
                 }
             }
 
-            // Color Swatch Button
+            IconButton(onClick = { activeTool = ActiveTool.EYEDROPPER }) {
+                Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Color(0xFFFF9800) else Color.White)
+            }
+
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(32.dp)
                     .clip(CircleShape)
                     .background(Color(brushEngine.color))
                     .border(2.dp, Color.White, CircleShape)
                     .clickable { showColorPicker = true }
             )
 
-            // Lasso Selection
             IconButton(onClick = { activeTool = ActiveTool.LASSO; showLassoMenu = true }) {
                 Icon(Icons.Default.SelectAll, contentDescription = "Lasso", tint = if (activeTool == ActiveTool.LASSO) Color(0xFFFF9800) else Color.White)
             }
 
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Clear Selection Area") },
-                    onClick = {
-                        val active = layerManager.getActiveLayer()
-                        if (active != null) {
-                            selectionEngine.clearSelectedArea(active)
-                            refreshComposite()
-                        }
-                        showLassoMenu = false
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Invert Selection") },
-                    onClick = {
-                        selectionEngine.invertSelection()
-                        refreshComposite()
-                        showLassoMenu = false
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Copy Area") },
-                    onClick = {
-                        val active = layerManager.getActiveLayer()
-                        if (active != null) {
-                            selectionEngine.copySelectedArea(active)
-                        }
-                        showLassoMenu = false
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Cut Area") },
-                    onClick = {
-                        val active = layerManager.getActiveLayer()
-                        if (active != null) {
-                            selectionEngine.cutSelectedArea(active)
-                            refreshComposite()
-                        }
-                        showLassoMenu = false
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Paste Area to New Layer") },
-                    onClick = {
-                        selectionEngine.pasteToNewLayer(layerManager)
-                        refreshComposite()
-                        showLassoMenu = false
-                    }
-                )
+                DropdownMenuItem(text = { Text("Clear Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.clearSelectedArea(it); refreshComposite() }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Invert Selection") }, onClick = {
+                    selectionEngine.invertSelection(); refreshComposite(); showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Copy Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.copySelectedArea(it) }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Cut Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.cutSelectedArea(it); refreshComposite() }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Paste Area") }, onClick = {
+                    selectionEngine.pasteToNewLayer(layerManager); refreshComposite(); showLassoMenu = false
+                })
             }
 
-            // Text Tool
             IconButton(onClick = { activeTool = ActiveTool.TEXT; showTextDialog = true }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Color(0xFFFF9800) else Color.White)
             }
 
-            // Inpaint ML Tool
             IconButton(
                 onClick = {
                     scope.launch {
                         val active = layerManager.getActiveLayer()
                         if (active != null) {
-                            val detected = mlTextDetector.detectTextRegions(active.getBitmap())
-                            val mask = mlTextDetector.generateMaskBitmap(
-                                canvasWidth,
-                                canvasHeight,
-                                detected,
-                                active.getBitmap(),
-                                MLMaskType.REFINED_TEXT
-                            )
-                            inpaintingManager.inpaintLayerArea(active, mask)
-                            refreshComposite()
+                            detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap())
+                            showMLInpaintDialog = true
                         }
                     }
                 }
@@ -491,13 +449,12 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.AutoFixHigh, contentDescription = "Inpaint ML", tint = Color.White)
             }
 
-            // Layer Count Button
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFF2C2C2C))
                     .clickable { showLayersPanel = true }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Layers, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
@@ -513,7 +470,7 @@ fun CanvasEditorScreen(
             onClose = { referenceBitmap = null }
         )
 
-        // Color Picker Modal
+        // Color Picker Dialog
         if (showColorPicker) {
             ColorPickerDialog(
                 initialColor = brushEngine.color,
@@ -548,18 +505,16 @@ fun CanvasEditorScreen(
                         }
                     }
                 },
-                confirmButton = {
-                    TextButton(onClick = { showRulerDialog = false }) { Text("Close", color = Color.Gray) }
-                },
+                confirmButton = { TextButton(onClick = { showRulerDialog = false }) { Text("Close", color = Color.Gray) } },
                 containerColor = Color(0xFF2A2A2A)
             )
         }
 
-        // Brush & Force Fade Popover
+        // Brush & Force Fade Settings Dialog
         if (showBrushSettings) {
             AlertDialog(
                 onDismissRequest = { showBrushSettings = false },
-                title = { Text("Brush & Force Fade Settings", color = Color.White) },
+                title = { Text("Brush & Force Fade", color = Color.White) },
                 text = {
                     Column {
                         Text("Brush Type", color = Color.LightGray, fontSize = 12.sp)
@@ -575,30 +530,20 @@ fun CanvasEditorScreen(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Force Fade (Taper)", color = Color.White, modifier = Modifier.weight(1f))
                             Switch(
                                 checked = brushEngine.forceFade.isEnabled,
-                                onCheckedChange = {
-                                    brushEngine.forceFade.isEnabled = it
-                                }
+                                onCheckedChange = { brushEngine.forceFade.isEnabled = it }
                             )
                         }
 
                         if (brushEngine.forceFade.isEnabled) {
                             Text("Start Taper (${(brushEngine.forceFade.startFade * 100).toInt()}%)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(
-                                value = brushEngine.forceFade.startFade,
-                                onValueChange = { brushEngine.forceFade.startFade = it },
-                                valueRange = 0.05f..0.8f
-                            )
+                            Slider(value = brushEngine.forceFade.startFade, onValueChange = { brushEngine.forceFade.startFade = it }, valueRange = 0.05f..0.8f)
                             Text("End Taper (${(brushEngine.forceFade.endFade * 100).toInt()}%)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(
-                                value = brushEngine.forceFade.endFade,
-                                onValueChange = { brushEngine.forceFade.endFade = it },
-                                valueRange = 0.05f..0.8f
-                            )
+                            Slider(value = brushEngine.forceFade.endFade, onValueChange = { brushEngine.forceFade.endFade = it }, valueRange = 0.05f..0.8f)
                         }
                     }
                 },
@@ -611,7 +556,73 @@ fun CanvasEditorScreen(
             )
         }
 
-        // Layer Panel Drawer Modal
+        // ML Kit Text Detection & Telea Inpaint Modal
+        if (showMLInpaintDialog) {
+            AlertDialog(
+                onDismissRequest = { showMLInpaintDialog = false },
+                title = { Text("ML Kit Text Detection", color = Color.White) },
+                text = {
+                    Column {
+                        Text("Detected ${detectedTextRegions.size} text blocks.", color = Color.LightGray, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Inpainting Mask Mode:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            Button(
+                                onClick = { selectedMaskType = MLMaskType.REFINED_TEXT },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.REFINED_TEXT) Color(0xFFFF9800) else Color(0xFF383838))
+                            ) {
+                                Text("Refined Contour", color = if (selectedMaskType == MLMaskType.REFINED_TEXT) Color.Black else Color.White, fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = { selectedMaskType = MLMaskType.BOUNDING_BOX },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.BOUNDING_BOX) Color(0xFFFF9800) else Color(0xFF383838))
+                            ) {
+                                Text("Bounding Box", color = if (selectedMaskType == MLMaskType.BOUNDING_BOX) Color.Black else Color.White, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val active = layerManager.getActiveLayer()
+                                if (active != null && detectedTextRegions.isNotEmpty()) {
+                                    val mask = mlTextDetector.generateMaskBitmap(
+                                        canvasWidth,
+                                        canvasHeight,
+                                        detectedTextRegions,
+                                        active.getBitmap(),
+                                        selectedMaskType
+                                    )
+                                    withContext(Dispatchers.Default) {
+                                        inpaintingManager.inpaintLayerArea(active, mask)
+                                    }
+                                    refreshComposite()
+                                }
+                                showMLInpaintDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Inpaint with Telea C++", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMLInpaintDialog = false }) { Text("Cancel", color = Color.Gray) }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Layer Manager Panel Modal
         if (showLayersPanel) {
             AlertDialog(
                 onDismissRequest = { showLayersPanel = false },
@@ -623,10 +634,7 @@ fun CanvasEditorScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Button(
-                                onClick = {
-                                    layerManager.addLayer()
-                                    refreshComposite()
-                                },
+                                onClick = { layerManager.addLayer(); refreshComposite() },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
@@ -664,6 +672,18 @@ fun CanvasEditorScreen(
                                     Column(modifier = Modifier.padding(8.dp)) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(layerItem.name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+
+                                            IconButton(
+                                                onClick = {
+                                                    renameLayerTarget = layerItem
+                                                    newLayerNameText = layerItem.name
+                                                    showRenameDialog = true
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = Color.LightGray, modifier = Modifier.size(16.dp))
+                                            }
+
                                             IconButton(
                                                 onClick = {
                                                     layerItem.isVisible = !layerItem.isVisible
@@ -671,29 +691,56 @@ fun CanvasEditorScreen(
                                                 },
                                                 modifier = Modifier.size(28.dp)
                                             ) {
-                                                Text(if (layerItem.isVisible) "👁" else "🙈", color = Color.White)
+                                                Icon(
+                                                    if (layerItem.isVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                    contentDescription = "Visibility",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
                                             }
                                         }
 
                                         if (layerItem is DrawingLayer) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text("Alpha Lock", color = Color.LightGray, fontSize = 11.sp)
-                                                Switch(
-                                                    checked = layerItem.isAlphaLocked,
-                                                    onCheckedChange = {
-                                                        layerItem.isAlphaLocked = it
+                                                IconButton(
+                                                    onClick = {
+                                                        layerItem.isAlphaLocked = !layerItem.isAlphaLocked
                                                         refreshComposite()
-                                                    }
-                                                )
-                                                Spacer(modifier = Modifier.width(12.dp))
-                                                Text("Clip Mask", color = Color.LightGray, fontSize = 11.sp)
-                                                Switch(
-                                                    checked = layerItem.isClippingMask,
-                                                    onCheckedChange = {
-                                                        layerItem.isClippingMask = it
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        if (layerItem.isAlphaLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                                        contentDescription = "Alpha Lock",
+                                                        tint = if (layerItem.isAlphaLocked) Color(0xFFFF9800) else Color.Gray,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+
+                                                IconButton(
+                                                    onClick = {
+                                                        layerItem.isClippingMask = !layerItem.isClippingMask
                                                         refreshComposite()
-                                                    }
-                                                )
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.FlipToBack,
+                                                        contentDescription = "Clipping Mask",
+                                                        tint = if (layerItem.isClippingMask) Color(0xFFFF9800) else Color.Gray,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.weight(1f))
+
+                                                IconButton(
+                                                    onClick = { layerItem.flipHorizontal(); refreshComposite() },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Flip, contentDescription = "Flip H", tint = Color.White, modifier = Modifier.size(18.dp))
+                                                }
                                             }
                                         }
                                     }
@@ -704,50 +751,116 @@ fun CanvasEditorScreen(
                 },
                 confirmButton = {
                     Button(onClick = { showLayersPanel = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))) {
-                        Text("Close", color = Color.Black)
+                        Text("Done", color = Color.Black)
                     }
                 },
                 containerColor = Color(0xFF2A2A2A)
             )
         }
 
-        // Add Text Dialog Modal with Effects
+        // Rename Layer Dialog
+        if (showRenameDialog && renameLayerTarget != null) {
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                title = { Text("Rename Layer", color = Color.White) },
+                text = {
+                    OutlinedTextField(
+                        value = newLayerNameText,
+                        onValueChange = { newLayerNameText = it },
+                        label = { Text("Layer Name") }
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            renameLayerTarget?.name = newLayerNameText
+                            showRenameDialog = false
+                            refreshComposite()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Save", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) { Text("Cancel", color = Color.Gray) }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Overhauled Text Tool Modal with Stackable Effects
         if (showTextDialog) {
-            var inputString by remember { mutableStateOf("ibisPaint Text") }
+            var inputString by remember { mutableStateOf("ibisPaint") }
             var textSizeVal by remember { mutableFloatStateOf(56f) }
-            var selectedPreset by remember { mutableStateOf(TextEffectPreset.NONE) }
+
+            var enableOutline by remember { mutableStateOf(true) }
+            var outlineColorVal by remember { mutableIntStateOf(AndroidColor.BLACK) }
+            var outlineWidthVal by remember { mutableFloatStateOf(10f) }
+
+            var enableShadow by remember { mutableStateOf(true) }
+            var shadowColorVal by remember { mutableIntStateOf(AndroidColor.parseColor("#80000000")) }
+            var shadowDxVal by remember { mutableFloatStateOf(6f) }
+            var shadowDyVal by remember { mutableFloatStateOf(6f) }
+            var shadowBlurVal by remember { mutableFloatStateOf(12f) }
+
+            var enableGradient by remember { mutableStateOf(false) }
+            var gradStartColorVal by remember { mutableIntStateOf(AndroidColor.RED) }
+            var gradEndColorVal by remember { mutableIntStateOf(AndroidColor.YELLOW) }
+
+            var textBlurVal by remember { mutableFloatStateOf(0f) }
 
             AlertDialog(
                 onDismissRequest = { showTextDialog = false },
-                title = { Text("Add Text & Effect Presets", color = Color.White) },
+                title = { Text("Text Tool & Stackable Effects", color = Color.White) },
                 text = {
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .height(380.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         OutlinedTextField(
                             value = inputString,
                             onValueChange = { inputString = it },
-                            label = { Text("Text Content") }
+                            label = { Text("Text Content") },
+                            modifier = Modifier.fillMaxWidth()
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Effect Preset", color = Color.LightGray, fontSize = 12.sp)
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            TextEffectPreset.values().take(4).forEach { p ->
-                                TextButton(onClick = { selectedPreset = p }) {
-                                    Text(
-                                        p.displayName.take(6),
-                                        color = if (selectedPreset == p) Color(0xFFFF9800) else Color.Gray,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Text Size (${textSizeVal.toInt()}px)", color = Color.LightGray, fontSize = 12.sp)
-                        Slider(
-                            value = textSizeVal,
-                            onValueChange = { textSizeVal = it },
-                            valueRange = 16f..140f
-                        )
+                        Slider(value = textSizeVal, onValueChange = { textSizeVal = it }, valueRange = 16f..160f)
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Outline Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Switch(checked = enableOutline, onCheckedChange = { enableOutline = it })
+                        }
+                        if (enableOutline) {
+                            Text("Outline Width (${outlineWidthVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = outlineWidthVal, onValueChange = { outlineWidthVal = it }, valueRange = 1f..30f)
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Drop Shadow Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Switch(checked = enableShadow, onCheckedChange = { enableShadow = it })
+                        }
+                        if (enableShadow) {
+                            Text("Shadow Offset (${shadowDxVal.toInt()}px, ${shadowDyVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = shadowDxVal, onValueChange = { shadowDxVal = it }, valueRange = -20f..20f)
+                            Text("Shadow Blur Radius (${shadowBlurVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = shadowBlurVal, onValueChange = { shadowBlurVal = it }, valueRange = 1f..30f)
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Linear Gradient Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Switch(checked = enableGradient, onCheckedChange = { enableGradient = it })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Text Blur Filter (${textBlurVal.toInt()}px)", color = Color.LightGray, fontSize = 12.sp)
+                        Slider(value = textBlurVal, onValueChange = { textBlurVal = it }, valueRange = 0f..20f)
                     }
                 },
                 confirmButton = {
@@ -755,11 +868,22 @@ fun CanvasEditorScreen(
                         onClick = {
                             val active = layerManager.getActiveLayer()
                             if (active != null) {
-                                val cfg = TextConfig(
+                                val cfg = StackableTextConfig(
                                     text = inputString,
                                     fontSize = textSizeVal,
                                     textColor = brushEngine.color,
-                                    preset = selectedPreset
+                                    hasOutline = enableOutline,
+                                    outlineColor = outlineColorVal,
+                                    outlineWidth = outlineWidthVal,
+                                    hasShadow = enableShadow,
+                                    shadowColor = shadowColorVal,
+                                    shadowRadius = shadowBlurVal,
+                                    shadowDx = shadowDxVal,
+                                    shadowDy = shadowDyVal,
+                                    hasGradient = enableGradient,
+                                    gradientStartColor = gradStartColorVal,
+                                    gradientEndColor = gradEndColorVal,
+                                    blurRadius = textBlurVal
                                 )
                                 textEngine.drawTextOnLayer(active, cfg, Offset(200f, 300f))
                                 refreshComposite()

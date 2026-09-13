@@ -4,16 +4,11 @@ import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
-import android.graphics.PathMeasure
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
-import android.graphics.RadialGradient
-import android.graphics.Shader
 import androidx.compose.ui.geometry.Offset
-import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -34,8 +29,8 @@ enum class RulerType {
 
 class ForceFadeConfig(
     var isEnabled: Boolean = false,
-    var startFade: Float = 0.3f, // 0.0 to 1.0 (start taper percentage)
-    var endFade: Float = 0.3f     // 0.0 to 1.0 (end taper percentage)
+    var startFade: Float = 0.3f,
+    var endFade: Float = 0.3f
 )
 
 class RulerGuide(
@@ -88,129 +83,60 @@ class BrushEngine {
         }
 
         when (brushType) {
-            BrushType.FELT_TIP_PEN -> {
+            BrushType.FELT_TIP_PEN, BrushType.DIP_PEN -> {
                 paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.DIP_PEN -> {
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
             }
             BrushType.AIRBRUSH -> {
-                paint.strokeCap = Paint.Cap.ROUND
                 paint.maskFilter = BlurMaskFilter(max(2f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
-                paint.alpha = (this@BrushEngine.opacity * 128).toInt().coerceIn(0, 255)
+                paint.alpha = (this@BrushEngine.opacity * 100).toInt().coerceIn(0, 255)
             }
             BrushType.ERASER -> {
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
             }
             BrushType.BLUR -> {
-                // Blur brush handled via pixel blur sampling
+                // Blur handled separately
             }
         }
         return paint
     }
 
-    fun strokePathOnLayer(layer: DrawingLayer, rawPath: Path) {
-        val measure = PathMeasure(rawPath, false)
-        val length = measure.length
-        if (length == 0f) return
+    // Fast incremental stroke for zero drag lag
+    fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f) {
+        val sp1 = rulerGuide.snapPoint(p1)
+        val sp2 = rulerGuide.snapPoint(p2)
 
-        val snappedPath = Path()
-        if (rulerGuide.type != RulerType.OFF) {
-            var step = 0f
-            var first = true
-            val pos = FloatArray(2)
-            while (step <= length) {
-                measure.getPosTan(step, pos, null)
-                val snapped = rulerGuide.snapPoint(Offset(pos[0], pos[1]))
-                if (first) {
-                    snappedPath.moveTo(snapped.x, snapped.y)
-                    first = false
-                } else {
-                    snappedPath.lineTo(snapped.x, snapped.y)
-                }
-                step += 4f
-            }
-        } else {
-            snappedPath.addPath(rawPath)
-        }
-
-        val layerBmp = layer.getBitmap()
-        val baseCanvas = Canvas(layerBmp)
+        val bmp = layer.getBitmap()
+        val canvas = Canvas(bmp)
 
         if (brushType == BrushType.BLUR) {
-            applyBlurStroke(layer, snappedPath)
+            val path = Path()
+            path.moveTo(sp1.x, sp1.y)
+            path.lineTo(sp2.x, sp2.y)
+            applyBlurStroke(layer, path)
             layer.markDirty()
             return
         }
 
         val paint = createPaint()
-
         if (layer.isAlphaLocked) {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
 
-        // Apply Dip Pen Taper or Force Fade
-        val isDipPen = brushType == BrushType.DIP_PEN
-        val isForceFadeActive = forceFade.isEnabled || isDipPen
-
-        if (isForceFadeActive) {
-            val fadeConfig = if (isDipPen && !forceFade.isEnabled) {
-                ForceFadeConfig(isEnabled = true, startFade = 0.25f, endFade = 0.25f)
+        if (forceFade.isEnabled || brushType == BrushType.DIP_PEN) {
+            val factor = if (progressFraction < forceFade.startFade && forceFade.startFade > 0f) {
+                progressFraction / forceFade.startFade
+            } else if (progressFraction > (1f - forceFade.endFade) && forceFade.endFade > 0f) {
+                (1f - progressFraction) / forceFade.endFade
             } else {
-                forceFade
-            }
-            drawFadedPathSegments(baseCanvas, snappedPath, paint, fadeConfig)
-        } else {
-            baseCanvas.drawPath(snappedPath, paint)
+                1.0f
+            }.coerceIn(0.1f, 1.0f)
+
+            paint.strokeWidth = size * factor
+            paint.alpha = ((this.opacity * 255) * factor).toInt().coerceIn(0, 255)
         }
 
+        canvas.drawLine(sp1.x, sp1.y, sp2.x, sp2.y, paint)
         layer.markDirty()
-    }
-
-    private fun drawFadedPathSegments(canvas: Canvas, path: Path, basePaint: Paint, fade: ForceFadeConfig) {
-        val measure = PathMeasure(path, false)
-        val length = measure.length
-        if (length <= 0) return
-
-        val step = max(2f, size / 6f)
-        var distance = 0f
-        val pos = FloatArray(2)
-        var prevX = 0f
-        var prevY = 0f
-        var first = true
-
-        val startFadeLen = length * fade.startFade
-        val endFadeLen = length * fade.endFade
-
-        while (distance <= length) {
-            measure.getPosTan(distance, pos, null)
-            val curX = pos[0]
-            val curY = pos[1]
-
-            if (!first) {
-                var factor = 1.0f
-                if (distance < startFadeLen && startFadeLen > 0) {
-                    factor = distance / startFadeLen
-                } else if (distance > (length - endFadeLen) && endFadeLen > 0) {
-                    factor = (length - distance) / endFadeLen
-                }
-                factor = max(0.08f, min(1.0f, factor))
-
-                val segPaint = Paint(basePaint).apply {
-                    strokeWidth = basePaint.strokeWidth * factor
-                    alpha = (basePaint.alpha * factor).toInt().coerceIn(0, 255)
-                }
-                canvas.drawLine(prevX, prevY, curX, curY, segPaint)
-            } else {
-                first = false
-            }
-
-            prevX = curX
-            prevY = curY
-            distance += step
-        }
     }
 
     private fun applyBlurStroke(layer: DrawingLayer, path: Path) {
