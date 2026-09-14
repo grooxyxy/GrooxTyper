@@ -205,7 +205,7 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool) {
+                .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, rotation ->
                         viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
                         viewState.offsetX += pan.x
@@ -214,55 +214,38 @@ fun CanvasEditorScreen(
                     }
                 }
                 .pointerInput(activeTool) {
-                    detectDragGestures(
-                        onDragStart = { offset ->
-                            val activeLayer = layerManager.getActiveLayer() ?: return@detectDragGestures
-                            undoRedoManager.saveSnapshot(activeLayer)
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            // Separation: Process 1-finger touches for drawing, ignore multi-touch
+                            if (event.changes.size == 1) {
+                                val change = event.changes[0]
+                                if (change.pressed) {
+                                    val canvasOffset = viewState.windowToCanvasCoordinates(change.position.x, change.position.y)
+                                    if (previousTouchPoint == null) {
+                                        val activeLayer = layerManager.getActiveLayer()
+                                        if (activeLayer != null) undoRedoManager.saveSnapshot(activeLayer)
+                                    }
 
-                            val canvasOffset = viewState.windowToCanvasCoordinates(offset.x, offset.y)
-                            previousTouchPoint = canvasOffset
-
-                            if (activeTool == ActiveTool.LASSO) {
-                                val p = Path()
-                                p.moveTo(canvasOffset.x, canvasOffset.y)
-                                currentLassoPath = p
-                            } else if (activeTool == ActiveTool.EYEDROPPER) {
-                                val x = canvasOffset.x.toInt().coerceIn(0, canvasWidth - 1)
-                                val y = canvasOffset.y.toInt().coerceIn(0, canvasHeight - 1)
-                                val pickedColor = compositeBitmap.getPixel(x, y)
-                                brushEngine.color = pickedColor
-                                activeTool = ActiveTool.BRUSH
-                            } else if (activeTool == ActiveTool.TEXT) {
-                                showTextDialog = true
-                            }
-                        },
-                        onDrag = { change, _ ->
-                            val currentPoint = viewState.windowToCanvasCoordinates(
-                                change.position.x,
-                                change.position.y
-                            )
-
-                            if (activeTool == ActiveTool.LASSO && currentLassoPath != null) {
-                                currentLassoPath?.lineTo(currentPoint.x, currentPoint.y)
-                            } else {
-                                val activeLayer = layerManager.getActiveLayer()
-                                if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && activeLayer != null && previousTouchPoint != null) {
-                                    brushEngine.brushType = if (activeTool == ActiveTool.ERASER) BrushType.ERASER else brushEngine.brushType
-                                    brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, currentPoint)
-                                    refreshComposite()
+                                    if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && previousTouchPoint != null) {
+                                        val activeLayer = layerManager.getActiveLayer()
+                                        if (activeLayer != null) {
+                                            if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
+                                            brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, canvasOffset)
+                                            refreshComposite()
+                                        }
+                                    } else if (activeTool == ActiveTool.TEXT && previousTouchPoint == null) {
+                                        showTextDialog = true
+                                    }
+                                    previousTouchPoint = canvasOffset
+                                } else {
+                                    previousTouchPoint = null
                                 }
+                            } else {
+                                previousTouchPoint = null
                             }
-                            previousTouchPoint = currentPoint
-                        },
-                        onDragEnd = {
-                            if (activeTool == ActiveTool.LASSO && currentLassoPath != null) {
-                                selectionEngine.setLassoPath(currentLassoPath!!)
-                                currentLassoPath = null
-                                refreshComposite()
-                            }
-                            previousTouchPoint = null
                         }
-                    )
+                    }
                 },
             contentAlignment = Alignment.Center
         ) {
@@ -510,50 +493,18 @@ fun CanvasEditorScreen(
             )
         }
 
-        // Brush & Force Fade Settings Dialog
+        // Brush Drawer Panel
         if (showBrushSettings) {
-            AlertDialog(
-                onDismissRequest = { showBrushSettings = false },
-                title = { Text("Brush & Force Fade", color = Color.White) },
-                text = {
-                    Column {
-                        Text("Brush Type", color = Color.LightGray, fontSize = 12.sp)
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            BrushType.values().forEach { b ->
-                                TextButton(onClick = { brushEngine.brushType = b }) {
-                                    Text(
-                                        b.displayName.take(8),
-                                        color = if (brushEngine.brushType == b) Color(0xFFFF9800) else Color.Gray,
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Force Fade (Taper)", color = Color.White, modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = brushEngine.forceFade.isEnabled,
-                                onCheckedChange = { brushEngine.forceFade.isEnabled = it }
-                            )
-                        }
-
-                        if (brushEngine.forceFade.isEnabled) {
-                            Text("Start Taper (${(brushEngine.forceFade.startFade * 100).toInt()}%)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = brushEngine.forceFade.startFade, onValueChange = { brushEngine.forceFade.startFade = it }, valueRange = 0.05f..0.8f)
-                            Text("End Taper (${(brushEngine.forceFade.endFade * 100).toInt()}%)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = brushEngine.forceFade.endFade, onValueChange = { brushEngine.forceFade.endFade = it }, valueRange = 0.05f..0.8f)
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(onClick = { showBrushSettings = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))) {
-                        Text("Done", color = Color.Black)
-                    }
-                },
-                containerColor = Color(0xFF2A2A2A)
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+            ) {
+                BrushDrawerPanel(
+                    brushEngine = brushEngine,
+                    onClose = { showBrushSettings = false }
+                )
+            }
         }
 
         // ML Kit Text Detection & Telea Inpaint Modal
@@ -791,7 +742,7 @@ fun CanvasEditorScreen(
 
         // Overhauled Text Tool Modal with Stackable Effects
         if (showTextDialog) {
-            var inputString by remember { mutableStateOf("GrooxTyper") }
+            var inputString by remember { mutableStateOf("ibisPaint") }
             var textSizeVal by remember { mutableFloatStateOf(56f) }
 
             var enableOutline by remember { mutableStateOf(true) }

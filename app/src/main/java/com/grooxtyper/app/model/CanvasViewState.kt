@@ -18,13 +18,14 @@ class CanvasViewState(
     var offsetX by mutableFloatStateOf(0.0f)
     var offsetY by mutableFloatStateOf(0.0f)
     var rotation by mutableFloatStateOf(0.0f)
+    var rawRotation by mutableFloatStateOf(0.0f)
 
-    fun updateRotationWithSnap(deltaRotation: Float) {
-        val rawRotation = (rotation + deltaRotation) % 360f
+    fun applyRotationDelta(deltaRotation: Float) {
+        rawRotation = (rawRotation + deltaRotation) % 360f
         val normRotation = if (rawRotation < 0) rawRotation + 360f else rawRotation
 
         // Snap thresholds at 0, 90, 180, 270 degrees
-        val snapThreshold = 4.0f
+        val snapThreshold = 5.0f
         rotation = when {
             abs(normRotation - 0f) < snapThreshold || abs(normRotation - 360f) < snapThreshold -> 0f
             abs(normRotation - 90f) < snapThreshold -> 90f
