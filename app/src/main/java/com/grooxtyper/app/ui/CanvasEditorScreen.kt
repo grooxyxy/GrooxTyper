@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -45,6 +46,8 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Visibility
@@ -79,8 +82,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.ml.DetectedTextRegion
@@ -143,6 +148,7 @@ fun CanvasEditorScreen(
     }
 
     var refreshCanvasTrigger by remember { mutableIntStateOf(0) }
+    var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
@@ -152,7 +158,7 @@ fun CanvasEditorScreen(
     // Auto-Save background worker
     LaunchedEffect(projectId) {
         while (true) {
-            delay(15000L) // Auto-save every 15 seconds
+            delay(15000L)
             projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
         }
     }
@@ -216,116 +222,130 @@ fun CanvasEditorScreen(
         }
     }
 
-    var previousTouchPoint by remember { mutableStateOf<Offset?>(null) }
-    var activeStrokePath by remember { mutableStateOf<Path?>(null) }
+    // Convert Screen Touch Coordinates directly to Canvas Bitmap Space
+    fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
+        val centerX = viewportSize.width / 2f
+        val centerY = viewportSize.height / 2f
+        val canvasCenterX = canvasWidth / 2f
+        val canvasCenterY = canvasHeight / 2f
+
+        val relX = (screenX - centerX - viewState.offsetX) / viewState.scale
+        val relY = (screenY - centerY - viewState.offsetY) / viewState.scale
+
+        val rad = -Math.toRadians(viewState.rotation.toDouble())
+        val rx = relX * Math.cos(rad) - relY * Math.sin(rad)
+        val ry = relX * Math.sin(rad) + relY * Math.cos(rad)
+
+        return Offset((rx + canvasCenterX).toFloat(), (ry + canvasCenterY).toFloat())
+    }
+
+    var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF121212))
+            .onSizeChanged { viewportSize = it }
     ) {
-        // Main Interactive Canvas Area
+        // Canvas Container with Gesture Detector
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextItem) {
+                .pointerInput(activeTool, selectedTextItem, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val pointerCount = event.changes.size
+                            val changes = event.changes
+                            val pointerCount = changes.size
 
                             if (pointerCount >= 2) {
-                                // Two-finger touches: Canvas transform (Pan, Zoom, Rotate) strictly
-                                previousTouchPoint = null
-                                activeStrokePath = null
-                                val change1 = event.changes[0]
-                                val change2 = event.changes[1]
+                                // Two-Finger Pinch, Pan & Rotation
+                                lastCanvasPoint = null
+                                var zoom = 1f
+                                var pan = Offset.Zero
+                                var rotation = 0f
 
-                                if (change1.pressed && change2.pressed) {
-                                    val prevP1 = change1.previousPosition
-                                    val prevP2 = change2.previousPosition
-                                    val curP1 = change1.position
-                                    val curP2 = change2.position
+                                val p1 = changes[0]
+                                val p2 = changes[1]
+
+                                if (p1.pressed && p2.pressed) {
+                                    val prevP1 = p1.previousPosition
+                                    val prevP2 = p2.previousPosition
+                                    val curP1 = p1.position
+                                    val curP2 = p2.position
 
                                     val prevCenter = (prevP1 + prevP2) / 2f
                                     val curCenter = (curP1 + curP2) / 2f
-                                    val pan = curCenter - prevCenter
+                                    pan = curCenter - prevCenter
 
                                     val prevDist = (prevP1 - prevP2).getDistance()
                                     val curDist = (curP1 - curP2).getDistance()
-                                    val zoom = if (prevDist > 0f) curDist / prevDist else 1f
+                                    if (prevDist > 0f) zoom = curDist / prevDist
 
                                     val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
                                     val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
-                                    val rotationDelta = curAngle - prevAngle
+                                    rotation = curAngle - prevAngle
 
                                     viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
                                     viewState.offsetX += pan.x
                                     viewState.offsetY += pan.y
-                                    viewState.applyRotationDelta(rotationDelta)
+                                    viewState.applyRotationDelta(rotation)
 
-                                    change1.consume()
-                                    change2.consume()
+                                    p1.consume()
+                                    p2.consume()
                                 }
                             } else if (pointerCount == 1) {
-                                // One-finger touch: Brush / Eraser / Text interaction
-                                val change = event.changes[0]
+                                val change = changes[0]
                                 if (change.pressed) {
-                                    val canvasOffset = viewState.windowToCanvasCoordinates(change.position.x, change.position.y)
+                                    val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
                                     if (activeTool == ActiveTool.TEXT) {
-                                        if (previousTouchPoint == null) {
-                                            val hit = textItems.findLast { it.isHit(canvasOffset) }
+                                        if (lastCanvasPoint == null) {
+                                            val hit = textItems.findLast { it.isHit(touchCanvasPos) }
                                             if (hit != null) {
                                                 selectedTextItem = hit
                                                 editingTextConfig = hit.config
                                             } else {
-                                                val newConfig = StackableTextConfig(textColor = brushEngine.color)
-                                                val newItem = TextItem(config = newConfig, position = canvasOffset)
+                                                val newCfg = StackableTextConfig(textColor = brushEngine.color)
+                                                val newItem = TextItem(config = newCfg, position = touchCanvasPos)
                                                 textItems.add(newItem)
                                                 selectedTextItem = newItem
-                                                editingTextConfig = newConfig
+                                                editingTextConfig = newCfg
                                                 showTextPanel = true
                                             }
                                         } else {
-                                            // Move selected text item
                                             selectedTextItem?.let { item ->
-                                                val delta = canvasOffset - previousTouchPoint!!
+                                                val delta = touchCanvasPos - lastCanvasPoint!!
                                                 item.position = item.position + delta
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        if (previousTouchPoint == null) {
-                                            val activeLayer = layerManager.getActiveLayer()
-                                            if (activeLayer != null) undoRedoManager.saveSnapshot(activeLayer)
-                                            activeStrokePath = Path().apply { moveTo(canvasOffset.x, canvasOffset.y) }
-                                        } else {
-                                            val activeLayer = layerManager.getActiveLayer()
-                                            if (activeLayer != null) {
-                                                if (activeTool == ActiveTool.ERASER) {
-                                                    brushEngine.brushType = BrushType.ERASER
-                                                }
-                                                brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, canvasOffset)
-                                                activeStrokePath?.lineTo(canvasOffset.x, canvasOffset.y)
-                                                refreshComposite()
+                                        val activeLayer = layerManager.getActiveLayer()
+                                        if (activeLayer != null) {
+                                            if (lastCanvasPoint == null) {
+                                                undoRedoManager.saveSnapshot(activeLayer)
+                                                brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos)
+                                            } else {
+                                                if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
+                                                brushEngine.strokeSegmentOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos)
                                             }
+                                            refreshComposite()
                                         }
                                     }
-                                    previousTouchPoint = canvasOffset
+                                    lastCanvasPoint = touchCanvasPos
                                     change.consume()
                                 } else {
-                                    previousTouchPoint = null
-                                    activeStrokePath = null
+                                    lastCanvasPoint = null
                                 }
                             } else {
-                                previousTouchPoint = null
-                                activeStrokePath = null
+                                lastCanvasPoint = null
                             }
                         }
                     }
                 },
             contentAlignment = Alignment.Center
         ) {
+            // Render Transform Canvas View
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -340,7 +360,7 @@ fun CanvasEditorScreen(
                 // Render Composite Layers Bitmap
                 drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
 
-                // Render Interactive Text Objects
+                // Render Interactive Vector Text Items
                 textItems.forEach { item ->
                     textEngine.renderTextToCanvas(
                         drawContext.canvas.nativeCanvas,
@@ -348,16 +368,23 @@ fun CanvasEditorScreen(
                         item.position,
                         item.scale
                     )
-                    // Draw bounding box if selected
+                    // Render Bounding Box & Interactive Handles when selected
                     if (item == selectedTextItem) {
                         val bounds = item.getBounds()
                         val boxPaint = android.graphics.Paint().apply {
                             style = android.graphics.Paint.Style.STROKE
-                            strokeWidth = 3f
+                            strokeWidth = 3f / viewState.scale
                             color = android.graphics.Color.CYAN
                             pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
                         }
                         drawContext.canvas.nativeCanvas.drawRect(bounds, boxPaint)
+
+                        // Render Resize Handle
+                        val handlePaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.CYAN
+                        }
+                        drawContext.canvas.nativeCanvas.drawCircle(bounds.right, bounds.bottom, 12f / viewState.scale, handlePaint)
                     }
                 }
 
@@ -437,6 +464,39 @@ fun CanvasEditorScreen(
                             exportManager.exportArtwork(layerManager, fmt)
                         }
                     )
+                }
+            }
+        }
+
+        // Floating Transform Handle for Selected Text Object
+        selectedTextItem?.let { item ->
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF2C2C2C))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Selected Text: ${item.config.text}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                IconButton(onClick = {
+                    editingTextConfig = item.config
+                    showTextPanel = true
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit Text", tint = Color(0xFFFF9800))
+                }
+                IconButton(onClick = {
+                    item.scale = (item.scale * 1.2f).coerceAtMost(5.0f)
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.OpenInFull, contentDescription = "Resize Bigger", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    textItems.remove(item)
+                    selectedTextItem = null
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete Text", tint = Color.Red)
                 }
             }
         }
