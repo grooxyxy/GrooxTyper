@@ -17,8 +17,6 @@ enum class BrushType(val displayName: String) {
     FELT_TIP_PEN("Felt Tip Pen"),
     DIP_PEN("Dip Pen"),
     AIRBRUSH("Airbrush"),
-    DIGITAL_PEN("Digital Pen"),
-    PENCIL("Pencil"),
     ERASER("Eraser"),
     BLUR("Blur Brush")
 }
@@ -64,29 +62,6 @@ class RulerGuide(
     }
 }
 
-class StrokeStabilizer(
-    var isEnabled: Boolean = true,
-    var value: Int = 3
-) {
-    private var lastPos: Offset? = null
-
-    fun filter(input: Offset): Offset {
-        if (!isEnabled || value <= 0) return input
-        val prev = lastPos ?: input
-        val factor = 1.0f / (value + 1f)
-        val smoothed = Offset(
-            prev.x + (input.x - prev.x) * factor,
-            prev.y + (input.y - prev.y) * factor
-        )
-        lastPos = smoothed
-        return smoothed
-    }
-
-    fun reset() {
-        lastPos = null
-    }
-}
-
 class BrushEngine {
     var brushType: BrushType = BrushType.FELT_TIP_PEN
     var size: Float = 24f
@@ -94,59 +69,41 @@ class BrushEngine {
     var color: Int = Color.BLACK
     var forceFade: ForceFadeConfig = ForceFadeConfig()
     var rulerGuide: RulerGuide = RulerGuide()
-    var stabilizer: StrokeStabilizer = StrokeStabilizer()
 
-    private val cachedPaint = Paint().apply {
-        isAntiAlias = true
-        isDither = true
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-
-    fun updatePaint(): Paint {
-        cachedPaint.reset()
-        cachedPaint.isAntiAlias = true
-        cachedPaint.isDither = true
-        cachedPaint.style = Paint.Style.STROKE
-        cachedPaint.strokeCap = Paint.Cap.ROUND
-        cachedPaint.strokeJoin = Paint.Join.ROUND
-        cachedPaint.strokeWidth = size
-        cachedPaint.color = color
-        cachedPaint.alpha = (opacity * 255).toInt().coerceIn(0, 255)
+    fun createPaint(): Paint {
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isDither = true
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = size
+            color = this@BrushEngine.color
+            alpha = (this@BrushEngine.opacity * 255).toInt().coerceIn(0, 255)
+        }
 
         when (brushType) {
             BrushType.FELT_TIP_PEN, BrushType.DIP_PEN -> {
-                cachedPaint.strokeCap = Paint.Cap.ROUND
-            }
-            BrushType.DIGITAL_PEN -> {
-                cachedPaint.isAntiAlias = false
-                cachedPaint.strokeCap = Paint.Cap.SQUARE
-            }
-            BrushType.PENCIL -> {
-                cachedPaint.strokeCap = Paint.Cap.ROUND
-                cachedPaint.alpha = (opacity * 160).toInt().coerceIn(0, 255)
+                paint.strokeCap = Paint.Cap.ROUND
             }
             BrushType.AIRBRUSH -> {
-                cachedPaint.maskFilter = BlurMaskFilter(max(2f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
-                cachedPaint.alpha = (opacity * 100).toInt().coerceIn(0, 255)
+                paint.maskFilter = BlurMaskFilter(max(2f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
+                paint.alpha = (this@BrushEngine.opacity * 100).toInt().coerceIn(0, 255)
             }
             BrushType.ERASER -> {
-                cachedPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
             }
             BrushType.BLUR -> {
                 // Blur handled separately
             }
         }
-        return cachedPaint
+        return paint
     }
 
+    // Fast incremental stroke for zero drag lag
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f) {
-        val smoothedP1 = stabilizer.filter(p1)
-        val smoothedP2 = stabilizer.filter(p2)
-
-        val sp1 = rulerGuide.snapPoint(smoothedP1)
-        val sp2 = rulerGuide.snapPoint(smoothedP2)
+        val sp1 = rulerGuide.snapPoint(p1)
+        val sp2 = rulerGuide.snapPoint(p2)
 
         val bmp = layer.getBitmap()
         val canvas = Canvas(bmp)
@@ -160,7 +117,7 @@ class BrushEngine {
             return
         }
 
-        val paint = updatePaint()
+        val paint = createPaint()
         if (layer.isAlphaLocked) {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
@@ -179,7 +136,6 @@ class BrushEngine {
         }
 
         canvas.drawLine(sp1.x, sp1.y, sp2.x, sp2.y, paint)
-        layer.tileMap.importFromBitmap(bmp)
         layer.markDirty()
     }
 

@@ -10,8 +10,8 @@ import android.graphics.Shader
 import android.graphics.Typeface
 import androidx.compose.ui.geometry.Offset
 
-data class StackableTextConfig(
-    var text: String = "ibisPaint",
+class StackableTextConfig(
+    var text: String = "GrooxTyper",
     var fontSize: Float = 56f,
     var textColor: Int = Color.WHITE,
     var hasOutline: Boolean = true,
@@ -27,6 +27,7 @@ data class StackableTextConfig(
     var gradientEndColor: Int = Color.YELLOW,
     var blurRadius: Float = 0f,
     var letterSpacing: Float = 0.05f,
+    var wordSpacing: Float = 0.0f,
     var lineSpacingMultiplier: Float = 1.2f,
     var typeface: Typeface = Typeface.DEFAULT_BOLD
 )
@@ -75,51 +76,59 @@ class TextEngine {
 
         val lines = config.text.split("\n")
         val fontMetrics = paint.fontMetrics
-        val lineHeight = (fontMetrics.descent - fontMetrics.ascent) * config.lineSpacingMultiplier
+        val baseLineHeight = (fontMetrics.descent - fontMetrics.ascent) * config.lineSpacingMultiplier
+        val lineHeight = baseLineHeight + (config.wordSpacing * scale)
 
         var currentY = position.y
 
         for (line in lines) {
-            // Stack 1: Drop Shadow
-            if (config.hasShadow) {
-                val shadowPaint = Paint(paint).apply {
-                    color = config.shadowColor
-                    if (config.shadowRadius > 0f) {
-                        maskFilter = BlurMaskFilter(config.shadowRadius * scale, BlurMaskFilter.Blur.NORMAL)
+            val words = line.split(" ")
+            var currentX = position.x
+            val spaceWidth = paint.measureText(" ") + (config.wordSpacing * scale)
+
+            for (i in words.indices) {
+                val word = words[i]
+
+                if (config.hasShadow) {
+                    val shadowPaint = Paint(paint).apply {
+                        color = config.shadowColor
+                        if (config.shadowRadius > 0f) {
+                            maskFilter = BlurMaskFilter(config.shadowRadius * scale, BlurMaskFilter.Blur.NORMAL)
+                        }
+                    }
+                    canvas.drawText(word, currentX + config.shadowDx * scale, currentY + config.shadowDy * scale, shadowPaint)
+                }
+
+                if (config.hasOutline) {
+                    val outlinePaint = Paint(paint).apply {
+                        style = Paint.Style.STROKE
+                        strokeWidth = config.outlineWidth * scale
+                        color = config.outlineColor
+                        strokeCap = Paint.Cap.ROUND
+                        strokeJoin = Paint.Join.ROUND
+                    }
+                    canvas.drawText(word, currentX, currentY, outlinePaint)
+                }
+
+                val fillPaint = Paint(paint).apply {
+                    style = Paint.Style.FILL
+                    color = config.textColor
+                    if (config.blurRadius > 0f) {
+                        maskFilter = BlurMaskFilter(config.blurRadius * scale, BlurMaskFilter.Blur.NORMAL)
+                    }
+                    if (config.hasGradient) {
+                        shader = LinearGradient(
+                            currentX, currentY - config.fontSize * scale,
+                            currentX, currentY,
+                            config.gradientStartColor, config.gradientEndColor,
+                            Shader.TileMode.CLAMP
+                        )
                     }
                 }
-                canvas.drawText(line, position.x + config.shadowDx * scale, currentY + config.shadowDy * scale, shadowPaint)
-            }
+                canvas.drawText(word, currentX, currentY, fillPaint)
 
-            // Stack 2: Outline
-            if (config.hasOutline) {
-                val outlinePaint = Paint(paint).apply {
-                    style = Paint.Style.STROKE
-                    strokeWidth = config.outlineWidth * scale
-                    color = config.outlineColor
-                    strokeCap = Paint.Cap.ROUND
-                    strokeJoin = Paint.Join.ROUND
-                }
-                canvas.drawText(line, position.x, currentY, outlinePaint)
+                currentX += paint.measureText(word) + spaceWidth
             }
-
-            // Stack 3: Main Fill with Gradient & Blur
-            val fillPaint = Paint(paint).apply {
-                style = Paint.Style.FILL
-                color = config.textColor
-                if (config.blurRadius > 0f) {
-                    maskFilter = BlurMaskFilter(config.blurRadius * scale, BlurMaskFilter.Blur.NORMAL)
-                }
-                if (config.hasGradient) {
-                    shader = LinearGradient(
-                        position.x, currentY - config.fontSize * scale,
-                        position.x, currentY,
-                        config.gradientStartColor, config.gradientEndColor,
-                        Shader.TileMode.CLAMP
-                    )
-                }
-            }
-            canvas.drawText(line, position.x, currentY, fillPaint)
 
             currentY += lineHeight
         }
@@ -138,6 +147,7 @@ class TextEngine {
         val canvas = Canvas(layerBmp)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         canvas.drawBitmap(textBmp, 0f, 0f, paint)
+        layer.tileMap.importFromBitmap(layerBmp)
         layer.markDirty()
     }
 }

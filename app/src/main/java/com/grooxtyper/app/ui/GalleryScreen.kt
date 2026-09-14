@@ -78,10 +78,17 @@ fun GalleryScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         uri?.let {
-            val inputStream = context.contentResolver.openInputStream(it)
-            val bmp = BitmapFactory.decodeStream(inputStream)
-            bmp?.let { loaded ->
-                onOpenCanvas(loaded.width, loaded.height)
+            try {
+                val inputStream = context.contentResolver.openInputStream(it)
+                val bmp = BitmapFactory.decodeStream(inputStream)
+                bmp?.let { loaded ->
+                    val projW = loaded.width.coerceAtLeast(100)
+                    val projH = loaded.height.coerceAtLeast(100)
+                    projects.add(0, ArtworkProject("${System.currentTimeMillis()}", "Imported Photo", projW, projH))
+                    onOpenCanvas(projW, projH)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -109,7 +116,7 @@ fun GalleryScreen(
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
-                    text = "ibisPaint Clone",
+                    text = "GrooxTyper",
                     color = Color.White,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold

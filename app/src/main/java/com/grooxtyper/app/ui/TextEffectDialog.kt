@@ -15,8 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,7 +43,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -69,6 +66,8 @@ fun TextEffectDialog(
 
     var textContent by remember { mutableStateOf(initialConfig.text) }
     var fontSizeVal by remember { mutableFloatStateOf(initialConfig.fontSize) }
+    var wordSpacingVal by remember { mutableFloatStateOf(initialConfig.wordSpacing) }
+    var letterSpacingVal by remember { mutableFloatStateOf(initialConfig.letterSpacing) }
 
     var textColorVal by remember { mutableIntStateOf(initialConfig.textColor) }
     var enableGradient by remember { mutableStateOf(initialConfig.hasGradient) }
@@ -86,7 +85,6 @@ fun TextEffectDialog(
     var shadowDyVal by remember { mutableFloatStateOf(initialConfig.shadowDy) }
     var shadowBlurVal by remember { mutableFloatStateOf(initialConfig.shadowRadius) }
 
-    var selectedColorForPicker by remember { mutableIntStateOf(AndroidColor.WHITE) }
     var showColorPickerTarget by remember { mutableStateOf<String?>(null) }
 
     val currentConfig = StackableTextConfig(
@@ -104,13 +102,15 @@ fun TextEffectDialog(
         hasGradient = enableGradient,
         gradientStartColor = gradStartVal,
         gradientEndColor = gradEndVal,
-        blurRadius = blurRadiusVal
+        blurRadius = blurRadiusVal,
+        wordSpacing = wordSpacingVal,
+        letterSpacing = letterSpacingVal
     )
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("Text Tool & Style Studio", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text("GrooxTyper Text Studio", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -177,6 +177,24 @@ fun TextEffectDialog(
                                     value = fontSizeVal,
                                     onValueChange = { fontSizeVal = it },
                                     valueRange = 16f..160f,
+                                    colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Word & Line Spacing Offset (${wordSpacingVal.toInt()} px)", color = Color.LightGray, fontSize = 12.sp)
+                                Slider(
+                                    value = wordSpacingVal,
+                                    onValueChange = { wordSpacingVal = it },
+                                    valueRange = -50f..50f,
+                                    colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text("Letter Spacing (${(letterSpacingVal * 100).toInt()}%)", color = Color.LightGray, fontSize = 12.sp)
+                                Slider(
+                                    value = letterSpacingVal,
+                                    onValueChange = { letterSpacingVal = it },
+                                    valueRange = -0.5f..1.0f,
                                     colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
                                 )
                             }
@@ -301,7 +319,7 @@ fun TextEffectDialog(
                         }
                         3 -> { // Presets
                             Column {
-                                Text("ibisPaint Style Presets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Style Presets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 styleManager.savedStyles.forEach { style ->
                                     Row(
@@ -324,6 +342,8 @@ fun TextEffectDialog(
                                                 enableGradient = cfg.hasGradient
                                                 gradStartVal = cfg.gradientStartColor
                                                 gradEndVal = cfg.gradientEndColor
+                                                wordSpacingVal = cfg.wordSpacing
+                                                letterSpacingVal = cfg.letterSpacing
                                             }
                                             .padding(12.dp),
                                         verticalAlignment = Alignment.CenterVertically
