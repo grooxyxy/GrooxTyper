@@ -1,0 +1,20 @@
+# Gradle
+.gradle/
+build/
+app/build/
+local.properties
+
+# Android Studio
+*.iml
+.idea/
+.DS_Store
+
+# Keystore - KEEP release.keystore tracked for CI signed builds
+# *.jks
+# *.keystore
+# !release.keystore
+
+# NDK
+*.o
+*.so
+obj/
