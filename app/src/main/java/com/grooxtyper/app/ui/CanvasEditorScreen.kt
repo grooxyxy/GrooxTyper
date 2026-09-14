@@ -560,48 +560,64 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Quick sliders (left side, ibisPaint style)
+        // Quick sliders (bottom, ala ibisPaint X)
         if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 8.dp)
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 12.dp, end = 12.dp, bottom = 72.dp)
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color(0xBB1C1C1E))
                     .border(1.dp, Color(0xFF38383A), RoundedCornerShape(16.dp))
-                    .padding(8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text("Size", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier.size(30.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        val sizeFrac = (brushEngine.size / 120f * 0.38f + 0.07f).coerceIn(0.07f, 0.45f)
+                        androidx.compose.foundation.Canvas(modifier = Modifier.size(30.dp)) {
+                            drawCircle(
+                                color = if (activeTool == ActiveTool.ERASER) Color.Red else Color.White,
+                                radius = sizeFrac * size.minDimension,
+                                alpha = brushEngine.opacity
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Size", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
                     Slider(
                         value = brushEngine.size,
                         onValueChange = { brushEngine.size = it },
                         valueRange = 1f..120f,
-                        modifier = Modifier
-                            .graphicsLayer {
-                                rotationZ = 270f
-                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                            }
-                            .width(110.dp),
+                        modifier = Modifier.weight(1f),
                         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
                     )
+                    Text(
+                        "${brushEngine.size.toInt()}",
+                        color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(32.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End
+                    )
                 }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Alpha", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(modifier = Modifier.width(38.dp))
+                    Text("Alpha", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
                     Slider(
                         value = brushEngine.opacity,
                         onValueChange = { brushEngine.opacity = it },
                         valueRange = 0.05f..1.0f,
-                        modifier = Modifier
-                            .graphicsLayer {
-                                rotationZ = 270f
-                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
-                            }
-                            .width(110.dp),
+                        modifier = Modifier.weight(1f),
                         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                    )
+                    Text(
+                        "${(brushEngine.opacity * 100).toInt()}%",
+                        color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(40.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
             }
