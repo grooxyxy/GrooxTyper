@@ -10,8 +10,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,12 +40,15 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
+import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Visibility
@@ -94,6 +95,7 @@ import com.grooxtyper.app.ml.MLTextDetector
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
+import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintingManager
@@ -105,6 +107,7 @@ import com.grooxtyper.app.model.SelectionEngine
 import com.grooxtyper.app.model.StackableTextConfig
 import com.grooxtyper.app.model.TextEngine
 import com.grooxtyper.app.model.TextItem
+import com.grooxtyper.app.model.TextLayer
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -112,6 +115,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class ActiveTool {
+    PAN,
     BRUSH,
     ERASER,
     LASSO,
@@ -181,7 +185,6 @@ fun CanvasEditorScreen(
     }
 
     // Interactive Text Nodes
-    val textItems = remember { mutableStateListOf<TextItem>() }
     var selectedTextItem by remember { mutableStateOf<TextItem?>(null) }
     var editingTextConfig by remember { mutableStateOf<StackableTextConfig?>(null) }
 
@@ -240,6 +243,7 @@ fun CanvasEditorScreen(
     }
 
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
+    var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
 
     Box(
         modifier = Modifier
@@ -258,41 +262,56 @@ fun CanvasEditorScreen(
                             val changes = event.changes
                             val pointerCount = changes.size
 
-                            if (pointerCount >= 2) {
-                                // Two-Finger Pinch, Pan & Rotation
+                            if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
+                                // Pan Tool mode or 2-finger gesture: Drag/Pan, Pinch Zoom, Rotate Canvas
                                 lastCanvasPoint = null
                                 var zoom = 1f
                                 var pan = Offset.Zero
                                 var rotation = 0f
 
-                                val p1 = changes[0]
-                                val p2 = changes[1]
+                                if (pointerCount >= 2) {
+                                    val p1 = changes[0]
+                                    val p2 = changes[1]
 
-                                if (p1.pressed && p2.pressed) {
-                                    val prevP1 = p1.previousPosition
-                                    val prevP2 = p2.previousPosition
-                                    val curP1 = p1.position
-                                    val curP2 = p2.position
+                                    if (p1.pressed && p2.pressed) {
+                                        val prevP1 = p1.previousPosition
+                                        val prevP2 = p2.previousPosition
+                                        val curP1 = p1.position
+                                        val curP2 = p2.position
 
-                                    val prevCenter = (prevP1 + prevP2) / 2f
-                                    val curCenter = (curP1 + curP2) / 2f
-                                    pan = curCenter - prevCenter
+                                        val prevCenter = (prevP1 + prevP2) / 2f
+                                        val curCenter = (curP1 + curP2) / 2f
+                                        pan = curCenter - prevCenter
 
-                                    val prevDist = (prevP1 - prevP2).getDistance()
-                                    val curDist = (curP1 - curP2).getDistance()
-                                    if (prevDist > 0f) zoom = curDist / prevDist
+                                        val prevDist = (prevP1 - prevP2).getDistance()
+                                        val curDist = (curP1 - curP2).getDistance()
+                                        if (prevDist > 0f) zoom = curDist / prevDist
 
-                                    val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
-                                    val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
-                                    rotation = curAngle - prevAngle
+                                        val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
+                                        val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
+                                        rotation = curAngle - prevAngle
 
-                                    viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
-                                    viewState.offsetX += pan.x
-                                    viewState.offsetY += pan.y
-                                    viewState.applyRotationDelta(rotation)
+                                        viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
+                                        viewState.offsetX += pan.x
+                                        viewState.offsetY += pan.y
+                                        viewState.applyRotationDelta(rotation)
 
-                                    p1.consume()
-                                    p2.consume()
+                                        p1.consume()
+                                        p2.consume()
+                                    }
+                                } else if (pointerCount == 1 && activeTool == ActiveTool.PAN) {
+                                    val change = changes[0]
+                                    if (change.pressed) {
+                                        if (lastScreenPoint != null) {
+                                            val dragDelta = change.position - lastScreenPoint!!
+                                            viewState.offsetX += dragDelta.x
+                                            viewState.offsetY += dragDelta.y
+                                        }
+                                        lastScreenPoint = change.position
+                                        change.consume()
+                                    } else {
+                                        lastScreenPoint = null
+                                    }
                                 }
                             } else if (pointerCount == 1) {
                                 val change = changes[0]
@@ -301,22 +320,26 @@ fun CanvasEditorScreen(
 
                                     if (activeTool == ActiveTool.TEXT) {
                                         if (lastCanvasPoint == null) {
-                                            val hit = textItems.findLast { it.isHit(touchCanvasPos) }
-                                            if (hit != null) {
-                                                selectedTextItem = hit
-                                                editingTextConfig = hit.config
+                                            val allTextLayers = layerManager.layers.filterIsInstance<TextLayer>()
+                                            val hitLayer = allTextLayers.findLast { it.textItem.isHit(touchCanvasPos) }
+                                            if (hitLayer != null) {
+                                                selectedTextItem = hitLayer.textItem
+                                                editingTextConfig = hitLayer.textItem.config
+                                                layerManager.activeLayerId = hitLayer.id
                                             } else {
                                                 val newCfg = StackableTextConfig(textColor = brushEngine.color)
                                                 val newItem = TextItem(config = newCfg, position = touchCanvasPos)
-                                                textItems.add(newItem)
+                                                val newTextLayer = layerManager.addTextLayer(newItem)
                                                 selectedTextItem = newItem
                                                 editingTextConfig = newCfg
                                                 showTextPanel = true
+                                                refreshComposite()
                                             }
                                         } else {
                                             selectedTextItem?.let { item ->
                                                 val delta = touchCanvasPos - lastCanvasPoint!!
                                                 item.position = item.position + delta
+                                                refreshComposite()
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
@@ -339,6 +362,7 @@ fun CanvasEditorScreen(
                                 }
                             } else {
                                 lastCanvasPoint = null
+                                lastScreenPoint = null
                             }
                         }
                     }
@@ -360,15 +384,9 @@ fun CanvasEditorScreen(
                 // Render Composite Layers Bitmap
                 drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
 
-                // Render Interactive Vector Text Items
-                textItems.forEach { item ->
-                    textEngine.renderTextToCanvas(
-                        drawContext.canvas.nativeCanvas,
-                        item.config,
-                        item.position,
-                        item.scale
-                    )
-                    // Render Bounding Box & Interactive Handles when selected
+                // Render Bounding Boxes for Text Layers
+                layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
+                    val item = textLayer.textItem
                     if (item == selectedTextItem) {
                         val bounds = item.getBounds()
                         val boxPaint = android.graphics.Paint().apply {
@@ -489,12 +507,21 @@ fun CanvasEditorScreen(
                 }
                 IconButton(onClick = {
                     item.scale = (item.scale * 1.2f).coerceAtMost(5.0f)
+                    refreshComposite()
                 }, modifier = Modifier.size(28.dp)) {
                     Icon(Icons.Default.OpenInFull, contentDescription = "Resize Bigger", tint = Color.White)
                 }
                 IconButton(onClick = {
-                    textItems.remove(item)
+                    item.rotationAngle = (item.rotationAngle + 15f) % 360f
+                    refreshComposite()
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.RotateRight, contentDescription = "Rotate Text", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
+                    textLayer?.let { layerManager.deleteLayer(it.id) }
                     selectedTextItem = null
+                    refreshComposite()
                 }, modifier = Modifier.size(28.dp)) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete Text", tint = Color.Red)
                 }
@@ -512,6 +539,10 @@ fun CanvasEditorScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            IconButton(onClick = { activeTool = ActiveTool.PAN }) {
+                Icon(Icons.Default.PanTool, contentDescription = "Pan/Hand Tool", tint = if (activeTool == ActiveTool.PAN) Color(0xFFFF9800) else Color.White)
+            }
+
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
@@ -689,10 +720,14 @@ fun CanvasEditorScreen(
                         val item = selectedTextItem
                         if (item != null) {
                             item.config = updatedConfig
+                            val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
+                            textLayer?.name = "Text: ${updatedConfig.text}"
                         } else {
                             val newItem = TextItem(config = updatedConfig, position = Offset(canvasWidth / 4f, canvasHeight / 3f))
-                            textItems.add(newItem)
+                            layerManager.addTextLayer(newItem)
+                            selectedTextItem = newItem
                         }
+                        refreshComposite()
                         showTextPanel = false
                     },
                     onClose = { showTextPanel = false }
@@ -770,7 +805,7 @@ fun CanvasEditorScreen(
         if (showLayersPanel) {
             AlertDialog(
                 onDismissRequest = { showLayersPanel = false },
-                title = { Text("Layers", color = Color.White) },
+                title = { Text("Layers Stack", color = Color.White) },
                 text = {
                     Column(modifier = Modifier.height(340.dp)) {
                         Row(
@@ -782,14 +817,14 @@ fun CanvasEditorScreen(
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                             ) {
                                 Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
-                                Text("New Layer", color = Color.Black, fontSize = 12.sp)
+                                Text("New Drawing Layer", color = Color.Black, fontSize = 11.sp)
                             }
 
                             Button(
                                 onClick = {
-                                    val active = layerManager.getActiveLayer()
-                                    if (active != null) {
-                                        layerManager.deleteLayer(active.id)
+                                    val activeId = layerManager.activeLayerId
+                                    if (activeId.isNotEmpty()) {
+                                        layerManager.deleteLayer(activeId)
                                         refreshComposite()
                                     }
                                 },
@@ -809,12 +844,26 @@ fun CanvasEditorScreen(
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp)
                                         .clickable {
-                                            if (layerItem is com.grooxtyper.app.model.DrawingLayer) layerManager.activeLayerId = layerItem.id
+                                            layerManager.activeLayerId = layerItem.id
+                                            if (layerItem is TextLayer) {
+                                                selectedTextItem = layerItem.textItem
+                                            }
                                         },
                                     colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF383838) else Color(0xFF222222))
                                 ) {
                                     Column(modifier = Modifier.padding(8.dp)) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (layerItem is TextLayer) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(Color(0xFFFF9800))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("TEXT", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                            }
                                             Text(layerItem.name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
 
                                             IconButton(
@@ -844,7 +893,7 @@ fun CanvasEditorScreen(
                                             }
                                         }
 
-                                        if (layerItem is com.grooxtyper.app.model.DrawingLayer) {
+                                        if (layerItem is DrawingLayer) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 IconButton(
                                                     onClick = {

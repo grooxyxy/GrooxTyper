@@ -136,7 +136,12 @@ class FontManager(private val context: Context) {
 
 class TextEngine {
 
-    fun renderTextToCanvas(canvas: Canvas, config: StackableTextConfig, position: Offset, scale: Float = 1.0f) {
+    fun renderTextToCanvas(canvas: Canvas, config: StackableTextConfig, position: Offset, scale: Float = 1.0f, rotationAngle: Float = 0f) {
+        canvas.save()
+        if (rotationAngle != 0f) {
+            canvas.rotate(rotationAngle, position.x, position.y)
+        }
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = config.fontSize * scale
             typeface = config.typeface
@@ -227,12 +232,14 @@ class TextEngine {
 
             currentY += lineHeight
         }
+
+        canvas.restore()
     }
 
-    fun drawTextOnLayer(layer: DrawingLayer, config: StackableTextConfig, position: Offset, scale: Float = 1.0f) {
+    fun drawTextOnLayer(layer: DrawingLayer, config: StackableTextConfig, position: Offset, scale: Float = 1.0f, rotationAngle: Float = 0f) {
         val textBmp = Bitmap.createBitmap(layer.width, layer.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(textBmp)
-        renderTextToCanvas(canvas, config, position, scale)
+        renderTextToCanvas(canvas, config, position, scale, rotationAngle)
         val layerBmp = layer.getBitmap()
         val layerCanvas = Canvas(layerBmp)
         layerCanvas.drawBitmap(textBmp, 0f, 0f, null)

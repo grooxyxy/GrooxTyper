@@ -85,9 +85,15 @@ class DrawingLayer(
     }
 }
 
+class TextLayer(
+    val textItem: TextItem,
+    name: String = "Text: ${textItem.config.text}"
+) : LayerItem(name = name, isFolder = false)
+
 class LayerManager(val width: Int, val height: Int) {
     val layers = mutableStateListOf<LayerItem>()
     var activeLayerId by mutableStateOf<String>("")
+    private val textEngine = TextEngine()
 
     init {
         val initialLayer = DrawingLayer(width, height, "Layer 1")
@@ -114,6 +120,13 @@ class LayerManager(val width: Int, val height: Int) {
         layers.add(0, layer)
         activeLayerId = layer.id
         return layer
+    }
+
+    fun addTextLayer(textItem: TextItem): TextLayer {
+        val textLayer = TextLayer(textItem, name = "Text: ${textItem.config.text}")
+        layers.add(0, textLayer)
+        activeLayerId = textLayer.id
+        return textLayer
     }
 
     fun addFolder(name: String = "Folder ${layers.size + 1}"): LayerItem {
@@ -164,13 +177,15 @@ class LayerManager(val width: Int, val height: Int) {
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
-        val flatLayers = mutableListOf<DrawingLayer>()
+        val flatLayers = mutableListOf<LayerItem>()
         fun collectLayers(items: List<LayerItem>) {
             for (item in items) {
-                if (item is DrawingLayer && item.isVisible) {
-                    flatLayers.add(item)
-                } else if (item.isFolder && item.isVisible) {
-                    collectLayers(item.children)
+                if (item.isVisible) {
+                    if (item is DrawingLayer || item is TextLayer) {
+                        flatLayers.add(item)
+                    } else if (item.isFolder) {
+                        collectLayers(item.children)
+                    }
                 }
             }
         }
@@ -186,22 +201,29 @@ class LayerManager(val width: Int, val height: Int) {
             paint.alpha = (layer.opacity * 255).toInt()
             paint.xfermode = PorterDuffXfermode(layer.blendMode.porterDuffMode)
 
-            if (layer.isClippingMask && baseMaskBitmap != null) {
-                val tempLayer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val tempCanvas = Canvas(tempLayer)
-                tempCanvas.drawBitmap(layer.getBitmap(), 0f, 0f, null)
-
-                val clipPaint = Paint().apply {
-                    xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-                }
-                tempCanvas.drawBitmap(baseMaskBitmap, 0f, 0f, clipPaint)
-                canvas.drawBitmap(tempLayer, 0f, 0f, paint)
-            } else {
+            if (layer is DrawingLayer) {
                 val bmp = layer.getBitmap()
-                canvas.drawBitmap(bmp, 0f, 0f, paint)
-                if (!layer.isClippingMask) {
-                    baseMaskBitmap = bmp
+                if (layer.isClippingMask && baseMaskBitmap != null) {
+                    val tempLayer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val tempCanvas = Canvas(tempLayer)
+                    tempCanvas.drawBitmap(bmp, 0f, 0f, null)
+
+                    val clipPaint = Paint().apply {
+                        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+                    }
+                    tempCanvas.drawBitmap(baseMaskBitmap, 0f, 0f, clipPaint)
+                    canvas.drawBitmap(tempLayer, 0f, 0f, paint)
+                } else {
+                    canvas.drawBitmap(bmp, 0f, 0f, paint)
+                    if (!layer.isClippingMask) {
+                        baseMaskBitmap = bmp
+                    }
                 }
+            } else if (layer is TextLayer) {
+                val textBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                val textCanvas = Canvas(textBmp)
+                textEngine.renderTextToCanvas(textCanvas, layer.textItem.config, layer.textItem.position, layer.textItem.scale, layer.textItem.rotationAngle)
+                canvas.drawBitmap(textBmp, 0f, 0f, paint)
             }
         }
     }
