@@ -1,0 +1,37 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Dark Photoshop / Clip Studio / ibisPaint X Canvas Background -->
+    <path
+        android:fillColor="#1A1A24"
+        android:pathData="M0,0h108v108h-108z"/>
+
+    <!-- Artist Palette Shape -->
+    <path
+        android:fillColor="#282836"
+        android:pathData="M54,16 C32,16 16,32 16,54 C16,74 30,90 52,90 C62,90 68,82 68,76 C68,72 66,70 68,66 C70,62 76,62 80,62 C88,62 92,52 92,44 C92,28 75,16 54,16 Z M30,48 C27.24,48 25,45.76 25,43 C25,40.24 27.24,38 30,38 C32.76,38 35,40.24 35,43 C35,45.76 32.76,48 30,48 Z M44,36 C41.24,36 39,33.76 39,31 C39,28.24 41.24,26 44,26 C46.76,26 49,28.24 49,31 C49,33.76 46.76,36 44,36 Z M62,36 C59.24,36 57,33.76 57,31 C57,28.24 59.24,26 62,26 C64.76,26 67,28.24 67,31 C67,33.76 64.76,36 62,36 Z M76,48 C73.24,48 71,45.76 71,43 C71,40.24 73.24,38 76,38 C78.76,38 81,40.24 81,43 C81,45.76 78.76,48 76,48 Z"/>
+
+    <!-- Color Blobs (CSP / ibisPaint Vibrant Accents) -->
+    <path
+        android:fillColor="#FF5252"
+        android:pathData="M30,43m-5,0a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"/>
+    <path
+        android:fillColor="#FFD700"
+        android:pathData="M44,31m-5,0a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"/>
+    <path
+        android:fillColor="#00E676"
+        android:pathData="M62,31m-5,0a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"/>
+    <path
+        android:fillColor="#40C4FF"
+        android:pathData="M76,43m-5,0a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"/>
+
+    <!-- Stylized Photoshop Pen / Brush Tip Overlay -->
+    <path
+        android:fillColor="#FF9800"
+        android:pathData="M66,74 L84,52 L88,56 L66,78 Z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M84,52 L90,48 C92,46 94,48 93,50 L88,56 Z"/>
+</vector>
