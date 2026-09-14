@@ -1,5 +1,6 @@
 package com.grooxtyper.app
 
+import android.graphics.Bitmap
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,13 +25,15 @@ class MainActivity : ComponentActivity() {
                 var currentScreen by remember { mutableStateOf(AppScreen.GALLERY) }
                 var activeCanvasWidth by remember { mutableStateOf(1280) }
                 var activeCanvasHeight by remember { mutableStateOf(1280) }
+                var activeInitialBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
                 when (currentScreen) {
                     AppScreen.GALLERY -> {
                         GalleryScreen(
-                            onOpenCanvas = { width, height ->
+                            onOpenCanvas = { width, height, bitmap ->
                                 activeCanvasWidth = width
                                 activeCanvasHeight = height
+                                activeInitialBitmap = bitmap
                                 currentScreen = AppScreen.EDITOR
                             }
                         )
@@ -39,6 +42,7 @@ class MainActivity : ComponentActivity() {
                         CanvasEditorScreen(
                             canvasWidth = activeCanvasWidth,
                             canvasHeight = activeCanvasHeight,
+                            initialBitmap = activeInitialBitmap,
                             onBackToGallery = {
                                 currentScreen = AppScreen.GALLERY
                             }

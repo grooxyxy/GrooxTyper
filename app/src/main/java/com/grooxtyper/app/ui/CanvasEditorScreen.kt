@@ -10,14 +10,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,10 +23,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -40,9 +35,6 @@ import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ContentCut
-import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
@@ -52,7 +44,6 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Visibility
@@ -67,15 +58,13 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -85,10 +74,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -100,10 +87,8 @@ import com.grooxtyper.app.ml.MLTextDetector
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
-import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
-import com.grooxtyper.app.model.ForceFadeConfig
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
@@ -111,6 +96,7 @@ import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
 import com.grooxtyper.app.model.StackableTextConfig
 import com.grooxtyper.app.model.TextEngine
+import com.grooxtyper.app.model.TextItem
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -128,6 +114,7 @@ enum class ActiveTool {
 fun CanvasEditorScreen(
     canvasWidth: Int,
     canvasHeight: Int,
+    initialBitmap: Bitmap? = null,
     onBackToGallery: () -> Unit
 ) {
     val context = LocalContext.current
@@ -156,10 +143,26 @@ fun CanvasEditorScreen(
         refreshCanvasTrigger++
     }
 
+    // Populate initial bitmap if imported from gallery
+    LaunchedEffect(initialBitmap) {
+        initialBitmap?.let { bmp ->
+            layerManager.getActiveLayer()?.let { active ->
+                active.tileMap.importFromBitmap(bmp)
+                active.markDirty()
+                refreshComposite()
+            }
+        }
+    }
+
+    // Interactive Text Nodes
+    val textItems = remember { mutableStateListOf<TextItem>() }
+    var selectedTextItem by remember { mutableStateOf<TextItem?>(null) }
+    var editingTextConfig by remember { mutableStateOf<StackableTextConfig?>(null) }
+
     var showColorPicker by remember { mutableStateOf(false) }
     var showLayersPanel by remember { mutableStateOf(false) }
     var showBrushSettings by remember { mutableStateOf(false) }
-    var showTextDialog by remember { mutableStateOf(false) }
+    var showTextPanel by remember { mutableStateOf(false) }
     var showRulerDialog by remember { mutableStateOf(false) }
     var showExportMenu by remember { mutableStateOf(false) }
     var showLassoMenu by remember { mutableStateOf(false) }
@@ -194,7 +197,8 @@ fun CanvasEditorScreen(
     }
 
     var previousTouchPoint by remember { mutableStateOf<Offset?>(null) }
-    var currentLassoPath by remember { mutableStateOf<Path?>(null) }
+    // Live preview stroke for smooth hardware-accelerated drawing with zero delay
+    var activeStrokePath by remember { mutableStateOf<Path?>(null) }
 
     Box(
         modifier = Modifier
@@ -214,10 +218,7 @@ fun CanvasEditorScreen(
                             if (pointerCount >= 2) {
                                 // Two-finger touches: Canvas transform (Pan, Zoom, Rotate) strictly
                                 previousTouchPoint = null
-                                var zoom = 1f
-                                var pan = Offset.Zero
-                                var rotation = 0f
-
+                                activeStrokePath = null
                                 val change1 = event.changes[0]
                                 val change2 = event.changes[1]
 
@@ -229,51 +230,74 @@ fun CanvasEditorScreen(
 
                                     val prevCenter = (prevP1 + prevP2) / 2f
                                     val curCenter = (curP1 + curP2) / 2f
-                                    pan = curCenter - prevCenter
+                                    val pan = curCenter - prevCenter
 
                                     val prevDist = (prevP1 - prevP2).getDistance()
                                     val curDist = (curP1 - curP2).getDistance()
-                                    if (prevDist > 0f) zoom = curDist / prevDist
+                                    val zoom = if (prevDist > 0f) curDist / prevDist else 1f
 
                                     val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
                                     val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
-                                    rotation = curAngle - prevAngle
+                                    val rotationDelta = curAngle - prevAngle
 
                                     viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
                                     viewState.offsetX += pan.x
                                     viewState.offsetY += pan.y
-                                    viewState.rotation += rotation
+                                    viewState.applyRotationDelta(rotationDelta)
 
                                     change1.consume()
                                     change2.consume()
                                 }
                             } else if (pointerCount == 1) {
-                                // One-finger touch: Brush / Eraser drawing exclusively
+                                // One-finger touch: Brush / Eraser / Text interaction
                                 val change = event.changes[0]
                                 if (change.pressed) {
                                     val canvasOffset = viewState.windowToCanvasCoordinates(change.position.x, change.position.y)
-                                    if (previousTouchPoint == null) {
-                                        val activeLayer = layerManager.getActiveLayer()
-                                        if (activeLayer != null) undoRedoManager.saveSnapshot(activeLayer)
-                                    }
 
-                                    if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) && previousTouchPoint != null) {
-                                        val activeLayer = layerManager.getActiveLayer()
-                                        if (activeLayer != null) {
-                                            if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
-                                            brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, canvasOffset)
-                                            refreshComposite()
+                                    if (activeTool == ActiveTool.TEXT) {
+                                        if (previousTouchPoint == null) {
+                                            // Check if user clicked on existing text item to edit/select
+                                            val hit = textItems.findLast { it.isHit(canvasOffset) }
+                                            if (hit != null) {
+                                                selectedTextItem = hit
+                                                editingTextConfig = hit.config
+                                                showTextPanel = true
+                                            } else {
+                                                // Create new text item
+                                                val newConfig = StackableTextConfig(textColor = brushEngine.color)
+                                                val newItem = TextItem(config = newConfig, position = canvasOffset)
+                                                textItems.add(newItem)
+                                                selectedTextItem = newItem
+                                                editingTextConfig = newConfig
+                                                showTextPanel = true
+                                            }
                                         }
-                                    } else if (activeTool == ActiveTool.TEXT && previousTouchPoint == null) {
-                                        showTextDialog = true
+                                    } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
+                                        if (previousTouchPoint == null) {
+                                            val activeLayer = layerManager.getActiveLayer()
+                                            if (activeLayer != null) undoRedoManager.saveSnapshot(activeLayer)
+                                            activeStrokePath = Path().apply { moveTo(canvasOffset.x, canvasOffset.y) }
+                                        } else {
+                                            val activeLayer = layerManager.getActiveLayer()
+                                            if (activeLayer != null) {
+                                                if (activeTool == ActiveTool.ERASER) {
+                                                    brushEngine.brushType = BrushType.ERASER
+                                                }
+                                                brushEngine.strokeSegmentOnLayer(activeLayer, previousTouchPoint!!, canvasOffset)
+                                                activeStrokePath?.lineTo(canvasOffset.x, canvasOffset.y)
+                                                refreshComposite()
+                                            }
+                                        }
                                     }
                                     previousTouchPoint = canvasOffset
                                     change.consume()
                                 } else {
                                     previousTouchPoint = null
+                                    activeStrokePath = null
                                 }
                             } else {
                                 previousTouchPoint = null
+                                activeStrokePath = null
                             }
                         }
                     }
@@ -291,7 +315,29 @@ fun CanvasEditorScreen(
                         rotationZ = viewState.rotation
                     )
             ) {
+                // Render Composite Layers Bitmap
                 drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
+
+                // Render Interactive Text Objects
+                textItems.forEach { item ->
+                    textEngine.renderTextToCanvas(
+                        drawContext.canvas.nativeCanvas,
+                        item.config,
+                        item.position,
+                        item.scale
+                    )
+                    // Draw bounding box if selected
+                    if (item == selectedTextItem) {
+                        val bounds = item.getBounds()
+                        val boxPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f
+                            color = android.graphics.Color.CYAN
+                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                        }
+                        drawContext.canvas.nativeCanvas.drawRect(bounds, boxPaint)
+                    }
+                }
 
                 if (selectionEngine.hasSelection) {
                     val marchPaint = android.graphics.Paint().apply {
@@ -391,7 +437,11 @@ fun CanvasEditorScreen(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeTool == ActiveTool.BRUSH) Color(0xFFFF9800) else Color.Transparent)
-                        .clickable { activeTool = ActiveTool.BRUSH; showBrushSettings = true }
+                        .clickable {
+                            activeTool = ActiveTool.BRUSH
+                            brushEngine.brushType = BrushType.FELT_TIP_PEN
+                            showBrushSettings = true
+                        }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.Brush, contentDescription = "Brush", tint = if (activeTool == ActiveTool.BRUSH) Color.Black else Color.White, modifier = Modifier.size(18.dp))
@@ -400,7 +450,10 @@ fun CanvasEditorScreen(
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeTool == ActiveTool.ERASER) Color(0xFFFF9800) else Color.Transparent)
-                        .clickable { activeTool = ActiveTool.ERASER }
+                        .clickable {
+                            activeTool = ActiveTool.ERASER
+                            brushEngine.brushType = BrushType.ERASER
+                        }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.Delete, contentDescription = "Eraser", tint = if (activeTool == ActiveTool.ERASER) Color.Black else Color.White, modifier = Modifier.size(18.dp))
@@ -445,7 +498,7 @@ fun CanvasEditorScreen(
                 })
             }
 
-            IconButton(onClick = { activeTool = ActiveTool.TEXT; showTextDialog = true }) {
+            IconButton(onClick = { activeTool = ActiveTool.TEXT; showTextPanel = true }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Color(0xFFFF9800) else Color.White)
             }
 
@@ -524,7 +577,7 @@ fun CanvasEditorScreen(
             )
         }
 
-        // Brush Drawer Panel
+        // Sleek ibisPaint-style Brush Drawer Panel
         if (showBrushSettings) {
             Box(
                 modifier = Modifier
@@ -534,6 +587,36 @@ fun CanvasEditorScreen(
                 BrushDrawerPanel(
                     brushEngine = brushEngine,
                     onClose = { showBrushSettings = false }
+                )
+            }
+        }
+
+        // Redesigned Text Panel Drawer
+        if (showTextPanel) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+            ) {
+                TextPanel(
+                    initialConfig = editingTextConfig ?: StackableTextConfig(textColor = brushEngine.color),
+                    onConfirm = { updatedConfig ->
+                        val item = selectedTextItem
+                        if (item != null) {
+                            item.config = updatedConfig
+                        } else {
+                            val newItem = TextItem(config = updatedConfig, position = Offset(canvasWidth / 4f, canvasHeight / 3f))
+                            textItems.add(newItem)
+                        }
+                        // Burn text to active layer on confirm
+                        val active = layerManager.getActiveLayer()
+                        if (active != null) {
+                            textEngine.drawTextOnLayer(active, updatedConfig, selectedTextItem?.position ?: Offset(canvasWidth / 4f, canvasHeight / 3f))
+                            refreshComposite()
+                        }
+                        showTextPanel = false
+                    },
+                    onClose = { showTextPanel = false }
                 )
             }
         }
@@ -647,7 +730,7 @@ fun CanvasEditorScreen(
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp)
                                         .clickable {
-                                            if (layerItem is DrawingLayer) layerManager.activeLayerId = layerItem.id
+                                            if (layerItem is com.grooxtyper.app.model.DrawingLayer) layerManager.activeLayerId = layerItem.id
                                         },
                                     colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF383838) else Color(0xFF222222))
                                 ) {
@@ -682,7 +765,7 @@ fun CanvasEditorScreen(
                                             }
                                         }
 
-                                        if (layerItem is DrawingLayer) {
+                                        if (layerItem is com.grooxtyper.app.model.DrawingLayer) {
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 IconButton(
                                                     onClick = {
@@ -766,119 +849,6 @@ fun CanvasEditorScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showRenameDialog = false }) { Text("Cancel", color = Color.Gray) }
-                },
-                containerColor = Color(0xFF2A2A2A)
-            )
-        }
-
-        // Overhauled Text Tool Modal with Stackable Effects
-        if (showTextDialog) {
-            var inputString by remember { mutableStateOf("ibisPaint") }
-            var textSizeVal by remember { mutableFloatStateOf(56f) }
-
-            var enableOutline by remember { mutableStateOf(true) }
-            var outlineColorVal by remember { mutableIntStateOf(AndroidColor.BLACK) }
-            var outlineWidthVal by remember { mutableFloatStateOf(10f) }
-
-            var enableShadow by remember { mutableStateOf(true) }
-            var shadowColorVal by remember { mutableIntStateOf(AndroidColor.parseColor("#80000000")) }
-            var shadowDxVal by remember { mutableFloatStateOf(6f) }
-            var shadowDyVal by remember { mutableFloatStateOf(6f) }
-            var shadowBlurVal by remember { mutableFloatStateOf(12f) }
-
-            var enableGradient by remember { mutableStateOf(false) }
-            var gradStartColorVal by remember { mutableIntStateOf(AndroidColor.RED) }
-            var gradEndColorVal by remember { mutableIntStateOf(AndroidColor.YELLOW) }
-
-            var textBlurVal by remember { mutableFloatStateOf(0f) }
-
-            AlertDialog(
-                onDismissRequest = { showTextDialog = false },
-                title = { Text("Text Tool & Stackable Effects", color = Color.White) },
-                text = {
-                    Column(
-                        modifier = Modifier
-                            .height(380.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        OutlinedTextField(
-                            value = inputString,
-                            onValueChange = { inputString = it },
-                            label = { Text("Text Content") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Text Size (${textSizeVal.toInt()}px)", color = Color.LightGray, fontSize = 12.sp)
-                        Slider(value = textSizeVal, onValueChange = { textSizeVal = it }, valueRange = 16f..160f)
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Outline Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Switch(checked = enableOutline, onCheckedChange = { enableOutline = it })
-                        }
-                        if (enableOutline) {
-                            Text("Outline Width (${outlineWidthVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = outlineWidthVal, onValueChange = { outlineWidthVal = it }, valueRange = 1f..30f)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Drop Shadow Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Switch(checked = enableShadow, onCheckedChange = { enableShadow = it })
-                        }
-                        if (enableShadow) {
-                            Text("Shadow Offset (${shadowDxVal.toInt()}px, ${shadowDyVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = shadowDxVal, onValueChange = { shadowDxVal = it }, valueRange = -20f..20f)
-                            Text("Shadow Blur Radius (${shadowBlurVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = shadowBlurVal, onValueChange = { shadowBlurVal = it }, valueRange = 1f..30f)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Linear Gradient Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Switch(checked = enableGradient, onCheckedChange = { enableGradient = it })
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Text Blur Filter (${textBlurVal.toInt()}px)", color = Color.LightGray, fontSize = 12.sp)
-                        Slider(value = textBlurVal, onValueChange = { textBlurVal = it }, valueRange = 0f..20f)
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val active = layerManager.getActiveLayer()
-                            if (active != null) {
-                                val cfg = StackableTextConfig(
-                                    text = inputString,
-                                    fontSize = textSizeVal,
-                                    textColor = brushEngine.color,
-                                    hasOutline = enableOutline,
-                                    outlineColor = outlineColorVal,
-                                    outlineWidth = outlineWidthVal,
-                                    hasShadow = enableShadow,
-                                    shadowColor = shadowColorVal,
-                                    shadowRadius = shadowBlurVal,
-                                    shadowDx = shadowDxVal,
-                                    shadowDy = shadowDyVal,
-                                    hasGradient = enableGradient,
-                                    gradientStartColor = gradStartColorVal,
-                                    gradientEndColor = gradEndColorVal,
-                                    blurRadius = textBlurVal
-                                )
-                                textEngine.drawTextOnLayer(active, cfg, Offset(200f, 300f))
-                                refreshComposite()
-                            }
-                            showTextDialog = false
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
-                    ) {
-                        Text("Render Text", color = Color.Black)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showTextDialog = false }) { Text("Cancel", color = Color.Gray) }
                 },
                 containerColor = Color(0xFF2A2A2A)
             )

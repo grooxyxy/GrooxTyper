@@ -1,5 +1,6 @@
 package com.grooxtyper.app.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,18 +55,19 @@ data class ArtworkProject(
     val id: String,
     val title: String,
     val width: Int,
-    val height: Int
+    val height: Int,
+    val importedBitmap: Bitmap? = null
 )
 
 @Composable
 fun GalleryScreen(
-    onOpenCanvas: (width: Int, height: Int) -> Unit
+    onOpenCanvas: (width: Int, height: Int, initialBitmap: Bitmap?) -> Unit
 ) {
     val context = LocalContext.current
     val projects = remember {
         mutableStateListOf(
-            ArtworkProject("1", "Illustration 1", 1280, 1280),
-            ArtworkProject("2", "Manga Page", 1200, 1920)
+            ArtworkProject("1", "Illustration 1", 1280, 1280, null),
+            ArtworkProject("2", "Manga Page", 1200, 1920, null)
         )
     }
 
@@ -84,8 +86,9 @@ fun GalleryScreen(
                 bmp?.let { loaded ->
                     val projW = loaded.width.coerceAtLeast(100)
                     val projH = loaded.height.coerceAtLeast(100)
-                    projects.add(0, ArtworkProject("${System.currentTimeMillis()}", "Imported Photo", projW, projH))
-                    onOpenCanvas(projW, projH)
+                    val newProj = ArtworkProject("${System.currentTimeMillis()}", "Imported Photo", projW, projH, loaded)
+                    projects.add(0, newProj)
+                    onOpenCanvas(projW, projH, loaded)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -167,7 +170,7 @@ fun GalleryScreen(
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onOpenCanvas(proj.width, proj.height) },
+                            .clickable { onOpenCanvas(proj.width, proj.height, proj.importedBitmap) },
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A2A)),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -227,7 +230,7 @@ fun GalleryScreen(
                             val w = inputWidth.toIntOrNull() ?: 1280
                             val h = inputHeight.toIntOrNull() ?: 1280
                             showCreateDialog = false
-                            onOpenCanvas(w, h)
+                            onOpenCanvas(w, h, null)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                     ) {
