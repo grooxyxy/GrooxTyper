@@ -224,19 +224,20 @@ fun CanvasEditorScreen(
     }
 
     fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
-        val centerX = viewportSize.width / 2f
-        val centerY = viewportSize.height / 2f
-        val canvasCenterX = canvasWidth / 2f
-        val canvasCenterY = canvasHeight / 2f
+        // Inverse dari Modifier.graphicsLayer(scale, translation, rotationZ)
+        // yang pivot-nya di tengah viewport (TransformOrigin.Center).
+        // Bitmap digambar di (0,0) Canvas, jadi koordinat layout == koordinat bitmap.
+        val pivotX = viewportSize.width / 2f
+        val pivotY = viewportSize.height / 2f
 
-        val relX = (screenX - centerX - viewState.offsetX) / viewState.scale
-        val relY = (screenY - centerY - viewState.offsetY) / viewState.scale
+        val dx = (screenX - pivotX - viewState.offsetX) / viewState.scale
+        val dy = (screenY - pivotY - viewState.offsetY) / viewState.scale
 
-        val rad = -Math.toRadians(viewState.rotation.toDouble())
-        val rx = relX * Math.cos(rad) - relY * Math.sin(rad)
-        val ry = relX * Math.sin(rad) + relY * Math.cos(rad)
+        val rad = Math.toRadians((-viewState.rotation).toDouble())
+        val rx = dx * Math.cos(rad) - dy * Math.sin(rad)
+        val ry = dx * Math.sin(rad) + dy * Math.cos(rad)
 
-        return Offset((rx + canvasCenterX).toFloat(), (ry + canvasCenterY).toFloat())
+        return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
@@ -255,7 +256,7 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextItem, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation) {
+                .pointerInput(activeTool, selectedTextItem, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation, viewportSize) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()

@@ -35,12 +35,20 @@ class CanvasViewState(
         }
     }
 
-    fun windowToCanvasCoordinates(windowX: Float, windowY: Float): Offset {
-        val dx = windowX - offsetX
-        val dy = windowY - offsetY
-        val rad = -Math.toRadians(rotation.toDouble())
+    fun windowToCanvasCoordinates(
+        windowX: Float,
+        windowY: Float,
+        viewportWidth: Float = width.toFloat(),
+        viewportHeight: Float = height.toFloat()
+    ): Offset {
+        // Inverse graphicsLayer ber-pivot di tengah viewport.
+        val pivotX = viewportWidth / 2f
+        val pivotY = viewportHeight / 2f
+        val dx = (windowX - pivotX - offsetX) / scale
+        val dy = (windowY - pivotY - offsetY) / scale
+        val rad = Math.toRadians((-rotation).toDouble())
         val rx = dx * Math.cos(rad) - dy * Math.sin(rad)
         val ry = dx * Math.sin(rad) + dy * Math.cos(rad)
-        return Offset((rx / scale).toFloat(), (ry / scale).toFloat())
+        return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 }
