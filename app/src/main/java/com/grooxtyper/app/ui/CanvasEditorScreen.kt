@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -74,8 +76,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -92,6 +94,7 @@ import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
+import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
 import com.grooxtyper.app.model.StackableTextConfig
@@ -99,6 +102,7 @@ import com.grooxtyper.app.model.TextEngine
 import com.grooxtyper.app.model.TextItem
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -112,6 +116,7 @@ enum class ActiveTool {
 
 @Composable
 fun CanvasEditorScreen(
+    projectId: String,
     canvasWidth: Int,
     canvasHeight: Int,
     initialBitmap: Bitmap? = null,
@@ -120,6 +125,7 @@ fun CanvasEditorScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    val projectManager = remember { ProjectManager(context) }
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
@@ -141,6 +147,20 @@ fun CanvasEditorScreen(
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
         refreshCanvasTrigger++
+    }
+
+    // Auto-Save background worker
+    LaunchedEffect(projectId) {
+        while (true) {
+            delay(15000L) // Auto-save every 15 seconds
+            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+        }
     }
 
     // Populate initial bitmap if imported from gallery
@@ -197,7 +217,6 @@ fun CanvasEditorScreen(
     }
 
     var previousTouchPoint by remember { mutableStateOf<Offset?>(null) }
-    // Live preview stroke for smooth hardware-accelerated drawing with zero delay
     var activeStrokePath by remember { mutableStateOf<Path?>(null) }
 
     Box(
@@ -209,7 +228,7 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool) {
+                .pointerInput(activeTool, selectedTextItem) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -256,20 +275,23 @@ fun CanvasEditorScreen(
 
                                     if (activeTool == ActiveTool.TEXT) {
                                         if (previousTouchPoint == null) {
-                                            // Check if user clicked on existing text item to edit/select
                                             val hit = textItems.findLast { it.isHit(canvasOffset) }
                                             if (hit != null) {
                                                 selectedTextItem = hit
                                                 editingTextConfig = hit.config
-                                                showTextPanel = true
                                             } else {
-                                                // Create new text item
                                                 val newConfig = StackableTextConfig(textColor = brushEngine.color)
                                                 val newItem = TextItem(config = newConfig, position = canvasOffset)
                                                 textItems.add(newItem)
                                                 selectedTextItem = newItem
                                                 editingTextConfig = newConfig
                                                 showTextPanel = true
+                                            }
+                                        } else {
+                                            // Move selected text item
+                                            selectedTextItem?.let { item ->
+                                                val delta = canvasOffset - previousTouchPoint!!
+                                                item.position = item.position + delta
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
@@ -361,7 +383,10 @@ fun CanvasEditorScreen(
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBackToGallery) {
+            IconButton(onClick = {
+                projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+                onBackToGallery()
+            }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
             Spacer(modifier = Modifier.width(4.dp))
@@ -577,7 +602,7 @@ fun CanvasEditorScreen(
             )
         }
 
-        // Sleek ibisPaint-style Brush Drawer Panel
+        // Brush Drawer Panel
         if (showBrushSettings) {
             Box(
                 modifier = Modifier
@@ -607,12 +632,6 @@ fun CanvasEditorScreen(
                         } else {
                             val newItem = TextItem(config = updatedConfig, position = Offset(canvasWidth / 4f, canvasHeight / 3f))
                             textItems.add(newItem)
-                        }
-                        // Burn text to active layer on confirm
-                        val active = layerManager.getActiveLayer()
-                        if (active != null) {
-                            textEngine.drawTextOnLayer(active, updatedConfig, selectedTextItem?.position ?: Offset(canvasWidth / 4f, canvasHeight / 3f))
-                            refreshComposite()
                         }
                         showTextPanel = false
                     },

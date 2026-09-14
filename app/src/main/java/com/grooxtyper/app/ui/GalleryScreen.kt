@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,10 +21,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material3.AlertDialog
@@ -33,10 +36,12 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -46,29 +51,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-
-data class ArtworkProject(
-    val id: String,
-    val title: String,
-    val width: Int,
-    val height: Int,
-    val importedBitmap: Bitmap? = null
-)
+import com.grooxtyper.app.model.ProjectManager
+import com.grooxtyper.app.model.SavedProject
 
 @Composable
 fun GalleryScreen(
-    onOpenCanvas: (width: Int, height: Int, initialBitmap: Bitmap?) -> Unit
+    onOpenCanvas: (id: String, width: Int, height: Int, initialBitmap: Bitmap?) -> Unit
 ) {
     val context = LocalContext.current
-    val projects = remember {
-        mutableStateListOf(
-            ArtworkProject("1", "Illustration 1", 1280, 1280, null),
-            ArtworkProject("2", "Manga Page", 1200, 1920, null)
-        )
+    val projectManager = remember { ProjectManager(context) }
+    val savedProjects = remember { mutableStateListOf<SavedProject>() }
+
+    fun refreshProjects() {
+        savedProjects.clear()
+        savedProjects.addAll(projectManager.loadProjects())
+    }
+
+    LaunchedEffect(Unit) {
+        refreshProjects()
     }
 
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -86,9 +91,10 @@ fun GalleryScreen(
                 bmp?.let { loaded ->
                     val projW = loaded.width.coerceAtLeast(100)
                     val projH = loaded.height.coerceAtLeast(100)
-                    val newProj = ArtworkProject("${System.currentTimeMillis()}", "Imported Photo", projW, projH, loaded)
-                    projects.add(0, newProj)
-                    onOpenCanvas(projW, projH, loaded)
+                    val projId = "${System.currentTimeMillis()}"
+                    projectManager.saveProject(projId, "Imported Artwork", projW, projH, loaded)
+                    refreshProjects()
+                    onOpenCanvas(projId, projW, projH, loaded)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -152,41 +158,74 @@ fun GalleryScreen(
                 ) {
                     Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Color.Black, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("My Gallery", color = Color.Black, fontWeight = FontWeight.Bold)
+                    Text("My Gallery History", color = Color.Black, fontWeight = FontWeight.Bold)
                 }
             }
 
-            // Project Grid
-            LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                items(projects.size) { index ->
-                    val proj = projects[index]
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onOpenCanvas(proj.width, proj.height, proj.importedBitmap) },
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A2A)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .aspectRatio(1f)
-                                    .background(Color(0xFF383838), RoundedCornerShape(8.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.Brush, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
+            if (savedProjects.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No saved projects yet. Tap '+' to create a canvas!", color = Color.Gray, fontSize = 14.sp)
+                }
+            } else {
+                // Project Grid
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    items(savedProjects, key = { it.id }) { proj ->
+                        val thumbBmp = remember(proj.imagePath) { projectManager.loadProjectBitmap(proj.imagePath) }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onOpenCanvas(proj.id, proj.width, proj.height, thumbBmp)
+                                },
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A2A)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .aspectRatio(1f)
+                                        .background(Color(0xFF383838), RoundedCornerShape(8.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (thumbBmp != null) {
+                                        Image(
+                                            bitmap = thumbBmp.asImageBitmap(),
+                                            contentDescription = null,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    } else {
+                                        Icon(Icons.Default.Brush, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(48.dp))
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(proj.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                        Text("${proj.width} x ${proj.height} px", color = Color.LightGray, fontSize = 12.sp)
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            projectManager.deleteProject(proj.id)
+                                            refreshProjects()
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red, modifier = Modifier.size(16.dp))
+                                    }
+                                }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(proj.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                            Text("${proj.width} x ${proj.height} px", color = Color.LightGray, fontSize = 12.sp)
                         }
                     }
                 }
@@ -229,8 +268,11 @@ fun GalleryScreen(
                         onClick = {
                             val w = inputWidth.toIntOrNull() ?: 1280
                             val h = inputHeight.toIntOrNull() ?: 1280
+                            val newId = "${System.currentTimeMillis()}"
+                            val blankBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                            projectManager.saveProject(newId, "New Project", w, h, blankBmp)
                             showCreateDialog = false
-                            onOpenCanvas(w, h, null)
+                            onOpenCanvas(newId, w, h, null)
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                     ) {

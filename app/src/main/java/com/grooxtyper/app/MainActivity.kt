@@ -23,6 +23,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 var currentScreen by remember { mutableStateOf(AppScreen.GALLERY) }
+                var activeProjectId by remember { mutableStateOf("${System.currentTimeMillis()}") }
                 var activeCanvasWidth by remember { mutableStateOf(1280) }
                 var activeCanvasHeight by remember { mutableStateOf(1280) }
                 var activeInitialBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -30,7 +31,8 @@ class MainActivity : ComponentActivity() {
                 when (currentScreen) {
                     AppScreen.GALLERY -> {
                         GalleryScreen(
-                            onOpenCanvas = { width, height, bitmap ->
+                            onOpenCanvas = { id, width, height, bitmap ->
+                                activeProjectId = id
                                 activeCanvasWidth = width
                                 activeCanvasHeight = height
                                 activeInitialBitmap = bitmap
@@ -40,6 +42,7 @@ class MainActivity : ComponentActivity() {
                     }
                     AppScreen.EDITOR -> {
                         CanvasEditorScreen(
+                            projectId = activeProjectId,
                             canvasWidth = activeCanvasWidth,
                             canvasHeight = activeCanvasHeight,
                             initialBitmap = activeInitialBitmap,
