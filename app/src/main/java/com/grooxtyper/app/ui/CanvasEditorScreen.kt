@@ -1,0 +1,1073 @@
+package com.grooxtyper.app.ui
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Color as AndroidColor
+import android.graphics.Path
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Rule
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Colorize
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.FlipToBack
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.TextFields
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.ml.DetectedTextRegion
+import com.grooxtyper.app.ml.MLMaskType
+import com.grooxtyper.app.ml.MLTextDetector
+import com.grooxtyper.app.model.BrushEngine
+import com.grooxtyper.app.model.BrushType
+import com.grooxtyper.app.model.CanvasViewState
+import com.grooxtyper.app.model.DrawingLayer
+import com.grooxtyper.app.model.ExportFormat
+import com.grooxtyper.app.model.FileExportManager
+import com.grooxtyper.app.model.InpaintingManager
+import com.grooxtyper.app.model.LayerItem
+import com.grooxtyper.app.model.LayerManager
+import com.grooxtyper.app.model.ProjectManager
+import com.grooxtyper.app.model.RulerType
+import com.grooxtyper.app.model.SelectionEngine
+import com.grooxtyper.app.model.StackableTextConfig
+import com.grooxtyper.app.model.TextEngine
+import com.grooxtyper.app.model.TextItem
+import com.grooxtyper.app.model.TextLayer
+import com.grooxtyper.app.model.UndoRedoManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+enum class ActiveTool {
+    PAN,
+    BRUSH,
+    ERASER,
+    LASSO,
+    TEXT,
+    EYEDROPPER
+}
+
+@Composable
+fun CanvasEditorScreen(
+    projectId: String,
+    canvasWidth: Int,
+    canvasHeight: Int,
+    initialBitmap: Bitmap? = null,
+    onBackToGallery: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val projectManager = remember { ProjectManager(context) }
+    val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
+    val brushEngine = remember { BrushEngine() }
+    val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
+    val textEngine = remember { TextEngine() }
+    val inpaintingManager = remember { InpaintingManager() }
+    val mlTextDetector = remember { MLTextDetector() }
+    val undoRedoManager = remember { UndoRedoManager() }
+    val exportManager = remember { FileExportManager(context) }
+    val viewState = remember { CanvasViewState(canvasWidth, canvasHeight) }
+
+    var activeTool by remember { mutableStateOf(ActiveTool.BRUSH) }
+
+    var compositeBitmap by remember {
+        mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
+    }
+
+    var refreshCanvasState by remember { mutableIntStateOf(0) }
+    var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
+
+    fun refreshComposite() {
+        layerManager.renderComposite(compositeBitmap)
+        refreshCanvasState++
+    }
+
+    // Auto-Save background worker
+    LaunchedEffect(projectId) {
+        while (true) {
+            delay(15000L)
+            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+        }
+    }
+
+    // Populate initial bitmap if imported from gallery
+    LaunchedEffect(initialBitmap) {
+        initialBitmap?.let { bmp ->
+            layerManager.getActiveLayer()?.let { active ->
+                active.tileMap.importFromBitmap(bmp)
+                active.markDirty()
+                refreshComposite()
+            }
+        }
+    }
+
+    // Interactive Text Nodes
+    var selectedTextItem by remember { mutableStateOf<TextItem?>(null) }
+    var editingTextConfig by remember { mutableStateOf<StackableTextConfig?>(null) }
+
+    var showColorPicker by remember { mutableStateOf(false) }
+    var showLayersPanel by remember { mutableStateOf(false) }
+    var showBrushSettings by remember { mutableStateOf(false) }
+    var showTextPanel by remember { mutableStateOf(false) }
+    var showRulerDialog by remember { mutableStateOf(false) }
+    var showExportMenu by remember { mutableStateOf(false) }
+    var showLassoMenu by remember { mutableStateOf(false) }
+    var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Quick Side Slider Overlay State
+    var showQuickSlider by remember { mutableStateOf(true) }
+
+    // ML Kit & Inpainting Action State
+    var showMLInpaintDialog by remember { mutableStateOf(false) }
+    var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
+    var selectedMaskType by remember { mutableStateOf(MLMaskType.REFINED_TEXT) }
+
+    // Rename Layer Dialog
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameLayerTarget by remember { mutableStateOf<LayerItem?>(null) }
+    var newLayerNameText by remember { mutableStateOf("") }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            val inputStream = context.contentResolver.openInputStream(it)
+            val bmp = BitmapFactory.decodeStream(inputStream)
+            bmp?.let { loaded ->
+                referenceBitmap = loaded
+                val active = layerManager.getActiveLayer()
+                if (active != null) {
+                    active.tileMap.importFromBitmap(loaded)
+                    active.markDirty()
+                    refreshComposite()
+                }
+            }
+        }
+    }
+
+    // Convert Screen Touch Coordinates directly to Canvas Bitmap Space
+    fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
+        val centerX = viewportSize.width / 2f
+        val centerY = viewportSize.height / 2f
+        val canvasCenterX = canvasWidth / 2f
+        val canvasCenterY = canvasHeight / 2f
+
+        val relX = (screenX - centerX - viewState.offsetX) / viewState.scale
+        val relY = (screenY - centerY - viewState.offsetY) / viewState.scale
+
+        val rad = -Math.toRadians(viewState.rotation.toDouble())
+        val rx = relX * Math.cos(rad) - relY * Math.sin(rad)
+        val ry = relX * Math.sin(rad) + relY * Math.cos(rad)
+
+        return Offset((rx + canvasCenterX).toFloat(), (ry + canvasCenterY).toFloat())
+    }
+
+    var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
+    var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
+    var cursorPosition by remember { mutableStateOf<Offset?>(null) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFF121212))
+            .onSizeChanged { viewportSize = it }
+    ) {
+        // Canvas Container with Gesture Detector
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(activeTool, selectedTextItem, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val changes = event.changes
+                            val pointerCount = changes.size
+
+                            if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
+                                // Pan Tool mode or 2-finger gesture: Drag/Pan, Pinch Zoom, Rotate Canvas
+                                lastCanvasPoint = null
+                                cursorPosition = null
+                                var zoom = 1f
+                                var pan = Offset.Zero
+                                var rotation = 0f
+
+                                if (pointerCount >= 2) {
+                                    val p1 = changes[0]
+                                    val p2 = changes[1]
+
+                                    if (p1.pressed && p2.pressed) {
+                                        val prevP1 = p1.previousPosition
+                                        val prevP2 = p2.previousPosition
+                                        val curP1 = p1.position
+                                        val curP2 = p2.position
+
+                                        val prevCenter = (prevP1 + prevP2) / 2f
+                                        val curCenter = (curP1 + curP2) / 2f
+                                        pan = curCenter - prevCenter
+
+                                        val prevDist = (prevP1 - prevP2).getDistance()
+                                        val curDist = (curP1 - curP2).getDistance()
+                                        if (prevDist > 0f) zoom = curDist / prevDist
+
+                                        val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
+                                        val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
+                                        rotation = curAngle - prevAngle
+
+                                        viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
+                                        viewState.offsetX += pan.x
+                                        viewState.offsetY += pan.y
+                                        viewState.applyRotationDelta(rotation)
+
+                                        p1.consume()
+                                        p2.consume()
+                                    }
+                                } else if (pointerCount == 1 && activeTool == ActiveTool.PAN) {
+                                    val change = changes[0]
+                                    if (change.pressed) {
+                                        if (lastScreenPoint != null) {
+                                            val dragDelta = change.position - lastScreenPoint!!
+                                            viewState.offsetX += dragDelta.x
+                                            viewState.offsetY += dragDelta.y
+                                        }
+                                        lastScreenPoint = change.position
+                                        change.consume()
+                                    } else {
+                                        lastScreenPoint = null
+                                    }
+                                }
+                            } else if (pointerCount == 1) {
+                                val change = changes[0]
+                                if (change.pressed) {
+                                    cursorPosition = change.position
+                                    val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
+
+                                    if (activeTool == ActiveTool.TEXT) {
+                                        if (lastCanvasPoint == null) {
+                                            val allTextLayers = layerManager.layers.filterIsInstance<TextLayer>()
+                                            val hitLayer = allTextLayers.findLast { it.textItem.isHit(touchCanvasPos) }
+                                            if (hitLayer != null) {
+                                                selectedTextItem = hitLayer.textItem
+                                                editingTextConfig = hitLayer.textItem.config
+                                                layerManager.activeLayerId = hitLayer.id
+                                                showTextPanel = true
+                                            } else {
+                                                val newCfg = StackableTextConfig(textColor = brushEngine.color)
+                                                val newItem = TextItem(config = newCfg, position = touchCanvasPos)
+                                                layerManager.addTextLayer(newItem)
+                                                selectedTextItem = newItem
+                                                editingTextConfig = newCfg
+                                                showTextPanel = true
+                                                refreshComposite()
+                                            }
+                                        } else {
+                                            selectedTextItem?.let { item ->
+                                                val delta = touchCanvasPos - lastCanvasPoint!!
+                                                item.position = item.position + delta
+                                                refreshComposite()
+                                            }
+                                        }
+                                    } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
+                                        val activeLayer = layerManager.ensureDrawingLayer()
+                                        if (lastCanvasPoint == null) {
+                                            undoRedoManager.saveSnapshot(activeLayer)
+                                            brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos)
+                                        } else {
+                                            if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
+                                            brushEngine.strokeSegmentOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos)
+                                        }
+                                        refreshComposite()
+                                    }
+                                    lastCanvasPoint = touchCanvasPos
+                                    change.consume()
+                                } else {
+                                    lastCanvasPoint = null
+                                    cursorPosition = null
+                                }
+                            } else {
+                                lastCanvasPoint = null
+                                lastScreenPoint = null
+                                cursorPosition = null
+                            }
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            // Render Transform Canvas View
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(
+                        scaleX = viewState.scale,
+                        scaleY = viewState.scale,
+                        translationX = viewState.offsetX,
+                        translationY = viewState.offsetY,
+                        rotationZ = viewState.rotation
+                    )
+            ) {
+                // Read refresh state to trigger re-draw on stroke update
+                val trigger = refreshCanvasState
+
+                // Render Composite Layers Bitmap
+                drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
+
+                // Render Bounding Boxes for Text Layers
+                layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
+                    val item = textLayer.textItem
+                    if (item == selectedTextItem) {
+                        val bounds = item.getBounds()
+                        val boxPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f / viewState.scale
+                            color = android.graphics.Color.CYAN
+                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                        }
+                        drawContext.canvas.nativeCanvas.drawRect(bounds, boxPaint)
+
+                        // Render Resize Handle
+                        val handlePaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.CYAN
+                        }
+                        drawContext.canvas.nativeCanvas.drawCircle(bounds.right, bounds.bottom, 12f / viewState.scale, handlePaint)
+                    }
+                }
+
+                if (selectionEngine.hasSelection) {
+                    val marchPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f
+                        color = android.graphics.Color.YELLOW
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                    }
+                    drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, marchPaint)
+                }
+            }
+
+            // Live Brush Cursor Overlay
+            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cursorRadius = (brushEngine.size * viewState.scale) / 2f
+                    drawCircle(
+                        color = if (activeTool == ActiveTool.ERASER) Color.Red else Color.White,
+                        radius = cursorRadius.coerceAtLeast(6f),
+                        center = cursorPosition!!,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                    )
+                }
+            }
+        }
+
+        // Quick Side Sliders (ibisPaint-style Size & Opacity quick controls)
+        if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xBB1E1E1E))
+                    .border(1.dp, Color(0xFF333333), RoundedCornerShape(16.dp))
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Size", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                    Slider(
+                        value = brushEngine.size,
+                        onValueChange = { brushEngine.size = it },
+                        valueRange = 1f..120f,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                rotationZ = 270f
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                            }
+                            .width(110.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Alpha", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                    Slider(
+                        value = brushEngine.opacity,
+                        onValueChange = { brushEngine.opacity = it },
+                        valueRange = 0.05f..1.0f,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                rotationZ = 270f
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                            }
+                            .width(110.dp)
+                    )
+                }
+            }
+        }
+
+        // Top Navigation Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+                .background(Color(0xFF1F1F1F))
+                .align(Alignment.TopCenter)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = {
+                projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+                onBackToGallery()
+            }) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+
+            IconButton(
+                onClick = {
+                    undoRedoManager.undo(layerManager)
+                    refreshComposite()
+                },
+                enabled = undoRedoManager.canUndo()
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", tint = if (undoRedoManager.canUndo()) Color.White else Color.DarkGray)
+            }
+
+            IconButton(
+                onClick = {
+                    undoRedoManager.redo(layerManager)
+                    refreshComposite()
+                },
+                enabled = undoRedoManager.canRedo()
+            ) {
+                Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo", tint = if (undoRedoManager.canRedo()) Color.White else Color.DarkGray)
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            IconButton(onClick = { showRulerDialog = true }) {
+                Icon(Icons.AutoMirrored.Filled.Rule, contentDescription = "Ruler Guides", tint = if (brushEngine.rulerGuide.type != RulerType.OFF) Color(0xFFFF9800) else Color.White)
+            }
+
+            IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
+                Icon(Icons.Default.Image, contentDescription = "Add Image", tint = Color.White)
+            }
+
+            IconButton(onClick = { showLayersPanel = true }) {
+                Icon(Icons.Default.Layers, contentDescription = "Layers Stack", tint = Color.White)
+            }
+
+            IconButton(onClick = { showExportMenu = true }) {
+                Icon(Icons.Default.Download, contentDescription = "Export Artwork", tint = Color.White)
+            }
+
+            DropdownMenu(
+                expanded = showExportMenu,
+                onDismissRequest = { showExportMenu = false }
+            ) {
+                ExportFormat.values().forEach { fmt ->
+                    DropdownMenuItem(
+                        text = { Text("Export as ${fmt.name}") },
+                        onClick = {
+                            showExportMenu = false
+                            exportManager.exportArtwork(layerManager, fmt)
+                        }
+                    )
+                }
+            }
+        }
+
+        // Floating Transform Handle for Selected Text Object
+        selectedTextItem?.let { item ->
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 60.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF2C2C2C))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Selected Text: ${item.config.text}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                IconButton(onClick = {
+                    editingTextConfig = item.config
+                    showTextPanel = true
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit Text", tint = Color(0xFFFF9800))
+                }
+                IconButton(onClick = {
+                    item.scale = (item.scale * 1.2f).coerceAtMost(5.0f)
+                    refreshComposite()
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.OpenInFull, contentDescription = "Resize Bigger", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    item.rotationAngle = (item.rotationAngle + 15f) % 360f
+                    refreshComposite()
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.RotateRight, contentDescription = "Rotate Text", tint = Color.White)
+                }
+                IconButton(onClick = {
+                    val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
+                    textLayer?.let { layerManager.deleteLayer(it.id) }
+                    selectedTextItem = null
+                    refreshComposite()
+                }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Delete Text", tint = Color.Red)
+                }
+            }
+        }
+
+        // Bottom Tool Dock
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+                .background(Color(0xFF1A1A1A))
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { activeTool = ActiveTool.PAN }) {
+                Icon(Icons.Default.PanTool, contentDescription = "Pan/Hand Tool", tint = if (activeTool == ActiveTool.PAN) Color(0xFFFF9800) else Color.White)
+            }
+
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF2C2C2C))
+                    .padding(2.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (activeTool == ActiveTool.BRUSH) Color(0xFFFF9800) else Color.Transparent)
+                        .clickable {
+                            activeTool = ActiveTool.BRUSH
+                            brushEngine.brushType = BrushType.FELT_TIP_PEN
+                            layerManager.ensureDrawingLayer()
+                            showBrushSettings = true
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Brush, contentDescription = "Brush", tint = if (activeTool == ActiveTool.BRUSH) Color.Black else Color.White, modifier = Modifier.size(18.dp))
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (activeTool == ActiveTool.ERASER) Color(0xFFFF9800) else Color.Transparent)
+                        .clickable {
+                            activeTool = ActiveTool.ERASER
+                            brushEngine.brushType = BrushType.ERASER
+                            layerManager.ensureDrawingLayer()
+                        }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = "Eraser", tint = if (activeTool == ActiveTool.ERASER) Color.Black else Color.White, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            IconButton(onClick = { activeTool = ActiveTool.EYEDROPPER }) {
+                Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Color(0xFFFF9800) else Color.White)
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color(brushEngine.color))
+                    .border(2.dp, Color.White, CircleShape)
+                    .clickable { showColorPicker = true }
+            )
+
+            IconButton(onClick = { activeTool = ActiveTool.LASSO; showLassoMenu = true }) {
+                Icon(Icons.Default.SelectAll, contentDescription = "Lasso", tint = if (activeTool == ActiveTool.LASSO) Color(0xFFFF9800) else Color.White)
+            }
+
+            DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
+                DropdownMenuItem(text = { Text("Clear Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.clearSelectedArea(it); refreshComposite() }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Invert Selection") }, onClick = {
+                    selectionEngine.invertSelection(); refreshComposite(); showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Copy Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.copySelectedArea(it) }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Cut Area") }, onClick = {
+                    layerManager.getActiveLayer()?.let { selectionEngine.cutSelectedArea(it); refreshComposite() }
+                    showLassoMenu = false
+                })
+                DropdownMenuItem(text = { Text("Paste Area") }, onClick = {
+                    selectionEngine.pasteToNewLayer(layerManager); refreshComposite(); showLassoMenu = false
+                })
+            }
+
+            IconButton(onClick = { activeTool = ActiveTool.TEXT; showTextPanel = true }) {
+                Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Color(0xFFFF9800) else Color.White)
+            }
+
+            IconButton(
+                onClick = {
+                    scope.launch {
+                        val active = layerManager.getActiveLayer()
+                        if (active != null) {
+                            detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap())
+                            showMLInpaintDialog = true
+                        }
+                    }
+                }
+            ) {
+                Icon(Icons.Default.AutoFixHigh, contentDescription = "Inpaint ML", tint = Color.White)
+            }
+
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF2C2C2C))
+                    .clickable { showLayersPanel = true }
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Layers, contentDescription = "Layers", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("${layerManager.layers.size}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+        }
+
+        // Floating Reference Window
+        ReferenceWindow(
+            referenceBitmap = referenceBitmap,
+            onClose = { referenceBitmap = null }
+        )
+
+        // Color Picker Dialog
+        if (showColorPicker) {
+            ColorPickerDialog(
+                initialColor = brushEngine.color,
+                onColorSelected = { brushEngine.color = it },
+                onDismiss = { showColorPicker = false }
+            )
+        }
+
+        // Ruler Guides Dialog
+        if (showRulerDialog) {
+            AlertDialog(
+                onDismissRequest = { showRulerDialog = false },
+                title = { Text("Ruler Guides", color = Color.White) },
+                text = {
+                    Column {
+                        RulerType.values().forEach { r ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        brushEngine.rulerGuide.type = r
+                                        showRulerDialog = false
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(r.name.replace("_", " "), color = if (brushEngine.rulerGuide.type == r) Color(0xFFFF9800) else Color.White, modifier = Modifier.weight(1f))
+                                if (brushEngine.rulerGuide.type == r) {
+                                    Icon(Icons.Default.Check, contentDescription = null, tint = Color(0xFFFF9800))
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showRulerDialog = false }) { Text("Close", color = Color.Gray) } },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Brush Drawer Panel
+        if (showBrushSettings) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+            ) {
+                BrushDrawerPanel(
+                    brushEngine = brushEngine,
+                    onClose = { showBrushSettings = false }
+                )
+            }
+        }
+
+        // Redesigned Text Panel Drawer
+        if (showTextPanel) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+            ) {
+                TextPanel(
+                    initialConfig = editingTextConfig ?: StackableTextConfig(textColor = brushEngine.color),
+                    onConfirm = { updatedConfig ->
+                        val item = selectedTextItem
+                        if (item != null) {
+                            item.config = updatedConfig
+                            val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
+                            textLayer?.name = "Text: ${updatedConfig.text}"
+                        } else {
+                            val newItem = TextItem(config = updatedConfig, position = Offset(canvasWidth / 4f, canvasHeight / 3f))
+                            layerManager.addTextLayer(newItem)
+                            selectedTextItem = newItem
+                        }
+                        refreshComposite()
+                        showTextPanel = false
+                    },
+                    onClose = { showTextPanel = false }
+                )
+            }
+        }
+
+        // ML Kit Text Detection & Telea Inpaint Modal
+        if (showMLInpaintDialog) {
+            AlertDialog(
+                onDismissRequest = { showMLInpaintDialog = false },
+                title = { Text("ML Kit Text Detection", color = Color.White) },
+                text = {
+                    Column {
+                        Text("Detected ${detectedTextRegions.size} text blocks.", color = Color.LightGray, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("Inpainting Mask Mode:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            Button(
+                                onClick = { selectedMaskType = MLMaskType.REFINED_TEXT },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.REFINED_TEXT) Color(0xFFFF9800) else Color(0xFF383838))
+                            ) {
+                                Text("Refined Contour", color = if (selectedMaskType == MLMaskType.REFINED_TEXT) Color.Black else Color.White, fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = { selectedMaskType = MLMaskType.BOUNDING_BOX },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.BOUNDING_BOX) Color(0xFFFF9800) else Color(0xFF383838))
+                            ) {
+                                Text("Bounding Box", color = if (selectedMaskType == MLMaskType.BOUNDING_BOX) Color.Black else Color.White, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                val active = layerManager.getActiveLayer()
+                                if (active != null && detectedTextRegions.isNotEmpty()) {
+                                    val mask = mlTextDetector.generateMaskBitmap(
+                                        canvasWidth,
+                                        canvasHeight,
+                                        detectedTextRegions,
+                                        active.getBitmap(),
+                                        selectedMaskType
+                                    )
+                                    withContext(Dispatchers.Default) {
+                                        inpaintingManager.inpaintLayerArea(active, mask)
+                                    }
+                                    refreshComposite()
+                                }
+                                showMLInpaintDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Inpaint with Telea C++", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMLInpaintDialog = false }) { Text("Cancel", color = Color.Gray) }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Layer Manager Panel Modal
+        if (showLayersPanel) {
+            AlertDialog(
+                onDismissRequest = { showLayersPanel = false },
+                title = { Text("Layers Stack", color = Color.White) },
+                text = {
+                    Column(modifier = Modifier.height(340.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Button(
+                                onClick = { layerManager.addLayer(); refreshComposite() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black)
+                                Text("New Drawing Layer", color = Color.Black, fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    val activeId = layerManager.activeLayerId
+                                    if (activeId.isNotEmpty()) {
+                                        layerManager.deleteLayer(activeId)
+                                        refreshComposite()
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = null, tint = Color.White)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        LazyColumn(modifier = Modifier.weight(1f)) {
+                            items(layerManager.layers) { layerItem ->
+                                val isSelected = layerItem.id == layerManager.activeLayerId
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                        .clickable {
+                                            layerManager.activeLayerId = layerItem.id
+                                            if (layerItem is TextLayer) {
+                                                selectedTextItem = layerItem.textItem
+                                            }
+                                        },
+                                    colors = CardDefaults.cardColors(containerColor = if (isSelected) Color(0xFF383838) else Color(0xFF222222))
+                                ) {
+                                    Column(modifier = Modifier.padding(8.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            if (layerItem is TextLayer) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(Color(0xFFFF9800))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("TEXT", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                }
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                            }
+                                            Text(layerItem.name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+
+                                            if (layerItem is TextLayer) {
+                                                IconButton(
+                                                    onClick = {
+                                                        selectedTextItem = layerItem.textItem
+                                                        editingTextConfig = layerItem.textItem.config
+                                                        showTextPanel = true
+                                                    },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Text", tint = Color(0xFFFF9800), modifier = Modifier.size(16.dp))
+                                                }
+                                            }
+
+                                            IconButton(
+                                                onClick = {
+                                                    renameLayerTarget = layerItem
+                                                    newLayerNameText = layerItem.name
+                                                    showRenameDialog = true
+                                                },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.Default.Edit, contentDescription = "Rename", tint = Color.LightGray, modifier = Modifier.size(16.dp))
+                                            }
+
+                                            IconButton(
+                                                onClick = {
+                                                    layerItem.isVisible = !layerItem.isVisible
+                                                    refreshComposite()
+                                                },
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(
+                                                    if (layerItem.isVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                    contentDescription = "Visibility",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+
+                                        if (layerItem is DrawingLayer) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                IconButton(
+                                                    onClick = {
+                                                        layerItem.isAlphaLocked = !layerItem.isAlphaLocked
+                                                        refreshComposite()
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        if (layerItem.isAlphaLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                                                        contentDescription = "Alpha Lock",
+                                                        tint = if (layerItem.isAlphaLocked) Color(0xFFFF9800) else Color.Gray,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.width(8.dp))
+
+                                                IconButton(
+                                                    onClick = {
+                                                        layerItem.isClippingMask = !layerItem.isClippingMask
+                                                        refreshComposite()
+                                                    },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.FlipToBack,
+                                                        contentDescription = "Clipping Mask",
+                                                        tint = if (layerItem.isClippingMask) Color(0xFFFF9800) else Color.Gray,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                }
+
+                                                Spacer(modifier = Modifier.weight(1f))
+
+                                                IconButton(
+                                                    onClick = { layerItem.flipHorizontal(); refreshComposite() },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Flip, contentDescription = "Flip H", tint = Color.White, modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = { showLayersPanel = false }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))) {
+                        Text("Done", color = Color.Black)
+                    }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Rename Layer Dialog
+        if (showRenameDialog && renameLayerTarget != null) {
+            AlertDialog(
+                onDismissRequest = { showRenameDialog = false },
+                title = { Text("Rename Layer", color = Color.White) },
+                text = {
+                    OutlinedTextField(
+                        value = newLayerNameText,
+                        onValueChange = { newLayerNameText = it },
+                        label = { Text("Layer Name") }
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            renameLayerTarget?.name = newLayerNameText
+                            showRenameDialog = false
+                            refreshComposite()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Save", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) { Text("Cancel", color = Color.Gray) }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+    }
+}
