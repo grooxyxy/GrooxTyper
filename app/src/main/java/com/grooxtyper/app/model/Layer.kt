@@ -112,7 +112,26 @@ class LayerManager(val width: Int, val height: Int) {
             }
             return null
         }
-        return findLayer(layers)
+        val active = findLayer(layers)
+        if (active != null) return active
+
+        // Fallback: If activeLayerId is a TextLayer, find the first available DrawingLayer
+        for (item in layers) {
+            if (item is DrawingLayer) {
+                activeLayerId = item.id
+                return item
+            }
+        }
+        return null
+    }
+
+    fun ensureDrawingLayer(): DrawingLayer {
+        val current = getActiveLayer()
+        if (current != null) return current
+        val newLayer = DrawingLayer(width, height, "Layer ${layers.size + 1}")
+        layers.add(0, newLayer)
+        activeLayerId = newLayer.id
+        return newLayer
     }
 
     fun addLayer(name: String = "Layer ${layers.size + 1}"): DrawingLayer {

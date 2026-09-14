@@ -77,7 +77,7 @@ class TextItem(
         }
         val fm = paint.fontMetrics
         val h = (fm.descent - fm.ascent) * config.lineSpacingMultiplier * lines.size
-        val padding = (config.outlineWidth + config.shadowRadius + 24f) * scale
+        val padding = (config.outlineWidth + config.shadowRadius + 32f) * scale
         return RectF(
             position.x - padding,
             position.y + fm.ascent * scale - padding,
@@ -87,7 +87,16 @@ class TextItem(
     }
 
     fun isHit(p: Offset): Boolean {
-        return getBounds().contains(p.x, p.y)
+        if (rotationAngle == 0f) {
+            return getBounds().contains(p.x, p.y)
+        }
+        // Apply inverse rotation transform to test point against local axis-aligned bounds
+        val dx = p.x - position.x
+        val dy = p.y - position.y
+        val rad = -Math.toRadians(rotationAngle.toDouble())
+        val rx = (dx * Math.cos(rad) - dy * Math.sin(rad)).toFloat() + position.x
+        val ry = (dx * Math.sin(rad) + dy * Math.cos(rad)).toFloat() + position.y
+        return getBounds().contains(rx, ry)
     }
 }
 

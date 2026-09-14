@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,14 +41,12 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
-import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PanTool
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
@@ -63,6 +62,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -70,7 +71,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -80,6 +80,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -151,12 +152,12 @@ fun CanvasEditorScreen(
         mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
     }
 
-    var refreshCanvasTrigger by remember { mutableIntStateOf(0) }
+    var refreshCanvasState by remember { mutableIntStateOf(0) }
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
-        refreshCanvasTrigger++
+        refreshCanvasState++
     }
 
     // Auto-Save background worker
@@ -196,6 +197,9 @@ fun CanvasEditorScreen(
     var showExportMenu by remember { mutableStateOf(false) }
     var showLassoMenu by remember { mutableStateOf(false) }
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // Quick Side Slider Overlay State
+    var showQuickSlider by remember { mutableStateOf(true) }
 
     // ML Kit & Inpainting Action State
     var showMLInpaintDialog by remember { mutableStateOf(false) }
@@ -244,6 +248,7 @@ fun CanvasEditorScreen(
 
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
     var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
+    var cursorPosition by remember { mutableStateOf<Offset?>(null) }
 
     Box(
         modifier = Modifier
@@ -265,6 +270,7 @@ fun CanvasEditorScreen(
                             if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
                                 // Pan Tool mode or 2-finger gesture: Drag/Pan, Pinch Zoom, Rotate Canvas
                                 lastCanvasPoint = null
+                                cursorPosition = null
                                 var zoom = 1f
                                 var pan = Offset.Zero
                                 var rotation = 0f
@@ -316,6 +322,7 @@ fun CanvasEditorScreen(
                             } else if (pointerCount == 1) {
                                 val change = changes[0]
                                 if (change.pressed) {
+                                    cursorPosition = change.position
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
                                     if (activeTool == ActiveTool.TEXT) {
@@ -326,10 +333,11 @@ fun CanvasEditorScreen(
                                                 selectedTextItem = hitLayer.textItem
                                                 editingTextConfig = hitLayer.textItem.config
                                                 layerManager.activeLayerId = hitLayer.id
+                                                showTextPanel = true
                                             } else {
                                                 val newCfg = StackableTextConfig(textColor = brushEngine.color)
                                                 val newItem = TextItem(config = newCfg, position = touchCanvasPos)
-                                                val newTextLayer = layerManager.addTextLayer(newItem)
+                                                layerManager.addTextLayer(newItem)
                                                 selectedTextItem = newItem
                                                 editingTextConfig = newCfg
                                                 showTextPanel = true
@@ -343,26 +351,26 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        val activeLayer = layerManager.getActiveLayer()
-                                        if (activeLayer != null) {
-                                            if (lastCanvasPoint == null) {
-                                                undoRedoManager.saveSnapshot(activeLayer)
-                                                brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos)
-                                            } else {
-                                                if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
-                                                brushEngine.strokeSegmentOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos)
-                                            }
-                                            refreshComposite()
+                                        val activeLayer = layerManager.ensureDrawingLayer()
+                                        if (lastCanvasPoint == null) {
+                                            undoRedoManager.saveSnapshot(activeLayer)
+                                            brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos)
+                                        } else {
+                                            if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
+                                            brushEngine.strokeSegmentOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos)
                                         }
+                                        refreshComposite()
                                     }
                                     lastCanvasPoint = touchCanvasPos
                                     change.consume()
                                 } else {
                                     lastCanvasPoint = null
+                                    cursorPosition = null
                                 }
                             } else {
                                 lastCanvasPoint = null
                                 lastScreenPoint = null
+                                cursorPosition = null
                             }
                         }
                     }
@@ -381,6 +389,9 @@ fun CanvasEditorScreen(
                         rotationZ = viewState.rotation
                     )
             ) {
+                // Read refresh state to trigger re-draw on stroke update
+                val trigger = refreshCanvasState
+
                 // Render Composite Layers Bitmap
                 drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
 
@@ -414,6 +425,64 @@ fun CanvasEditorScreen(
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
                     }
                     drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, marchPaint)
+                }
+            }
+
+            // Live Brush Cursor Overlay
+            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cursorRadius = (brushEngine.size * viewState.scale) / 2f
+                    drawCircle(
+                        color = if (activeTool == ActiveTool.ERASER) Color.Red else Color.White,
+                        radius = cursorRadius.coerceAtLeast(6f),
+                        center = cursorPosition!!,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                    )
+                }
+            }
+        }
+
+        // Quick Side Sliders (ibisPaint-style Size & Opacity quick controls)
+        if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .padding(start = 8.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xBB1E1E1E))
+                    .border(1.dp, Color(0xFF333333), RoundedCornerShape(16.dp))
+                    .padding(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Size", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                    Slider(
+                        value = brushEngine.size,
+                        onValueChange = { brushEngine.size = it },
+                        valueRange = 1f..120f,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                rotationZ = 270f
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                            }
+                            .width(110.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Alpha", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                Box(modifier = Modifier.height(110.dp).width(30.dp)) {
+                    Slider(
+                        value = brushEngine.opacity,
+                        onValueChange = { brushEngine.opacity = it },
+                        valueRange = 0.05f..1.0f,
+                        modifier = Modifier
+                            .graphicsLayer {
+                                rotationZ = 270f
+                                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                            }
+                            .width(110.dp)
+                    )
                 }
             }
         }
@@ -464,6 +533,10 @@ fun CanvasEditorScreen(
 
             IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
                 Icon(Icons.Default.Image, contentDescription = "Add Image", tint = Color.White)
+            }
+
+            IconButton(onClick = { showLayersPanel = true }) {
+                Icon(Icons.Default.Layers, contentDescription = "Layers Stack", tint = Color.White)
             }
 
             IconButton(onClick = { showExportMenu = true }) {
@@ -556,6 +629,7 @@ fun CanvasEditorScreen(
                         .clickable {
                             activeTool = ActiveTool.BRUSH
                             brushEngine.brushType = BrushType.FELT_TIP_PEN
+                            layerManager.ensureDrawingLayer()
                             showBrushSettings = true
                         }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
@@ -569,6 +643,7 @@ fun CanvasEditorScreen(
                         .clickable {
                             activeTool = ActiveTool.ERASER
                             brushEngine.brushType = BrushType.ERASER
+                            layerManager.ensureDrawingLayer()
                         }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                 ) {
@@ -640,7 +715,7 @@ fun CanvasEditorScreen(
                     .padding(horizontal = 8.dp, vertical = 6.dp)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Layers, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Layers, contentDescription = "Layers", tint = Color.White, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("${layerManager.layers.size}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
@@ -865,6 +940,19 @@ fun CanvasEditorScreen(
                                                 Spacer(modifier = Modifier.width(6.dp))
                                             }
                                             Text(layerItem.name, color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+
+                                            if (layerItem is TextLayer) {
+                                                IconButton(
+                                                    onClick = {
+                                                        selectedTextItem = layerItem.textItem
+                                                        editingTextConfig = layerItem.textItem.config
+                                                        showTextPanel = true
+                                                    },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(Icons.Default.Edit, contentDescription = "Edit Text", tint = Color(0xFFFF9800), modifier = Modifier.size(16.dp))
+                                                }
+                                            }
 
                                             IconButton(
                                                 onClick = {
