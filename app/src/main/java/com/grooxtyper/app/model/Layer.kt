@@ -45,43 +45,47 @@ class DrawingLayer(
 
     val tileMap = LayerTileMap(width, height)
     var compositeBitmap: Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    private var isBitmapDirty = true
+
+    fun getPersistentBitmap(): Bitmap {
+        return compositeBitmap
+    }
 
     fun getBitmap(): Bitmap {
-        if (isBitmapDirty) {
-            tileMap.renderToCompositeBitmap(compositeBitmap)
-            isBitmapDirty = false
-        }
         return compositeBitmap
     }
 
     fun markDirty() {
-        isBitmapDirty = true
+        // Bitmap updated directly
     }
 
     fun clear() {
         tileMap.clear()
-        markDirty()
+        val canvas = Canvas(compositeBitmap)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
     }
 
     fun flipHorizontal() {
-        val current = getBitmap().copy(Bitmap.Config.ARGB_8888, true)
+        val current = compositeBitmap.copy(Bitmap.Config.ARGB_8888, true)
         val matrix = android.graphics.Matrix().apply {
             postScale(-1f, 1f, width / 2f, height / 2f)
         }
         val flipped = Bitmap.createBitmap(current, 0, 0, width, height, matrix, true)
-        tileMap.importFromBitmap(flipped)
-        markDirty()
+        val canvas = Canvas(compositeBitmap)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        canvas.drawBitmap(flipped, 0f, 0f, null)
+        tileMap.importFromBitmap(compositeBitmap)
     }
 
     fun flipVertical() {
-        val current = getBitmap().copy(Bitmap.Config.ARGB_8888, true)
+        val current = compositeBitmap.copy(Bitmap.Config.ARGB_8888, true)
         val matrix = android.graphics.Matrix().apply {
             postScale(1f, -1f, width / 2f, height / 2f)
         }
         val flipped = Bitmap.createBitmap(current, 0, 0, width, height, matrix, true)
-        tileMap.importFromBitmap(flipped)
-        markDirty()
+        val canvas = Canvas(compositeBitmap)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        canvas.drawBitmap(flipped, 0f, 0f, null)
+        tileMap.importFromBitmap(compositeBitmap)
     }
 }
 

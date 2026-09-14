@@ -100,12 +100,12 @@ class BrushEngine {
         return paint
     }
 
-    // Fast incremental stroke for zero drag lag
+    // Fast incremental stroke segment drawn permanently onto layer bitmap and tile map
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f) {
         val sp1 = rulerGuide.snapPoint(p1)
         val sp2 = rulerGuide.snapPoint(p2)
 
-        val bmp = layer.getBitmap()
+        val bmp = layer.getPersistentBitmap()
         val canvas = Canvas(bmp)
 
         if (brushType == BrushType.BLUR) {
@@ -113,7 +113,6 @@ class BrushEngine {
             path.moveTo(sp1.x, sp1.y)
             path.lineTo(sp2.x, sp2.y)
             applyBlurStroke(layer, path)
-            layer.markDirty()
             return
         }
 
@@ -136,11 +135,11 @@ class BrushEngine {
         }
 
         canvas.drawLine(sp1.x, sp1.y, sp2.x, sp2.y, paint)
-        layer.markDirty()
+        layer.tileMap.importFromBitmap(bmp)
     }
 
     private fun applyBlurStroke(layer: DrawingLayer, path: Path) {
-        val bmp = layer.getBitmap()
+        val bmp = layer.getPersistentBitmap()
         val blurred = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
         val blurCanvas = Canvas(blurred)
         val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -170,5 +169,6 @@ class BrushEngine {
             xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_OVER)
         }
         layerCanvas.drawBitmap(tempLayer, 0f, 0f, clipPaint)
+        layer.tileMap.importFromBitmap(bmp)
     }
 }

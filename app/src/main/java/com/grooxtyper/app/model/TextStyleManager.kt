@@ -28,11 +28,11 @@ class TextStyleManager(private val context: Context) {
                     textColor = Color.YELLOW,
                     hasOutline = true,
                     outlineColor = Color.BLACK,
-                    outlineWidth = 12f,
+                    outlineWidthPx = 12f,
                     hasShadow = true,
                     shadowColor = Color.BLACK,
-                    shadowDx = 8f,
-                    shadowDy = 8f
+                    shadowDxPx = 8f,
+                    shadowDyPx = 8f
                 )
             )
         )
@@ -46,7 +46,7 @@ class TextStyleManager(private val context: Context) {
                     textColor = Color.MAGENTA,
                     hasOutline = true,
                     outlineColor = Color.WHITE,
-                    outlineWidth = 6f,
+                    outlineWidthPx = 6f,
                     hasGradient = true,
                     gradientStartColor = Color.MAGENTA,
                     gradientEndColor = Color.CYAN

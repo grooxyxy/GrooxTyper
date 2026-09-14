@@ -18,40 +18,56 @@ class StackableTextConfig(
     var fontSize: Float = 56f,
     var textColor: Int = Color.WHITE,
 
-    // Outer Outline / Stroke Effect
+    // 1. Outer Stroke / Outline (px, color, opacity)
     var hasOutline: Boolean = true,
     var outlineColor: Int = Color.BLACK,
-    var outlineWidth: Float = 10f,
+    var outlineWidthPx: Float = 10f,
     var outlineOpacity: Float = 1.0f,
 
-    // Drop Shadow Effect (Photoshop-style)
+    // 2. Drop Shadow (px distance, px blur, opacity, color)
     var hasShadow: Boolean = true,
     var shadowColor: Int = Color.parseColor("#80000000"),
-    var shadowRadius: Float = 12f,
-    var shadowDx: Float = 6f,
-    var shadowDy: Float = 6f,
+    var shadowRadiusPx: Float = 12f,
+    var shadowDxPx: Float = 8f,
+    var shadowDyPx: Float = 8f,
     var shadowOpacity: Float = 0.8f,
 
-    // Inner Glow Effect
-    var hasInnerGlow: Boolean = false,
-    var innerGlowColor: Int = Color.YELLOW,
-    var innerGlowRadius: Float = 8f,
+    // 3. Inner Shadow (px distance, px size, opacity, color)
+    var hasInnerShadow: Boolean = false,
+    var innerShadowColor: Int = Color.BLACK,
+    var innerShadowDistancePx: Float = 6f,
+    var innerShadowSizePx: Float = 8f,
+    var innerShadowOpacity: Float = 0.7f,
 
-    // Gradient Fill Effect
+    // 4. Outer Glow (px radius, opacity, color)
+    var hasOuterGlow: Boolean = false,
+    var outerGlowColor: Int = Color.YELLOW,
+    var outerGlowRadiusPx: Float = 20f,
+    var outerGlowOpacity: Float = 0.9f,
+
+    // 5. Inner Glow (px spread size, opacity, color)
+    var hasInnerGlow: Boolean = false,
+    var innerGlowColor: Int = Color.CYAN,
+    var innerGlowSizePx: Float = 10f,
+    var innerGlowOpacity: Float = 0.8f,
+
+    // 6. Linear Gradient Overlay (start/end color, angle)
     var hasGradient: Boolean = false,
     var gradientStartColor: Int = Color.RED,
     var gradientEndColor: Int = Color.YELLOW,
 
-    // Text Box Background Banner
+    // 7. Background Banner Frame (px corner radius, px padding, color)
     var hasBackgroundBanner: Boolean = false,
     var backgroundColor: Int = Color.parseColor("#99000000"),
-    var backgroundCornerRadius: Float = 16f,
+    var backgroundCornerRadiusPx: Float = 16f,
+    var backgroundPaddingPx: Float = 20f,
 
-    // Spacing & Typography (Kerning & Leading)
+    // Spacing Metrics strictly in PX (Pixel)
+    var wordSpacingPx: Float = 0.0f,      // Spasi antar kata (px)
+    var letterSpacingPx: Float = 0.0f,    // Spasi antar huruf (px)
+    var lineSpacingPx: Float = 10.0f,     // Jarak spasi antar baris atas-bawah (px)
+
     var blurRadius: Float = 0f,
-    var letterSpacing: Float = 0.05f,
-    var wordSpacing: Float = 0.0f,
-    var lineSpacingMultiplier: Float = 1.2f,
     var fontName: String = "Default Bold",
     var typeface: Typeface = Typeface.DEFAULT_BOLD
 )
@@ -67,17 +83,16 @@ class TextItem(
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = config.fontSize * scale
             typeface = config.typeface
-            letterSpacing = config.letterSpacing
         }
         val lines = config.text.split("\n")
         var maxW = 0f
         for (line in lines) {
-            val w = paint.measureText(line) + (line.length * config.wordSpacing * scale)
+            val w = paint.measureText(line) + (line.length * (config.letterSpacingPx + config.wordSpacingPx) * scale)
             if (w > maxW) maxW = w
         }
         val fm = paint.fontMetrics
-        val h = (fm.descent - fm.ascent) * config.lineSpacingMultiplier * lines.size
-        val padding = (config.outlineWidth + config.shadowRadius + 32f) * scale
+        val h = ((fm.descent - fm.ascent) + config.lineSpacingPx) * lines.size * scale
+        val padding = (config.outlineWidthPx + config.shadowRadiusPx + config.outerGlowRadiusPx + 32f) * scale
         return RectF(
             position.x - padding,
             position.y + fm.ascent * scale - padding,
@@ -90,7 +105,6 @@ class TextItem(
         if (rotationAngle == 0f) {
             return getBounds().contains(p.x, p.y)
         }
-        // Apply inverse rotation transform to test point against local axis-aligned bounds
         val dx = p.x - position.x
         val dy = p.y - position.y
         val rad = -Math.toRadians(rotationAngle.toDouble())
@@ -154,33 +168,32 @@ class TextEngine {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = config.fontSize * scale
             typeface = config.typeface
-            letterSpacing = config.letterSpacing
         }
 
         val lines = config.text.split("\n")
         val fontMetrics = paint.fontMetrics
-        val baseLineHeight = (fontMetrics.descent - fontMetrics.ascent) * config.lineSpacingMultiplier
-        val lineHeight = baseLineHeight + (config.lineSpacingMultiplier * 10f * scale)
+        val baseLineHeight = (fontMetrics.descent - fontMetrics.ascent) * scale
+        val lineHeight = baseLineHeight + (config.lineSpacingPx * scale)
 
-        // Draw Background Banner if enabled
+        // Draw Photoshop Background Banner
         if (config.hasBackgroundBanner) {
             var maxW = 0f
             for (l in lines) {
-                val w = paint.measureText(l)
+                val w = paint.measureText(l) + (l.length * config.letterSpacingPx * scale)
                 if (w > maxW) maxW = w
             }
             val totalH = lineHeight * lines.size
             val bgRect = RectF(
-                position.x - 16f * scale,
-                position.y + fontMetrics.ascent * scale - 12f * scale,
-                position.x + maxW + 16f * scale,
-                position.y + totalH + 12f * scale
+                position.x - config.backgroundPaddingPx * scale,
+                position.y + fontMetrics.ascent * scale - (config.backgroundPaddingPx / 2f) * scale,
+                position.x + maxW + config.backgroundPaddingPx * scale,
+                position.y + totalH + (config.backgroundPaddingPx / 2f) * scale
             )
             val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = config.backgroundColor
                 style = Paint.Style.FILL
             }
-            canvas.drawRoundRect(bgRect, config.backgroundCornerRadius * scale, config.backgroundCornerRadius * scale, bgPaint)
+            canvas.drawRoundRect(bgRect, config.backgroundCornerRadiusPx * scale, config.backgroundCornerRadiusPx * scale, bgPaint)
         }
 
         var currentY = position.y
@@ -188,28 +201,40 @@ class TextEngine {
         for (line in lines) {
             val words = line.split(" ")
             var currentX = position.x
-            val spaceWidth = paint.measureText(" ") + (config.wordSpacing * scale)
+            val spaceWidth = paint.measureText(" ") + (config.wordSpacingPx * scale)
 
             for (i in words.indices) {
                 val word = words[i]
 
-                // Drop Shadow Effect
+                // Outer Glow Effect
+                if (config.hasOuterGlow) {
+                    val glowPaint = Paint(paint).apply {
+                        color = config.outerGlowColor
+                        alpha = (config.outerGlowOpacity * 255).toInt().coerceIn(0, 255)
+                        if (config.outerGlowRadiusPx > 0f) {
+                            maskFilter = BlurMaskFilter(config.outerGlowRadiusPx * scale, BlurMaskFilter.Blur.OUTER)
+                        }
+                    }
+                    canvas.drawText(word, currentX, currentY, glowPaint)
+                }
+
+                // Photoshop Drop Shadow Effect
                 if (config.hasShadow) {
                     val shadowPaint = Paint(paint).apply {
                         color = config.shadowColor
                         alpha = (config.shadowOpacity * 255).toInt().coerceIn(0, 255)
-                        if (config.shadowRadius > 0f) {
-                            maskFilter = BlurMaskFilter(config.shadowRadius * scale, BlurMaskFilter.Blur.NORMAL)
+                        if (config.shadowRadiusPx > 0f) {
+                            maskFilter = BlurMaskFilter(config.shadowRadiusPx * scale, BlurMaskFilter.Blur.NORMAL)
                         }
                     }
-                    canvas.drawText(word, currentX + config.shadowDx * scale, currentY + config.shadowDy * scale, shadowPaint)
+                    canvas.drawText(word, currentX + config.shadowDxPx * scale, currentY + config.shadowDyPx * scale, shadowPaint)
                 }
 
-                // Outer Outline Effect
+                // Outer Stroke / Outline Effect
                 if (config.hasOutline) {
                     val outlinePaint = Paint(paint).apply {
                         style = Paint.Style.STROKE
-                        strokeWidth = config.outlineWidth * scale
+                        strokeWidth = config.outlineWidthPx * scale
                         color = config.outlineColor
                         alpha = (config.outlineOpacity * 255).toInt().coerceIn(0, 255)
                         strokeCap = Paint.Cap.ROUND
@@ -218,7 +243,7 @@ class TextEngine {
                     canvas.drawText(word, currentX, currentY, outlinePaint)
                 }
 
-                // Fill Text
+                // Main Color & Gradient Fill
                 val fillPaint = Paint(paint).apply {
                     style = Paint.Style.FILL
                     color = config.textColor
@@ -236,6 +261,18 @@ class TextEngine {
                 }
                 canvas.drawText(word, currentX, currentY, fillPaint)
 
+                // Inner Glow Effect
+                if (config.hasInnerGlow) {
+                    val innerGlowPaint = Paint(paint).apply {
+                        color = config.innerGlowColor
+                        alpha = (config.innerGlowOpacity * 255).toInt().coerceIn(0, 255)
+                        if (config.innerGlowSizePx > 0f) {
+                            maskFilter = BlurMaskFilter(config.innerGlowSizePx * scale, BlurMaskFilter.Blur.INNER)
+                        }
+                    }
+                    canvas.drawText(word, currentX, currentY, innerGlowPaint)
+                }
+
                 currentX += paint.measureText(word) + spaceWidth
             }
 
@@ -249,10 +286,9 @@ class TextEngine {
         val textBmp = Bitmap.createBitmap(layer.width, layer.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(textBmp)
         renderTextToCanvas(canvas, config, position, scale, rotationAngle)
-        val layerBmp = layer.getBitmap()
+        val layerBmp = layer.getPersistentBitmap()
         val layerCanvas = Canvas(layerBmp)
         layerCanvas.drawBitmap(textBmp, 0f, 0f, null)
         layer.tileMap.importFromBitmap(layerBmp)
-        layer.markDirty()
     }
 }

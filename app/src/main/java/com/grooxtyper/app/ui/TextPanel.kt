@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Palette
@@ -66,6 +67,8 @@ enum class ColorPickerTarget {
     TEXT_COLOR,
     OUTLINE_COLOR,
     SHADOW_COLOR,
+    OUTER_GLOW_COLOR,
+    INNER_GLOW_COLOR,
     GRADIENT_START,
     GRADIENT_END,
     BG_COLOR
@@ -85,39 +88,49 @@ fun TextPanel(
     var fontSizeVal by remember { mutableFloatStateOf(initialConfig.fontSize) }
     var textColorVal by remember { mutableIntStateOf(initialConfig.textColor) }
 
-    // Outer Stroke/Outline
+    // 1. Outer Stroke / Outline (px)
     var enableOutline by remember { mutableStateOf(initialConfig.hasOutline) }
     var outlineColorVal by remember { mutableIntStateOf(initialConfig.outlineColor) }
-    var outlineWidthVal by remember { mutableFloatStateOf(initialConfig.outlineWidth) }
-    var outlineOpacityVal by remember { mutableFloatStateOf(initialConfig.outlineOpacity) }
+    var outlineWidthPx by remember { mutableFloatStateOf(initialConfig.outlineWidthPx) }
 
-    // Drop Shadow
+    // 2. Drop Shadow (px distance, px blur)
     var enableShadow by remember { mutableStateOf(initialConfig.hasShadow) }
     var shadowColorVal by remember { mutableIntStateOf(initialConfig.shadowColor) }
-    var shadowDxVal by remember { mutableFloatStateOf(initialConfig.shadowDx) }
-    var shadowDyVal by remember { mutableFloatStateOf(initialConfig.shadowDy) }
-    var shadowBlurVal by remember { mutableFloatStateOf(initialConfig.shadowRadius) }
-    var shadowOpacityVal by remember { mutableFloatStateOf(initialConfig.shadowOpacity) }
+    var shadowDxPx by remember { mutableFloatStateOf(initialConfig.shadowDxPx) }
+    var shadowDyPx by remember { mutableFloatStateOf(initialConfig.shadowDyPx) }
+    var shadowRadiusPx by remember { mutableFloatStateOf(initialConfig.shadowRadiusPx) }
 
-    // Gradient Fill
+    // 3. Outer Glow (px radius)
+    var enableOuterGlow by remember { mutableStateOf(initialConfig.hasOuterGlow) }
+    var outerGlowColorVal by remember { mutableIntStateOf(initialConfig.outerGlowColor) }
+    var outerGlowRadiusPx by remember { mutableFloatStateOf(initialConfig.outerGlowRadiusPx) }
+
+    // 4. Inner Glow (px size)
+    var enableInnerGlow by remember { mutableStateOf(initialConfig.hasInnerGlow) }
+    var innerGlowColorVal by remember { mutableIntStateOf(initialConfig.innerGlowColor) }
+    var innerGlowSizePx by remember { mutableFloatStateOf(initialConfig.innerGlowSizePx) }
+
+    // 5. Gradient Fill
     var enableGradient by remember { mutableStateOf(initialConfig.hasGradient) }
     var gradStartColorVal by remember { mutableIntStateOf(initialConfig.gradientStartColor) }
     var gradEndColorVal by remember { mutableIntStateOf(initialConfig.gradientEndColor) }
 
-    // Background Banner
+    // 6. Background Banner (px corner, px padding)
     var enableBgBanner by remember { mutableStateOf(initialConfig.hasBackgroundBanner) }
     var bgColorVal by remember { mutableIntStateOf(initialConfig.backgroundColor) }
-    var bgCornerRadiusVal by remember { mutableFloatStateOf(initialConfig.backgroundCornerRadius) }
+    var bgCornerRadiusPx by remember { mutableFloatStateOf(initialConfig.backgroundCornerRadiusPx) }
+    var bgPaddingPx by remember { mutableFloatStateOf(initialConfig.backgroundPaddingPx) }
 
-    // Spacing
-    var wordSpacingVal by remember { mutableFloatStateOf(initialConfig.wordSpacing) }
-    var lineSpacingVal by remember { mutableFloatStateOf(initialConfig.lineSpacingMultiplier) }
-    var textBlurVal by remember { mutableFloatStateOf(initialConfig.blurRadius) }
+    // 7. Spacing Strictly in PX (Pixel Metrics)
+    var wordSpacingPx by remember { mutableFloatStateOf(initialConfig.wordSpacingPx) }
+    var letterSpacingPx by remember { mutableFloatStateOf(initialConfig.letterSpacingPx) }
+    var lineSpacingPx by remember { mutableFloatStateOf(initialConfig.lineSpacingPx) }
+
     var selectedTypeface by remember { mutableStateOf(initialConfig.typeface) }
     var selectedFontName by remember { mutableStateOf(initialConfig.fontName) }
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Text & Font", "Color & Spacing", "Stroke & Shadow", "Gradient & Banner")
+    val tabs = listOf("Text & Font", "Color & Spacing (px)", "Stroke & Shadow", "Glow & Gradient", "Banner & Presets")
 
     // Full Color Wheel State Integration
     var showWheelPicker by remember { mutableStateOf(false) }
@@ -144,7 +157,7 @@ fun TextPanel(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(450.dp)
+            .height(470.dp)
             .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
             .background(Color(0xFF1E1E1E))
             .border(1.dp, Color(0xFF333333), RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
@@ -157,7 +170,7 @@ fun TextPanel(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("GrooxTyper Text Panel Editor", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Photoshop Text Layer Styles Studio", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Row {
                     IconButton(onClick = onClose) {
                         Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color.LightGray)
@@ -170,23 +183,28 @@ fun TextPanel(
                                 textColor = textColorVal,
                                 hasOutline = enableOutline,
                                 outlineColor = outlineColorVal,
-                                outlineWidth = outlineWidthVal,
-                                outlineOpacity = outlineOpacityVal,
+                                outlineWidthPx = outlineWidthPx,
                                 hasShadow = enableShadow,
                                 shadowColor = shadowColorVal,
-                                shadowRadius = shadowBlurVal,
-                                shadowDx = shadowDxVal,
-                                shadowDy = shadowDyVal,
-                                shadowOpacity = shadowOpacityVal,
+                                shadowRadiusPx = shadowRadiusPx,
+                                shadowDxPx = shadowDxPx,
+                                shadowDyPx = shadowDyPx,
+                                hasOuterGlow = enableOuterGlow,
+                                outerGlowColor = outerGlowColorVal,
+                                outerGlowRadiusPx = outerGlowRadiusPx,
+                                hasInnerGlow = enableInnerGlow,
+                                innerGlowColor = innerGlowColorVal,
+                                innerGlowSizePx = innerGlowSizePx,
                                 hasGradient = enableGradient,
                                 gradientStartColor = gradStartColorVal,
                                 gradientEndColor = gradEndColorVal,
                                 hasBackgroundBanner = enableBgBanner,
                                 backgroundColor = bgColorVal,
-                                backgroundCornerRadius = bgCornerRadiusVal,
-                                blurRadius = textBlurVal,
-                                wordSpacing = wordSpacingVal,
-                                lineSpacingMultiplier = lineSpacingVal,
+                                backgroundCornerRadiusPx = bgCornerRadiusPx,
+                                backgroundPaddingPx = bgPaddingPx,
+                                wordSpacingPx = wordSpacingPx,
+                                letterSpacingPx = letterSpacingPx,
+                                lineSpacingPx = lineSpacingPx,
                                 fontName = selectedFontName,
                                 typeface = selectedTypeface
                             )
@@ -250,7 +268,7 @@ fun TextPanel(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Font Picker & Preview", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Font Picker & Live Preview", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Button(
                                 onClick = { fontPickerLauncher.launch(arrayOf("*/*")) },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333))
@@ -281,7 +299,6 @@ fun TextPanel(
                                     Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(name, color = if (isSelected) Color.Black else Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                         Spacer(modifier = Modifier.height(4.dp))
-                                        // Live Font Preview Box
                                         Box(
                                             modifier = Modifier
                                                 .size(width = 80.dp, height = 30.dp)
@@ -304,13 +321,13 @@ fun TextPanel(
                             }
                         }
                     }
-                    1 -> { // Color Wheel & Spacing (Kerning & Leading)
+                    1 -> { // Color Wheel & Pixel Precise Spacing (px)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Main Text Color", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Main Text Color (Color Overlay)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
@@ -330,24 +347,24 @@ fun TextPanel(
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
-                        Text("Word / Letter Spacing (${wordSpacingVal.toInt()} px)", color = Color.LightGray, fontSize = 12.sp)
+                        Text("Word & Letter Spacing (${wordSpacingPx.toInt()} px)", color = Color.LightGray, fontSize = 12.sp)
                         Slider(
-                            value = wordSpacingVal,
-                            onValueChange = { wordSpacingVal = it },
-                            valueRange = -10f..40f,
+                            value = wordSpacingPx,
+                            onValueChange = { wordSpacingPx = it },
+                            valueRange = -20f..100f,
                             colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
                         )
 
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Line Spacing Multiplier (${String.format("%.1f", lineSpacingVal)}x)", color = Color.LightGray, fontSize = 12.sp)
+                        Text("Line Spacing Atas-Bawah (${lineSpacingPx.toInt()} px)", color = Color.LightGray, fontSize = 12.sp)
                         Slider(
-                            value = lineSpacingVal,
-                            onValueChange = { lineSpacingVal = it },
-                            valueRange = 0.8f..3.0f,
+                            value = lineSpacingPx,
+                            onValueChange = { lineSpacingPx = it },
+                            valueRange = 0f..150f,
                             colors = SliderDefaults.colors(thumbColor = Color(0xFFFF9800), activeTrackColor = Color(0xFFFF9800))
                         )
                     }
-                    2 -> { // Photoshop-style Stroke & Drop Shadow
+                    2 -> { // Photoshop Stroke & Drop Shadow (px)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("Outer Stroke / Outline Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Switch(checked = enableOutline, onCheckedChange = { enableOutline = it })
@@ -366,8 +383,8 @@ fun TextPanel(
                                         }
                                 )
                             }
-                            Text("Stroke Width (${outlineWidthVal.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = outlineWidthVal, onValueChange = { outlineWidthVal = it }, valueRange = 1f..40f)
+                            Text("Stroke Width (${outlineWidthPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = outlineWidthPx, onValueChange = { outlineWidthPx = it }, valueRange = 1f..60f)
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -389,15 +406,38 @@ fun TextPanel(
                                         }
                                 )
                             }
-                            Text("Shadow Offset (${shadowDxVal.toInt()}px, ${shadowDyVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = shadowDxVal, onValueChange = { shadowDxVal = it; shadowDyVal = it }, valueRange = -30f..30f)
-                            Text("Shadow Blur Radius (${shadowBlurVal.toInt()}px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = shadowBlurVal, onValueChange = { shadowBlurVal = it }, valueRange = 1f..40f)
+                            Text("Shadow Distance (${shadowDxPx.toInt()} px, ${shadowDyPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = shadowDxPx, onValueChange = { shadowDxPx = it; shadowDyPx = it }, valueRange = -40f..40f)
+                            Text("Shadow Blur Radius (${shadowRadiusPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = shadowRadiusPx, onValueChange = { shadowRadiusPx = it }, valueRange = 1f..50f)
                         }
                     }
-                    3 -> { // Linear Gradient & Background Banner
+                    3 -> { // Glow & Gradient Overlay
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Linear Gradient Fill Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text("Outer Glow Effect", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Switch(checked = enableOuterGlow, onCheckedChange = { enableOuterGlow = it })
+                        }
+                        if (enableOuterGlow) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Glow Color", color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(outerGlowColorVal))
+                                        .clickable {
+                                            activeColorTarget = ColorPickerTarget.OUTER_GLOW_COLOR
+                                            showWheelPicker = true
+                                        }
+                                )
+                            }
+                            Text("Glow Size (${outerGlowRadiusPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = outerGlowRadiusPx, onValueChange = { outerGlowRadiusPx = it }, valueRange = 2f..60f)
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Linear Gradient Overlay", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Switch(checked = enableGradient, onCheckedChange = { enableGradient = it })
                         }
                         if (enableGradient) {
@@ -413,15 +453,55 @@ fun TextPanel(
                                 }) { Text("End Color", fontSize = 11.sp) }
                             }
                         }
+                    }
+                    4 -> { // Banner Frame & 1-Tap Photoshop Style Presets
+                        Text("Photoshop 1-Tap Style Presets", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Button(
+                                onClick = {
+                                    enableOutline = true
+                                    outlineColorVal = AndroidColor.BLACK
+                                    outlineWidthPx = 12f
+                                    enableShadow = true
+                                    shadowColorVal = AndroidColor.YELLOW
+                                    shadowRadiusPx = 20f
+                                    textColorVal = AndroidColor.CYAN
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333))
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.Yellow, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Cyberpunk", fontSize = 10.sp)
+                            }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                            Button(
+                                onClick = {
+                                    enableGradient = true
+                                    gradStartColorVal = AndroidColor.parseColor("#FFD700")
+                                    gradEndColorVal = AndroidColor.parseColor("#FFA500")
+                                    enableOutline = true
+                                    outlineColorVal = AndroidColor.parseColor("#8B4513")
+                                    outlineWidthPx = 10f
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333))
+                            ) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color.Yellow, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Gold Luxury", fontSize = 10.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Background Text Banner Fill", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text("Background Banner Frame Fill", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Switch(checked = enableBgBanner, onCheckedChange = { enableBgBanner = it })
                         }
                         if (enableBgBanner) {
-                            Text("Banner Corner Radius (${bgCornerRadiusVal.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
-                            Slider(value = bgCornerRadiusVal, onValueChange = { bgCornerRadiusVal = it }, valueRange = 0f..40f)
+                            Text("Corner Radius (${bgCornerRadiusPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = bgCornerRadiusPx, onValueChange = { bgCornerRadiusPx = it }, valueRange = 0f..50f)
+                            Text("Padding (${bgPaddingPx.toInt()} px)", color = Color.LightGray, fontSize = 11.sp)
+                            Slider(value = bgPaddingPx, onValueChange = { bgPaddingPx = it }, valueRange = 5f..60f)
                         }
                     }
                 }
@@ -435,6 +515,8 @@ fun TextPanel(
                 ColorPickerTarget.TEXT_COLOR -> textColorVal
                 ColorPickerTarget.OUTLINE_COLOR -> outlineColorVal
                 ColorPickerTarget.SHADOW_COLOR -> shadowColorVal
+                ColorPickerTarget.OUTER_GLOW_COLOR -> outerGlowColorVal
+                ColorPickerTarget.INNER_GLOW_COLOR -> innerGlowColorVal
                 ColorPickerTarget.GRADIENT_START -> gradStartColorVal
                 ColorPickerTarget.GRADIENT_END -> gradEndColorVal
                 ColorPickerTarget.BG_COLOR -> bgColorVal
@@ -444,6 +526,8 @@ fun TextPanel(
                     ColorPickerTarget.TEXT_COLOR -> textColorVal = col
                     ColorPickerTarget.OUTLINE_COLOR -> outlineColorVal = col
                     ColorPickerTarget.SHADOW_COLOR -> shadowColorVal = col
+                    ColorPickerTarget.OUTER_GLOW_COLOR -> outerGlowColorVal = col
+                    ColorPickerTarget.INNER_GLOW_COLOR -> innerGlowColorVal = col
                     ColorPickerTarget.GRADIENT_START -> gradStartColorVal = col
                     ColorPickerTarget.GRADIENT_END -> gradEndColorVal = col
                     ColorPickerTarget.BG_COLOR -> bgColorVal = col
