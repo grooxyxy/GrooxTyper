@@ -205,20 +205,50 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, rotation ->
-                        viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
-                        viewState.offsetX += pan.x
-                        viewState.offsetY += pan.y
-                        viewState.rotation += rotation
-                    }
-                }
                 .pointerInput(activeTool) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
-                            // Separation: Process 1-finger touches for drawing, ignore multi-touch
-                            if (event.changes.size == 1) {
+                            val pointerCount = event.changes.size
+
+                            if (pointerCount >= 2) {
+                                // Two-finger touches: Canvas transform (Pan, Zoom, Rotate) strictly
+                                previousTouchPoint = null
+                                var zoom = 1f
+                                var pan = Offset.Zero
+                                var rotation = 0f
+
+                                val change1 = event.changes[0]
+                                val change2 = event.changes[1]
+
+                                if (change1.pressed && change2.pressed) {
+                                    val prevP1 = change1.previousPosition
+                                    val prevP2 = change2.previousPosition
+                                    val curP1 = change1.position
+                                    val curP2 = change2.position
+
+                                    val prevCenter = (prevP1 + prevP2) / 2f
+                                    val curCenter = (curP1 + curP2) / 2f
+                                    pan = curCenter - prevCenter
+
+                                    val prevDist = (prevP1 - prevP2).getDistance()
+                                    val curDist = (curP1 - curP2).getDistance()
+                                    if (prevDist > 0f) zoom = curDist / prevDist
+
+                                    val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
+                                    val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
+                                    rotation = curAngle - prevAngle
+
+                                    viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
+                                    viewState.offsetX += pan.x
+                                    viewState.offsetY += pan.y
+                                    viewState.rotation += rotation
+
+                                    change1.consume()
+                                    change2.consume()
+                                }
+                            } else if (pointerCount == 1) {
+                                // One-finger touch: Brush / Eraser drawing exclusively
                                 val change = event.changes[0]
                                 if (change.pressed) {
                                     val canvasOffset = viewState.windowToCanvasCoordinates(change.position.x, change.position.y)
@@ -238,6 +268,7 @@ fun CanvasEditorScreen(
                                         showTextDialog = true
                                     }
                                     previousTouchPoint = canvasOffset
+                                    change.consume()
                                 } else {
                                     previousTouchPoint = null
                                 }
