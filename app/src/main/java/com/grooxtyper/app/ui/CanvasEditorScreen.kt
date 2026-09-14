@@ -103,10 +103,11 @@ import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
-import com.grooxtyper.app.model.StackableTextConfig
-import com.grooxtyper.app.model.TextEngine
-import com.grooxtyper.app.model.TextItem
+import com.grooxtyper.app.model.TextBox
+import com.grooxtyper.app.model.FontRegistry
+import com.grooxtyper.app.model.TextHandle
 import com.grooxtyper.app.model.TextLayer
+import com.grooxtyper.app.model.TextRenderer
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -143,7 +144,7 @@ fun CanvasEditorScreen(
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
-    val textEngine = remember { TextEngine() }
+    val fontRegistry = remember { FontRegistry(context) }
     val inpaintingManager = remember { InpaintingManager() }
     val mlTextDetector = remember { MLTextDetector() }
     val undoRedoManager = remember { UndoRedoManager() }
@@ -187,13 +188,13 @@ fun CanvasEditorScreen(
         }
     }
 
-    var selectedTextItem by remember { mutableStateOf<TextItem?>(null) }
-    var editingTextConfig by remember { mutableStateOf<StackableTextConfig?>(null) }
+    var selectedTextBox by remember { mutableStateOf<TextBox?>(null) }
+    var textHandleMode by remember { mutableStateOf(TextHandle.NONE) }
 
     var showColorPicker by remember { mutableStateOf(false) }
     var showLayersPanel by remember { mutableStateOf(false) }
     var showBrushSettings by remember { mutableStateOf(false) }
-    var showTextPanel by remember { mutableStateOf(false) }
+    var showTextEditor by remember { mutableStateOf(false) }
     var showRulerDialog by remember { mutableStateOf(false) }
     var showExportMenu by remember { mutableStateOf(false) }
     var showLassoMenu by remember { mutableStateOf(false) }
@@ -204,6 +205,53 @@ fun CanvasEditorScreen(
     var showMLInpaintDialog by remember { mutableStateOf(false) }
     var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
     var selectedMaskType by remember { mutableStateOf(MLMaskType.REFINED_TEXT) }
+    var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
+
+    fun flattenSelectedText() {
+        val box = selectedTextBox ?: return
+        val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.box.id == box.id }
+            ?: return
+        val target = layerManager.ensureDrawingLayer()
+        undoRedoManager.saveSnapshot(target)
+        TextRenderer.flatten(target, box)
+        layerManager.deleteLayer(textLayer.id)
+        layerManager.activeLayerId = target.id
+        selectedTextBox = null
+        showTextEditor = false
+        refreshComposite()
+    }
+
+    fun deleteSelectedText() {
+        val box = selectedTextBox ?: return
+        layerManager.layers.filterIsInstance<TextLayer>().find { it.box.id == box.id }
+            ?.let { layerManager.deleteLayer(it.id) }
+        selectedTextBox = null
+        showTextEditor = false
+        refreshComposite()
+    }
+
+    val fontPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let {
+            try {
+                context.contentResolver.openInputStream(it)?.use { stream ->
+                    val name = "font_${System.currentTimeMillis()}.ttf"
+                    val tf = fontRegistry.import(stream, name)
+                    if (tf != null) {
+                        fontList = fontRegistry.fonts()
+                        selectedTextBox?.let { box ->
+                            box.typeface = tf
+                            box.fontName = name.removeSuffix(".ttf")
+                            refreshComposite()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -256,7 +304,7 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextItem, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation, viewportSize) {
+                .pointerInput(activeTool, selectedTextBox, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation, viewportSize) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -322,27 +370,64 @@ fun CanvasEditorScreen(
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
                                     if (activeTool == ActiveTool.TEXT) {
+                                        val grip = 28f / viewState.scale
                                         if (lastCanvasPoint == null) {
-                                            val allTextLayers = layerManager.layers.filterIsInstance<TextLayer>()
-                                            val hitLayer = allTextLayers.findLast { it.textItem.isHit(touchCanvasPos) }
-                                            if (hitLayer != null) {
-                                                selectedTextItem = hitLayer.textItem
-                                                editingTextConfig = hitLayer.textItem.config
-                                                layerManager.activeLayerId = hitLayer.id
-                                                showTextPanel = true
+                                            // Tekan baru: handle dulu, lalu badan box, lalu kanvas kosong.
+                                            val current = selectedTextBox
+                                            val handle = current?.hitHandle(touchCanvasPos, grip)
+                                                ?: TextHandle.NONE
+                                            if (handle != TextHandle.NONE) {
+                                                textHandleMode = handle
                                             } else {
-                                                val newCfg = StackableTextConfig(textColor = brushEngine.color)
-                                                val newItem = TextItem(config = newCfg, position = touchCanvasPos)
-                                                layerManager.addTextLayer(newItem)
-                                                selectedTextItem = newItem
-                                                editingTextConfig = newCfg
-                                                showTextPanel = true
-                                                refreshComposite()
+                                                val hit = layerManager.layers
+                                                    .filterIsInstance<TextLayer>()
+                                                    .findLast { it.box.hitTest(touchCanvasPos) }
+                                                if (hit != null) {
+                                                    selectedTextBox = hit.box
+                                                    layerManager.activeLayerId = hit.id
+                                                    textHandleMode = TextHandle.BODY
+                                                    refreshComposite()
+                                                } else {
+                                                    val box = TextBox(
+                                                        text = "Teks baru",
+                                                        position = touchCanvasPos,
+                                                        color = brushEngine.color
+                                                    )
+                                                    layerManager.addTextLayer(box)
+                                                    selectedTextBox = box
+                                                    textHandleMode = TextHandle.BODY
+                                                    showTextEditor = true
+                                                    refreshComposite()
+                                                }
                                             }
                                         } else {
-                                            selectedTextItem?.let { item ->
-                                                val delta = touchCanvasPos - lastCanvasPoint!!
-                                                item.position = item.position + delta
+                                            selectedTextBox?.let { box ->
+                                                when (textHandleMode) {
+                                                    TextHandle.BODY -> {
+                                                        val delta = touchCanvasPos - lastCanvasPoint!!
+                                                        box.position = box.position + delta
+                                                    }
+                                                    TextHandle.SCALE -> {
+                                                        val oldDist = (lastCanvasPoint!! - box.position).getDistance()
+                                                        val newDist = (touchCanvasPos - box.position).getDistance()
+                                                        if (oldDist > 1f && newDist > 1f) {
+                                                            box.scale = (box.scale * newDist / oldDist).coerceIn(0.2f, 8f)
+                                                        }
+                                                    }
+                                                    TextHandle.ROTATE -> {
+                                                        val aOld = kotlin.math.atan2(
+                                                            (lastCanvasPoint!!.y - box.position.y).toDouble(),
+                                                            (lastCanvasPoint!!.x - box.position.x).toDouble()
+                                                        )
+                                                        val aNew = kotlin.math.atan2(
+                                                            (touchCanvasPos.y - box.position.y).toDouble(),
+                                                            (touchCanvasPos.x - box.position.x).toDouble()
+                                                        )
+                                                        var d = Math.toDegrees(aNew - aOld).toFloat()
+                                                        box.rotation = ((box.rotation + d) % 360f + 360f) % 360f
+                                                    }
+                                                    TextHandle.NONE -> Unit
+                                                }
                                                 refreshComposite()
                                             }
                                         }
@@ -365,6 +450,7 @@ fun CanvasEditorScreen(
                                     change.consume()
                                 } else {
                                     brushEngine.endStroke()
+                                    textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
                                     strokeLength = 0f
@@ -396,22 +482,56 @@ fun CanvasEditorScreen(
                 drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
 
                 layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
-                    val item = textLayer.textItem
-                    if (item == selectedTextItem) {
-                        val bounds = item.getBounds()
-                        val boxPaint = android.graphics.Paint().apply {
+                    val box = textLayer.box
+                    if (box.id == selectedTextBox?.id) {
+                        val native = drawContext.canvas.nativeCanvas
+                        val bounds = box.getBounds()
+                        val rad = Math.toRadians(box.rotation.toDouble())
+                        val cosR = Math.cos(rad).toFloat()
+                        val sinR = Math.sin(rad).toFloat()
+                        fun rot(p: Offset): Offset {
+                            val dx = p.x - box.position.x
+                            val dy = p.y - box.position.y
+                            return Offset(
+                                (box.position.x + dx * cosR - dy * sinR).toFloat(),
+                                (box.position.y + dx * sinR + dy * cosR).toFloat()
+                            )
+                        }
+                        val corners = listOf(
+                            rot(Offset(bounds.left, bounds.top)),
+                            rot(Offset(bounds.right, bounds.top)),
+                            rot(Offset(bounds.right, bounds.bottom)),
+                            rot(Offset(bounds.left, bounds.bottom))
+                        )
+                        val frame = android.graphics.Path().apply {
+                            moveTo(corners[0].x, corners[0].y)
+                            lineTo(corners[1].x, corners[1].y)
+                            lineTo(corners[2].x, corners[2].y)
+                            lineTo(corners[3].x, corners[3].y)
+                            close()
+                        }
+                        val framePaint = android.graphics.Paint().apply {
                             style = android.graphics.Paint.Style.STROKE
                             strokeWidth = 3f / viewState.scale
                             color = android.graphics.Color.CYAN
                             pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
                         }
-                        drawContext.canvas.nativeCanvas.drawRect(bounds, boxPaint)
+                        native.drawPath(frame, framePaint)
 
                         val handlePaint = android.graphics.Paint().apply {
                             style = android.graphics.Paint.Style.FILL
                             color = android.graphics.Color.CYAN
                         }
-                        drawContext.canvas.nativeCanvas.drawCircle(bounds.right, bounds.bottom, 12f / viewState.scale, handlePaint)
+                        val ringPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 2f / viewState.scale
+                            color = android.graphics.Color.WHITE
+                        }
+                        val r = 14f / viewState.scale
+                        for (h in listOf(box.scaleHandlePosition(), box.rotateHandlePosition())) {
+                            native.drawCircle(h.x, h.y, r, handlePaint)
+                            native.drawCircle(h.x, h.y, r, ringPaint)
+                        }
                     }
                 }
 
@@ -548,7 +668,7 @@ fun CanvasEditorScreen(
         }
 
         // Floating text toolbar
-        selectedTextItem?.let { item ->
+        selectedTextBox?.let { box ->
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -557,34 +677,27 @@ fun CanvasEditorScreen(
                     .background(PanelBg)
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text("Selected: ${item.config.text}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                IconButton(onClick = {
-                    editingTextConfig = item.config
-                    showTextPanel = true
-                }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.Edit, contentDescription = "Edit", tint = Accent)
+                Text(
+                    box.text.take(18).ifEmpty { "Teks" },
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+                IconButton(onClick = { showTextEditor = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit teks", tint = Accent)
+                }
+                IconButton(onClick = { flattenSelectedText() }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Layers, contentDescription = "Flatten ke layer", tint = Color.White)
                 }
                 IconButton(onClick = {
-                    item.scale = (item.scale * 1.2f).coerceAtMost(5.0f)
+                    box.rotation = (box.rotation + 15f) % 360f
                     refreshComposite()
-                }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.OpenInFull, contentDescription = "Scale", tint = Color.White)
+                }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.RotateRight, contentDescription = "Putar 15°", tint = Color.White)
                 }
-                IconButton(onClick = {
-                    item.rotationAngle = (item.rotationAngle + 15f) % 360f
-                    refreshComposite()
-                }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.RotateRight, contentDescription = "Rotate", tint = Color.White)
-                }
-                IconButton(onClick = {
-                    val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
-                    textLayer?.let { layerManager.deleteLayer(it.id) }
-                    selectedTextItem = null
-                    refreshComposite()
-                }, modifier = Modifier.size(28.dp)) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red)
+                IconButton(onClick = { deleteSelectedText() }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Delete, contentDescription = "Hapus teks", tint = Color.Red)
                 }
             }
         }
@@ -683,7 +796,10 @@ fun CanvasEditorScreen(
             }
 
             // Text
-            IconButton(onClick = { activeTool = ActiveTool.TEXT; showTextPanel = true }) {
+            IconButton(onClick = {
+                activeTool = ActiveTool.TEXT
+                if (selectedTextBox != null) showTextEditor = true
+            }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
             }
 
@@ -769,27 +885,27 @@ fun CanvasEditorScreen(
             }
         }
 
-        if (showTextPanel) {
-            Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
-                TextPanel(
-                    initialConfig = editingTextConfig ?: StackableTextConfig(textColor = brushEngine.color),
-                    onConfirm = { updatedConfig ->
-                        val item = selectedTextItem
-                        if (item != null) {
-                            item.config = updatedConfig
-                            val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.textItem == item }
-                            textLayer?.name = "Text: ${updatedConfig.text}"
-                        } else {
-                            val newItem = TextItem(config = updatedConfig, position = Offset(canvasWidth / 4f, canvasHeight / 3f))
-                            layerManager.addTextLayer(newItem)
-                            selectedTextItem = newItem
-                        }
-                        refreshComposite()
-                        showTextPanel = false
-                    },
-                    onClose = { showTextPanel = false }
-                )
-            }
+        if (showTextEditor) {
+            selectedTextBox?.let { box ->
+                // Sinkronkan nama layer agar panel Layers tetap informatif.
+                val key = box.id to box.text
+                androidx.compose.runtime.LaunchedEffect(key) {
+                    layerManager.layers.filterIsInstance<TextLayer>()
+                        .find { it.box.id == box.id }
+                        ?.let { it.name = "Text: ${box.text.take(16)}" }
+                }
+                Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
+                    TextEditorPanel(
+                        box = box,
+                        fonts = fontList,
+                        onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                        onChange = { refreshComposite() },
+                        onFlatten = { flattenSelectedText() },
+                        onDelete = { deleteSelectedText() },
+                        onClose = { showTextEditor = false }
+                    )
+                }
+            } ?: run { showTextEditor = false }
         }
 
         if (showMLInpaintDialog) {

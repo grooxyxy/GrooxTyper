@@ -90,14 +90,13 @@ class DrawingLayer(
 }
 
 class TextLayer(
-    val textItem: TextItem,
-    name: String = "Text: ${textItem.config.text}"
+    val box: TextBox,
+    name: String = "Text: ${box.text.take(16)}"
 ) : LayerItem(name = name, isFolder = false)
 
 class LayerManager(val width: Int, val height: Int) {
     val layers = mutableStateListOf<LayerItem>()
     var activeLayerId by mutableStateOf<String>("")
-    private val textEngine = TextEngine()
 
     init {
         val initialLayer = DrawingLayer(width, height, "Layer 1")
@@ -145,8 +144,8 @@ class LayerManager(val width: Int, val height: Int) {
         return layer
     }
 
-    fun addTextLayer(textItem: TextItem): TextLayer {
-        val textLayer = TextLayer(textItem, name = "Text: ${textItem.config.text}")
+    fun addTextLayer(box: TextBox): TextLayer {
+        val textLayer = TextLayer(box, name = "Text: ${box.text.take(16)}")
         layers.add(0, textLayer)
         activeLayerId = textLayer.id
         return textLayer
@@ -245,7 +244,7 @@ class LayerManager(val width: Int, val height: Int) {
             } else if (layer is TextLayer) {
                 val textBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 val textCanvas = Canvas(textBmp)
-                textEngine.renderTextToCanvas(textCanvas, layer.textItem.config, layer.textItem.position, layer.textItem.scale, layer.textItem.rotationAngle)
+                TextRenderer.render(textCanvas, layer.box)
                 canvas.drawBitmap(textBmp, 0f, 0f, paint)
             }
         }
