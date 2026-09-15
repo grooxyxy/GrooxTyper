@@ -531,12 +531,12 @@ fun CanvasEditorScreen(
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
     fun resetScriptUsage() { scriptEntries = scriptEntries.map { it.copy(used = false) } }
 
-    // Bubble detector: model (.pt) yang bisa dipilih user.
-    // Output dibiarkan mentah apa adanya per opsi (tanpa refine).
+    // Bubble detector: model ONNX (YOLOv11n-seg) yang bisa dipilih user.
+    // Inferensi on-device via ONNX Runtime; heuristik hanya fallback.
     val bubbleDetector = remember { BubbleDetector() }
     var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
     var showBubbleDialog by remember { mutableStateOf(false) }
-    var bubbleModel by remember { mutableStateOf(BubbleModel.BEST1_PT) }
+    var bubbleModel by remember { mutableStateOf(BubbleModel.BEST1_ONNX) }
     var bubbleDetecting by remember { mutableStateOf(false) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).

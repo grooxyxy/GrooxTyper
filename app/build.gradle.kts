@@ -81,9 +81,9 @@ android {
         }
     }
 
-    // Model .pt sudah terkompresi; jangan dikompresi ulang di APK.
+    // Model .pt/.onnx sudah terkompresi; jangan dikompresi ulang di APK.
     androidResources {
-        noCompress += listOf("pt")
+        noCompress += listOf("pt", "onnx")
     }
 }
 
@@ -105,6 +105,9 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1")
+
+    // ONNX Runtime Mobile: inferensi model bubble best1.onnx (YOLOv11n-seg) on-device
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
