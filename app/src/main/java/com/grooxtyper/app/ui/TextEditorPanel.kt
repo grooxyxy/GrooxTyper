@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -89,6 +90,7 @@ fun TextEditorPanel(
     fonts: List<Pair<String, Typeface>>,
     onImportFont: () -> Unit,
     onChange: () -> Unit,
+    onPushTextHistory: (TextBox) -> Unit,
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
     onClose: () -> Unit
@@ -141,7 +143,18 @@ fun TextEditorPanel(
     var showColor by remember { mutableStateOf(false) }
     var colorTarget by remember { mutableIntStateOf(0) } // 0 teks, 1 stroke, 2 shadow, 3 gradasi awal, 4 gradasi akhir
 
-    fun push() = onChange()
+    // Baseline sesi edit: perubahan pertama mendorong satu langkah undo,
+    // seluruh utak-atik sampai ganti teks menyatu dalam langkah itu.
+    var sessionBaseline by remember(box.id) { mutableStateOf(box.copy()) }
+    var sessionPushed by remember(box.id) { mutableStateOf(false) }
+
+    fun push() {
+        if (!sessionPushed && !box.contentEquals(sessionBaseline)) {
+            sessionPushed = true
+            onPushTextHistory(sessionBaseline)
+        }
+        onChange()
+    }
 
     fun syncShadowOffset() {
         val s = box.shadow ?: return
@@ -206,6 +219,12 @@ fun TextEditorPanel(
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(PanelBg)
             .border(1.dp, Color(0xFF38383A), RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            // Panel solid: tap di area kosong tidak tembus ke kanvas.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {

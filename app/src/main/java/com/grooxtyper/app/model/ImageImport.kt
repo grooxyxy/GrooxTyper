@@ -11,10 +11,13 @@ import android.media.ExifInterface
 import android.net.Uri
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Decode gambar dari galeri/kamera secara aman:
- * - Downsampling (inSampleSize) agar foto besar tidak OOM.
+ * - Sampling berbasis BUDGET PIKSEL (bukan sisi terpanjang) agar gambar
+ *   sangat jangkung (mis. 720x16000) tidak hancur di sisi pendeknya.
+ * - Downscale bertahap (stepped halving) agar hasil tajam, bukan buram.
  * - Koreksi orientasi EXIF (foto portrait tidak miring).
  * - Stream selalu ditutup.
  */
@@ -23,8 +26,16 @@ object ImageImport {
     const val MAX_CANVAS_DIM = 2048
     /** Batas dimensi thumbnail galeri. */
     const val MAX_THUMB_DIM = 512
+    /** Budget decode: detail dipertahankan sampai 16MP. */
+    const val MAX_IMPORT_PIXELS = 16_000_000L
+    /** Batas absolut sisi decode (mencegah alokasi absurd). */
+    const val MAX_IMPORT_DIM = 8192
 
-    fun decodeContentUri(resolver: ContentResolver, uri: Uri, maxDimension: Int): Bitmap? {
+    fun decodeContentUri(
+        resolver: ContentResolver,
+        uri: Uri,
+        maxPixels: Long = MAX_IMPORT_PIXELS
+    ): Bitmap? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -44,9 +55,12 @@ object ImageImport {
             val srcW = if (rotated) bounds.outHeight else bounds.outWidth
             val srcH = if (rotated) bounds.outWidth else bounds.outHeight
 
+            // Sampling menjaga total piksel (bukan sisi max) + batas absolut.
             var sample = 1
-            val cap = max(1, maxDimension)
-            while (srcW / sample > cap || srcH / sample > cap) sample *= 2
+            val budget = max(1L, maxPixels)
+            while (srcW.toLong() * srcH / (sample.toLong() * sample) > budget ||
+                max(srcW, srcH) / sample > MAX_IMPORT_DIM
+            ) sample *= 2
 
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sample
@@ -141,8 +155,8 @@ object ImageImport {
     fun scaleTo(src: Bitmap, dstW: Int, dstH: Int): Bitmap {
         if (src.width == dstW && src.height == dstH) return src
         return try {
-            val out = Bitmap.createScaledBitmap(src, dstW, dstH, true)
-            src.recycle()
+            val out = scaleDownHighQuality(src, dstW, dstH)
+            if (out !== src) src.recycle()
             out
         } catch (e: Exception) {
             e.printStackTrace()
@@ -151,6 +165,31 @@ object ImageImport {
             e.printStackTrace()
             src
         }
+    }
+
+    /**
+     * Downscale bertahap (belah dua berulang): jauh lebih tajam daripada
+     * sekali tembak untuk reduksi ekstrem (mis. 16000px → 1280px).
+     * Upscale kecil dilewatkan sekali jalan (tetap tajam).
+     */
+    fun scaleDownHighQuality(src: Bitmap, dstW: Int, dstH: Int): Bitmap {
+        val w = max(1, dstW)
+        val h = max(1, dstH)
+        if (src.width == w && src.height == h) return src
+        var cur = src
+        var cw = src.width
+        var ch = src.height
+        while (cw / 2 >= w && ch / 2 >= h && cw > 1 && ch > 1) {
+            cw /= 2
+            ch /= 2
+            val half = Bitmap.createScaledBitmap(cur, cw, ch, true)
+            if (cur !== src) cur.recycle()
+            cur = half
+        }
+        if (cur.width == w && cur.height == h) return cur
+        val out = Bitmap.createScaledBitmap(cur, w, h, true)
+        if (cur !== src) cur.recycle()
+        return out
     }
 
     /** Gambar [src] ke tengah [target] (fit, aspek tetap). Tidak menghapus isi lama. */
@@ -167,5 +206,35 @@ object ImageImport {
         val top = (target.height - dh) / 2f
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         Canvas(target).drawBitmap(src, null, RectF(left, top, left + dw, top + dh), paint)
+    }
+
+    /**
+     * Seperti [drawBitmapCenterFit] tapi sisi yang mengecil di-downscale
+     * bertahap dulu → hasil tajam untuk gambar jangkung/lebar ekstrem.
+     */
+    fun drawBitmapCenterFitHQ(target: Bitmap, src: Bitmap) {
+        if (src.isRecycled || target.isRecycled) return
+        if (src.width <= 0 || src.height <= 0) return
+        val s = min(
+            target.width / src.width.toFloat(),
+            target.height / src.height.toFloat()
+        )
+        val dw = max(1, (src.width * s).roundToInt())
+        val dh = max(1, (src.height * s).roundToInt())
+        var fitted: Bitmap? = null
+        try {
+            fitted = if (dw != src.width || dh != src.height) {
+                scaleDownHighQuality(src, dw, dh)
+            } else src
+            val left = (target.width - fitted.width) / 2f
+            val top = (target.height - fitted.height) / 2f
+            Canvas(target).drawBitmap(fitted, left, top, null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // Fallback: gambar langsung satu langkah.
+            drawBitmapCenterFit(target, src)
+        } finally {
+            if (fitted != null && fitted !== src) fitted.recycle()
+        }
     }
 }

@@ -151,6 +151,81 @@ class TextBox(
         return TextHandle.NONE
     }
 
+    /** Salinan lepas untuk snapshot history (typeface dipakai bersama, aman). */
+    fun copy(): TextBox = TextBox(
+        id = id,
+        text = text,
+        position = position.copy(),
+        fontSize = fontSize,
+        color = color,
+        bold = bold,
+        italic = italic,
+        align = align,
+        outlineWidth = outlineWidth,
+        outlineColor = outlineColor,
+        strokeOpacity = strokeOpacity,
+        strokePosition = strokePosition,
+        fillType = fillType,
+        gradient = gradient.copy(),
+        shadow = shadow?.copy(),
+        letterSpacing = letterSpacing,
+        wordSpacing = wordSpacing,
+        lineSpacing = lineSpacing,
+        scale = scale,
+        rotation = rotation,
+        fontName = fontName,
+        typeface = typeface
+    )
+
+    /** Pulihkan semua field dari [o] tanpa ganti objek (referensi seleksi tetap valid). */
+    fun setFrom(o: TextBox) {
+        text = o.text
+        position = o.position.copy()
+        fontSize = o.fontSize
+        color = o.color
+        bold = o.bold
+        italic = o.italic
+        align = o.align
+        outlineWidth = o.outlineWidth
+        outlineColor = o.outlineColor
+        strokeOpacity = o.strokeOpacity
+        strokePosition = o.strokePosition
+        fillType = o.fillType
+        gradient = o.gradient.copy()
+        shadow = o.shadow?.copy()
+        letterSpacing = o.letterSpacing
+        wordSpacing = o.wordSpacing
+        lineSpacing = o.lineSpacing
+        scale = o.scale
+        rotation = o.rotation
+        fontName = o.fontName
+        typeface = o.typeface
+    }
+
+    /** Samakan isi visual (untuk deteksi sesi edit panel). */
+    fun contentEquals(o: TextBox): Boolean {
+        return text == o.text &&
+            position == o.position &&
+            fontSize == o.fontSize &&
+            color == o.color &&
+            bold == o.bold &&
+            italic == o.italic &&
+            align == o.align &&
+            outlineWidth == o.outlineWidth &&
+            outlineColor == o.outlineColor &&
+            strokeOpacity == o.strokeOpacity &&
+            strokePosition == o.strokePosition &&
+            fillType == o.fillType &&
+            gradient == o.gradient &&
+            shadow == o.shadow &&
+            letterSpacing == o.letterSpacing &&
+            wordSpacing == o.wordSpacing &&
+            lineSpacing == o.lineSpacing &&
+            scale == o.scale &&
+            rotation == o.rotation &&
+            fontName == o.fontName
+    }
+
     companion object {
         fun spacedWidth(paint: Paint, line: String, extraPerChar: Float, wordExtra: Float = 0f): Float {
             if (line.isEmpty()) return 0f

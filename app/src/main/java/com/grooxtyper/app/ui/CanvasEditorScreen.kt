@@ -9,6 +9,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -77,6 +78,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
@@ -129,6 +131,18 @@ private val BgDark = Color(0xFF000000)
 private val TopBarBg = Color(0xFF1C1C1E)
 private val BottomBarBg = Color(0xFF1C1C1E)
 private val PanelBg = Color(0xFF2C2C2E)
+
+/** Kecilkan bitmap untuk jendela referensi (hemat memori, sumber di-recycle). */
+private fun downscaleForReference(src: Bitmap, maxSide: Int = 1024): Bitmap {
+    val longSide = max(src.width, src.height)
+    if (longSide <= maxSide) return src
+    val s = maxSide / longSide.toFloat()
+    return ImageImport.scaleTo(
+        src,
+        max(1, (src.width * s).toInt()),
+        max(1, (src.height * s).toInt())
+    )
+}
 
 @Composable
 fun CanvasEditorScreen(
@@ -245,7 +259,9 @@ fun CanvasEditorScreen(
         val target = layerManager.ensureDrawingLayer()
         undoRedoManager.saveSnapshot(target)
         TextRenderer.flatten(target, box)
-        layerManager.deleteLayer(textLayer.id)
+        val idx = layerManager.indexOfLayer(textLayer.id)
+        undoRedoManager.pushLayerRemove(textLayer, idx)
+        layerManager.removeLayerById(textLayer.id)
         layerManager.activeLayerId = target.id
         selectedTextBox = null
         showTextEditor = false
@@ -255,7 +271,11 @@ fun CanvasEditorScreen(
     fun deleteSelectedText() {
         val box = selectedTextBox ?: return
         layerManager.layers.filterIsInstance<TextLayer>().find { it.box.id == box.id }
-            ?.let { layerManager.deleteLayer(it.id) }
+            ?.let {
+                val idx = layerManager.indexOfLayer(it.id)
+                undoRedoManager.pushLayerRemove(it, idx)
+                layerManager.removeLayerById(it.id)
+            }
         selectedTextBox = null
         showTextEditor = false
         refreshComposite()
@@ -289,21 +309,19 @@ fun CanvasEditorScreen(
     ) { uri ->
         uri?.let {
             scope.launch {
-                // Decode di IO (downsample + koreksi EXIF), gambar di Main.
+                // Decode di IO (budget piksel + koreksi EXIF), gambar HQ di Main.
                 val loaded = withContext(Dispatchers.IO) {
-                    ImageImport.decodeContentUri(
-                        context.contentResolver, it,
-                        max(canvasWidth, canvasHeight).coerceAtLeast(512)
-                    )
+                    ImageImport.decodeContentUri(context.contentResolver, it)
                 } ?: return@launch
                 try {
                     val active = layerManager.ensureDrawingLayer()
                     undoRedoManager.saveSnapshot(active)
-                    // Gambar ke compositeBitmap (sumber render) dengan fit tengah.
-                    ImageImport.drawBitmapCenterFit(active.getPersistentBitmap(), loaded)
+                    // Gambar ke compositeBitmap (sumber render) dengan fit tengah HQ.
+                    ImageImport.drawBitmapCenterFitHQ(active.getPersistentBitmap(), loaded)
                     active.tileMap.importFromBitmap(active.getPersistentBitmap())
                     active.markDirty()
-                    referenceBitmap = loaded
+                    // Referensi cukup versi kecil agar hemat memori.
+                    referenceBitmap = downscaleForReference(loaded)
                     refreshComposite()
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -314,10 +332,10 @@ fun CanvasEditorScreen(
 
     fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
         // Inverse dari Modifier.graphicsLayer(scale, translation, rotationZ)
-        // yang pivot-nya di tengah viewport (TransformOrigin.Center).
+        // yang pivot-nya DINAMIS mengikuti titik tengah jari (pivotFrac).
         // Bitmap digambar di (0,0) Canvas, jadi koordinat layout == koordinat bitmap.
-        val pivotX = viewportSize.width / 2f
-        val pivotY = viewportSize.height / 2f
+        val pivotX = viewState.pivotFracX * viewportSize.width
+        val pivotY = viewState.pivotFracY * viewportSize.height
 
         val dx = (screenX - pivotX - viewState.offsetX) / viewState.scale
         val dy = (screenY - pivotY - viewState.offsetY) / viewState.scale
@@ -392,6 +410,12 @@ fun CanvasEditorScreen(
                                         val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
                                         rotation = curAngle - prevAngle
 
+                                        // Pivot zoom/rotasi = titik tengah dua jari (dengan
+                                        // kompensasi offset) agar tidak teleport ke satu jari.
+                                        val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
+                                        val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
+                                        viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
+
                                         viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
                                         viewState.offsetX += pan.x
                                         viewState.offsetY += pan.y
@@ -429,6 +453,8 @@ fun CanvasEditorScreen(
                                                 ?: TextHandle.NONE
                                             if (handle != TextHandle.NONE) {
                                                 textHandleMode = handle
+                                                // Satu langkah undo untuk seluruh gestur ubah teks ini.
+                                                current?.let { undoRedoManager.pushTextBox(it.id, it.copy()) }
                                             } else {
                                                 val hit = layerManager.layers
                                                     .filterIsInstance<TextLayer>()
@@ -437,6 +463,7 @@ fun CanvasEditorScreen(
                                                     selectedTextBox = hit.box
                                                     layerManager.activeLayerId = hit.id
                                                     textHandleMode = TextHandle.BODY
+                                                    undoRedoManager.pushTextBox(hit.box.id, hit.box.copy())
                                                     refreshComposite()
                                                 } else {
                                                     val box = TextBox(
@@ -444,7 +471,8 @@ fun CanvasEditorScreen(
                                                         position = touchCanvasPos,
                                                         color = brushEngine.color
                                                     )
-                                                    layerManager.addTextLayer(box)
+                                                    val created = layerManager.addTextLayer(box)
+                                                    undoRedoManager.pushLayerAdd(created.id)
                                                     selectedTextBox = box
                                                     textHandleMode = TextHandle.BODY
                                                     showTextEditor = true
@@ -539,7 +567,11 @@ fun CanvasEditorScreen(
                         scaleY = viewState.scale,
                         translationX = viewState.offsetX,
                         translationY = viewState.offsetY,
-                        rotationZ = viewState.rotation
+                        rotationZ = viewState.rotation,
+                        transformOrigin = TransformOrigin(
+                            viewState.pivotFracX,
+                            viewState.pivotFracY
+                        )
                     )
             ) {
                 val trigger = refreshCanvasState
@@ -634,6 +666,11 @@ fun CanvasEditorScreen(
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color(0xBB1C1C1E))
                     .border(1.dp, Color(0xFF38383A), RoundedCornerShape(16.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
@@ -688,13 +725,19 @@ fun CanvasEditorScreen(
         }
 
         // Top bar (ibisPaint style - minimal)
+        // clickable noop agar tap di area kosong bar tidak tembus ke kanvas.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(48.dp)
                 .background(TopBarBg)
                 .align(Alignment.TopCenter)
-                .padding(horizontal = 8.dp),
+                .padding(horizontal = 8.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = {
@@ -772,6 +815,7 @@ fun CanvasEditorScreen(
         }
 
         // Floating text toolbar
+        // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
         selectedTextBox?.let { box ->
             Row(
                 modifier = Modifier
@@ -779,6 +823,11 @@ fun CanvasEditorScreen(
                     .padding(top = 56.dp)
                     .clip(RoundedCornerShape(20.dp))
                     .background(PanelBg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -807,13 +856,19 @@ fun CanvasEditorScreen(
         }
 
         // Bottom toolbar (ibisPaint style)
+        // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(64.dp)
                 .background(BottomBarBg)
                 .align(Alignment.BottomCenter)
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 12.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                ),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -888,7 +943,11 @@ fun CanvasEditorScreen(
 
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
                 DropdownMenuItem(text = { Text("Clear Area") }, onClick = {
-                    layerManager.getActiveLayer()?.let { selectionEngine.clearSelectedArea(it); refreshComposite() }
+                    layerManager.getActiveLayer()?.let {
+                        undoRedoManager.saveSnapshot(it)
+                        selectionEngine.clearSelectedArea(it)
+                        refreshComposite()
+                    }
                     showLassoMenu = false
                 })
                 DropdownMenuItem(text = { Text("Invert Selection") }, onClick = {
@@ -899,11 +958,18 @@ fun CanvasEditorScreen(
                     showLassoMenu = false
                 })
                 DropdownMenuItem(text = { Text("Cut Area") }, onClick = {
-                    layerManager.getActiveLayer()?.let { selectionEngine.cutSelectedArea(it); refreshComposite() }
+                    layerManager.getActiveLayer()?.let {
+                        undoRedoManager.saveSnapshot(it)
+                        selectionEngine.cutSelectedArea(it)
+                        refreshComposite()
+                    }
                     showLassoMenu = false
                 })
                 DropdownMenuItem(text = { Text("Paste Area") }, onClick = {
-                    selectionEngine.pasteToNewLayer(layerManager); refreshComposite(); showLassoMenu = false
+                    selectionEngine.pasteToNewLayer(layerManager)?.let {
+                        undoRedoManager.pushLayerAdd(it.id)
+                    }
+                    refreshComposite(); showLassoMenu = false
                 })
             }
 
@@ -1013,6 +1079,9 @@ fun CanvasEditorScreen(
                         fonts = fontList,
                         onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
                         onChange = { refreshComposite() },
+                        onPushTextHistory = { before ->
+                            undoRedoManager.pushTextBox(box.id, before)
+                        },
                         onFlatten = { flattenSelectedText() },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }
@@ -1055,6 +1124,7 @@ fun CanvasEditorScreen(
                             scope.launch {
                                 val active = layerManager.getActiveLayer()
                                 if (active != null && detectedTextRegions.isNotEmpty()) {
+                                    undoRedoManager.saveSnapshot(active)
                                     val mask = mlTextDetector.generateMaskBitmap(canvasWidth, canvasHeight, detectedTextRegions, active.getBitmap(), selectedMaskType)
                                     withContext(Dispatchers.Default) { inpaintingManager.inpaintLayerArea(active, mask) }
                                     refreshComposite()
@@ -1076,6 +1146,8 @@ fun CanvasEditorScreen(
             Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
                 LayerPanel(
                     layerManager = layerManager,
+                    undoManager = undoRedoManager,
+                    refreshTick = refreshCanvasState,
                     onClose = { showLayersPanel = false },
                     onRefresh = { refreshComposite() }
                 )

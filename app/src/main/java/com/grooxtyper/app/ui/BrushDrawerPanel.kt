@@ -1,10 +1,13 @@
 package com.grooxtyper.app.ui
 
 import androidx.activity.compose.BackHandler
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +25,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -55,13 +60,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
+import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.LayerItem
+import com.grooxtyper.app.model.LayerManager
+import com.grooxtyper.app.model.LayerProps
 import com.grooxtyper.app.model.TextLayer
+import com.grooxtyper.app.model.TextRenderer
+import com.grooxtyper.app.model.UndoRedoManager
 
 private val Accent = Color(0xFFFF5722)
 private val PanelBg = Color(0xFF1C1C1E)
@@ -86,6 +97,12 @@ fun BrushPanel(
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(PanelBg)
             .border(1.dp, Divider, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            // Panel solid: tap di area kosong tidak tembus ke kanvas.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             // Handle bar (tap untuk tutup) + tombol close eksplisit.
@@ -349,21 +366,39 @@ private fun FadeTab(brushEngine: BrushEngine) {
 
 @Composable
 fun LayerPanel(
-    layerManager: com.grooxtyper.app.model.LayerManager,
+    layerManager: LayerManager,
+    undoManager: UndoRedoManager,
+    refreshTick: Int,
     onClose: () -> Unit,
     onRefresh: () -> Unit
 ) {
+    BackHandler(onBack = onClose)
+
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<LayerItem?>(null) }
     var newName by remember { mutableStateOf("") }
 
+    // Ubah properti display dengan satu langkah undo.
+    fun mutateProps(layer: LayerItem, change: () -> Unit) {
+        val before = LayerProps.of(layer)
+        change()
+        undoManager.pushLayerProps(layer.id, before, LayerProps.of(layer))
+        onRefresh()
+    }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(380.dp)
+            .height(420.dp)
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             .background(PanelBg)
             .border(1.dp, Divider, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+            // Panel solid: tap di area kosong tidak tembus ke kanvas.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
             Box(
@@ -384,7 +419,11 @@ fun LayerPanel(
                 Text("Layers", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Row {
                     Button(
-                        onClick = { layerManager.addLayer(); onRefresh() },
+                        onClick = {
+                            val created = layerManager.addLayer()
+                            undoManager.pushLayerAdd(created.id)
+                            onRefresh()
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = Accent),
                         shape = RoundedCornerShape(8.dp)
                     ) {
@@ -395,8 +434,13 @@ fun LayerPanel(
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
-                            if (layerManager.activeLayerId.isNotEmpty()) {
-                                layerManager.deleteLayer(layerManager.activeLayerId)
+                            val id = layerManager.activeLayerId
+                            if (id.isNotEmpty()) {
+                                val idx = layerManager.indexOfLayer(id)
+                                layerManager.findLayerById(id)?.let { target ->
+                                    undoManager.pushLayerRemove(target, idx)
+                                    layerManager.removeLayerById(id)
+                                }
                                 onRefresh()
                             }
                         },
@@ -414,7 +458,8 @@ fun LayerPanel(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(layerManager.layers) { layer ->
+                items(layerManager.layers.size) { index ->
+                    val layer = layerManager.layers[index]
                     val isSelected = layer.id == layerManager.activeLayerId
                     Card(
                         modifier = Modifier
@@ -436,6 +481,9 @@ fun LayerPanel(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Preview isi layer.
+                            LayerThumbnail(layer = layer, refreshTick = refreshTick)
+                            Spacer(modifier = Modifier.width(10.dp))
                             if (layer is TextLayer) {
                                 Box(
                                     modifier = Modifier
@@ -455,6 +503,32 @@ fun LayerPanel(
                                 modifier = Modifier.weight(1f)
                             )
 
+                            // Reorder: naik/turun (index 0 = paling atas).
+                            IconButton(
+                                onClick = {
+                                    if (index > 0) {
+                                        undoManager.pushLayerMove(layer.id, index, index - 1)
+                                        layerManager.moveLayerTo(layer.id, index - 1)
+                                        onRefresh()
+                                    }
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.ArrowUpward, contentDescription = "Pindah ke atas", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (index < layerManager.layers.size - 1) {
+                                        undoManager.pushLayerMove(layer.id, index, index + 1)
+                                        layerManager.moveLayerTo(layer.id, index + 1)
+                                        onRefresh()
+                                    }
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.ArrowDownward, contentDescription = "Pindah ke bawah", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+
                             IconButton(
                                 onClick = {
                                     renameTarget = layer
@@ -468,8 +542,7 @@ fun LayerPanel(
 
                             IconButton(
                                 onClick = {
-                                    layer.isVisible = !layer.isVisible
-                                    onRefresh()
+                                    mutateProps(layer) { layer.isVisible = !layer.isVisible }
                                 },
                                 modifier = Modifier.size(28.dp)
                             ) {
@@ -482,15 +555,14 @@ fun LayerPanel(
                             }
                         }
 
-                        if (layer is com.grooxtyper.app.model.DrawingLayer) {
+                        if (layer is DrawingLayer) {
                             Row(
                                 modifier = Modifier.padding(start = 12.dp, bottom = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 IconButton(
                                     onClick = {
-                                        layer.isAlphaLocked = !layer.isAlphaLocked
-                                        onRefresh()
+                                        mutateProps(layer) { layer.isAlphaLocked = !layer.isAlphaLocked }
                                     },
                                     modifier = Modifier.size(28.dp)
                                 ) {
@@ -504,8 +576,7 @@ fun LayerPanel(
                                 Spacer(modifier = Modifier.width(4.dp))
                                 IconButton(
                                     onClick = {
-                                        layer.isClippingMask = !layer.isClippingMask
-                                        onRefresh()
+                                        mutateProps(layer) { layer.isClippingMask = !layer.isClippingMask }
                                     },
                                     modifier = Modifier.size(28.dp)
                                 ) {
@@ -518,7 +589,11 @@ fun LayerPanel(
                                 }
                                 Spacer(modifier = Modifier.width(4.dp))
                                 IconButton(
-                                    onClick = { layer.flipHorizontal(); onRefresh() },
+                                    onClick = {
+                                        undoManager.saveSnapshot(layer)
+                                        layer.flipHorizontal()
+                                        onRefresh()
+                                    },
                                     modifier = Modifier.size(28.dp)
                                 ) {
                                     Icon(Icons.Default.Flip, contentDescription = "Flip H", tint = Color.Gray, modifier = Modifier.size(16.dp))
@@ -556,9 +631,10 @@ fun LayerPanel(
             confirmButton = {
                 Button(
                     onClick = {
-                        renameTarget?.name = newName
+                        renameTarget?.let { target ->
+                            mutateProps(target) { target.name = newName }
+                        }
                         showRenameDialog = false
-                        onRefresh()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Accent)
                 ) { Text("Save", color = Color.White) }
@@ -567,6 +643,58 @@ fun LayerPanel(
                 TextButton(onClick = { showRenameDialog = false }) { Text("Cancel", color = Color.Gray) }
             },
             containerColor = PanelBgLight
+        )
+    }
+}
+
+/** Preview kecil isi layer (gambar diskala / contoh render teks). */
+@Composable
+private fun LayerThumbnail(layer: LayerItem, refreshTick: Int) {
+    val bmp: Bitmap? = remember(layer.id, refreshTick) {
+        try {
+            when (layer) {
+                is DrawingLayer -> {
+                    val src = layer.getBitmap()
+                    if (src.width <= 0 || src.height <= 0) {
+                        null
+                    } else {
+                        val s = 112f / maxOf(src.width, src.height).toFloat()
+                        Bitmap.createScaledBitmap(
+                            src,
+                            maxOf(1, (src.width * s).toInt()),
+                            maxOf(1, (src.height * s).toInt()),
+                            true
+                        )
+                    }
+                }
+                is TextLayer -> {
+                    val sample = layer.box.text.substringBefore("\n").take(16).ifBlank { "T" }
+                    TextRenderer.renderSampleBox(layer.box, sample, 168, 96, forceWhiteText = true)
+                }
+                else -> null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+    if (bmp != null) {
+        Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = "Preview ${layer.name}",
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF101012))
+                .border(1.dp, Divider, RoundedCornerShape(8.dp))
+        )
+    } else {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xFF101012))
+                .border(1.dp, Divider, RoundedCornerShape(8.dp))
         )
     }
 }

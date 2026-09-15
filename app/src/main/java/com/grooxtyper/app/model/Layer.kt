@@ -173,23 +173,67 @@ class LayerManager(val width: Int, val height: Int) {
     }
 
     fun deleteLayer(id: String) {
-        fun removeRec(items: MutableList<LayerItem>): Boolean {
+        removeLayerById(id)
+    }
+
+    /** Hapus layer dan kembalikan objeknya (untuk undo); perbaiki layer aktif bila perlu. */
+    fun removeLayerById(id: String): LayerItem? {
+        fun removeRec(items: MutableList<LayerItem>): LayerItem? {
             val it = items.iterator()
             while (it.hasNext()) {
                 val item = it.next()
                 if (item.id == id) {
                     it.remove()
-                    return true
+                    return item
                 }
-                if (item.isFolder && removeRec(item.children)) return true
+                if (item.isFolder) {
+                    val found = removeRec(item.children)
+                    if (found != null) return found
+                }
             }
-            return false
+            return null
         }
-        removeRec(layers)
-        if (layers.isNotEmpty() && (getActiveLayer() == null)) {
-            val first = layers.firstOrNull()
-            if (first is DrawingLayer) activeLayerId = first.id
+        val removed = removeRec(layers)
+        if (removed != null && activeLayerId == id) {
+            activeLayerId = layers.firstOrNull { it is DrawingLayer }?.id
+                ?: layers.firstOrNull()?.id ?: ""
         }
+        return removed
+    }
+
+    /** Sisipkan kembali layer (untuk undo hapus) tanpa merebut seleksi yang masih valid. */
+    fun insertLayerAt(index: Int, layer: LayerItem) {
+        if (findLayerById(layer.id) != null) return
+        layers.add(index.coerceIn(0, layers.size), layer)
+        if (findLayerById(activeLayerId) == null && layers.isNotEmpty()) {
+            activeLayerId = layers.first().id
+        }
+    }
+
+    fun indexOfLayer(id: String): Int = layers.indexOfFirst { it.id == id }
+
+    /** Cari layer apa pun (gambar/teks/folder) berdasarkan id, termasuk isi folder. */
+    fun findLayerById(id: String): LayerItem? {
+        fun find(items: List<LayerItem>): LayerItem? {
+            for (item in items) {
+                if (item.id == id) return item
+                if (item.isFolder) {
+                    val found = find(item.children)
+                    if (found != null) return found
+                }
+            }
+            return null
+        }
+        return find(layers)
+    }
+
+    /** Pindahkan layer top-level ke indeks tujuan (untuk reorder + undo). */
+    fun moveLayerTo(id: String, toIndex: Int): Boolean {
+        val from = indexOfLayer(id)
+        if (from < 0) return false
+        val item = layers.removeAt(from)
+        layers.add(toIndex.coerceIn(0, layers.size), item)
+        return true
     }
 
     fun moveLayerUp(id: String) {

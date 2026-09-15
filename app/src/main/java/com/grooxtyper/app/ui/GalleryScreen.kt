@@ -95,9 +95,7 @@ fun GalleryScreen(
                 isImporting = true
                 try {
                     val decoded = withContext(Dispatchers.IO) {
-                        ImageImport.decodeContentUri(
-                            context.contentResolver, it, ImageImport.MAX_CANVAS_DIM
-                        )
+                        ImageImport.decodeContentUri(context.contentResolver, it)
                     } ?: return@launch
                     val (projW, projH) = ImageImport.fitDimensions(
                         decoded.width, decoded.height, ImageImport.MAX_CANVAS_DIM

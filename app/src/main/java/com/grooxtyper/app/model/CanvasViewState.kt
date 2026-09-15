@@ -20,6 +20,44 @@ class CanvasViewState(
     var rotation by mutableFloatStateOf(0.0f)
     var rawRotation by mutableFloatStateOf(0.0f)
 
+    /**
+     * Titik tumpu zoom/rotasi sebagai fraksi viewport (0..1).
+     * Diikuti titik tengah dua jari saat pinch agar tidak teleport.
+     */
+    var pivotFracX by mutableFloatStateOf(0.5f)
+    var pivotFracY by mutableFloatStateOf(0.5f)
+
+    /**
+     * Pindahkan pivot ke [fracX]/[fracY] dengan kompensasi offset sehingga
+     * gambar di layar tidak bergeser (mapping dipertahankan persis).
+     */
+    fun setPivotFraction(fracX: Float, fracY: Float, viewportW: Float, viewportH: Float) {
+        if (viewportW <= 0f || viewportH <= 0f) return
+        val nx = fracX.coerceIn(0f, 1f)
+        val ny = fracY.coerceIn(0f, 1f)
+        val ox = pivotFracX * viewportW
+        val oy = pivotFracY * viewportH
+        val px = nx * viewportW
+        val py = ny * viewportH
+        val dx = ox - px
+        val dy = oy - py
+        if (dx == 0f && dy == 0f) {
+            pivotFracX = nx
+            pivotFracY = ny
+            return
+        }
+        // t' = t + (I - M)(O - O'), M = scale * R(rotation)
+        val rad = Math.toRadians(rotation.toDouble())
+        val c = kotlin.math.cos(rad).toFloat()
+        val s = kotlin.math.sin(rad).toFloat()
+        val mx = scale * (c * dx - s * dy)
+        val my = scale * (s * dx + c * dy)
+        offsetX += dx - mx
+        offsetY += dy - my
+        pivotFracX = nx
+        pivotFracY = ny
+    }
+
     fun applyRotationDelta(deltaRotation: Float) {
         rawRotation = (rawRotation + deltaRotation) % 360f
         val normRotation = if (rawRotation < 0) rawRotation + 360f else rawRotation
@@ -41,9 +79,9 @@ class CanvasViewState(
         viewportWidth: Float = width.toFloat(),
         viewportHeight: Float = height.toFloat()
     ): Offset {
-        // Inverse graphicsLayer ber-pivot di tengah viewport.
-        val pivotX = viewportWidth / 2f
-        val pivotY = viewportHeight / 2f
+        // Inverse graphicsLayer ber-pivot dinamis (pivotFrac), bukan tengah viewport.
+        val pivotX = pivotFracX * viewportWidth
+        val pivotY = pivotFracY * viewportHeight
         val dx = (windowX - pivotX - offsetX) / scale
         val dy = (windowY - pivotY - offsetY) / scale
         val rad = Math.toRadians((-rotation).toDouble())

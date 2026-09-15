@@ -5,27 +5,103 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
 
-class LayerStateSnapshot(
-    val layerId: String,
-    val bitmapSnapshot: Bitmap
-)
+/** Properti display layer (untuk undo toggle/rename). */
+data class LayerProps(
+    val name: String,
+    val isVisible: Boolean,
+    val opacity: Float,
+    val blendMode: LayerBlendMode,
+    val isAlphaLocked: Boolean,
+    val isClippingMask: Boolean
+) {
+    companion object {
+        fun of(layer: LayerItem): LayerProps = LayerProps(
+            name = layer.name,
+            isVisible = layer.isVisible,
+            opacity = layer.opacity,
+            blendMode = layer.blendMode,
+            isAlphaLocked = layer.isAlphaLocked,
+            isClippingMask = layer.isClippingMask
+        )
+    }
+
+    fun applyTo(layer: LayerItem) {
+        layer.name = name
+        layer.isVisible = isVisible
+        layer.opacity = opacity
+        layer.blendMode = blendMode
+        layer.isAlphaLocked = isAlphaLocked
+        layer.isClippingMask = isClippingMask
+    }
+}
+
+/** Satu langkah history untuk SEMUA action (cat/lukis/teks/layer). */
+sealed interface HistoryEntry {
+    /** Isi bitmap SEBELUM action cat (import/stroke/lasso/inpaint/flip/flatten). */
+    data class BitmapEntry(val layerId: String, val bitmap: Bitmap) : HistoryEntry
+
+    /** Isi TextBox SEBELUM diubah (geser/skala/putar/edit panel). */
+    data class TextBoxEntry(val layerId: String, val box: TextBox) : HistoryEntry
+
+    /** Layer baru ditambahkan (teks dibuat / layer baru / paste). Undo = hapus lagi. */
+    data class LayerAddEntry(val layerId: String) : HistoryEntry
+
+    /** Layer dihapus (objek dipertahankan agar bisa dikembalikan utuh). */
+    data class LayerRemoveEntry(val layer: LayerItem, val index: Int) : HistoryEntry
+
+    /** Layer dipindah (reorder). Indeks valid karena undo selalu LIFO. */
+    data class LayerMoveEntry(val layerId: String, val from: Int, val to: Int) : HistoryEntry
+
+    /** Properti layer diubah (nama/visibilitas/opacity/blend/kunci). */
+    data class LayerPropEntry(val layerId: String, val before: LayerProps, val after: LayerProps) : HistoryEntry
+}
 
 class UndoRedoManager(private val maxHistory: Int = 15) {
-    private val undoStack = mutableListOf<LayerStateSnapshot>()
-    private val redoStack = mutableListOf<LayerStateSnapshot>()
+    private val undoStack = mutableListOf<HistoryEntry>()
+    private val redoStack = mutableListOf<HistoryEntry>()
 
     /**
      * Dinaikkan setiap mutasi stack agar tombol Undo/Redo di Compose
-     * ikut recompose (canUndo()/canRedo() sendiri tidak observable).
+     * ikut recompose (isi stack sendiri tidak observable).
      */
     var historyVersion by mutableIntStateOf(0)
         private set
 
+    // ---------- push ----------
+
+    /** Snapshot bitmap sebelum action cat. */
     fun saveSnapshot(layer: DrawingLayer) {
         val copy = layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
-        undoStack.add(LayerStateSnapshot(layer.id, copy))
+        push(HistoryEntry.BitmapEntry(layer.id, copy))
+    }
+
+    /** Snapshot isi teks sebelum diubah. */
+    fun pushTextBox(layerId: String, before: TextBox) {
+        push(HistoryEntry.TextBoxEntry(layerId, before))
+    }
+
+    fun pushLayerAdd(layerId: String) {
+        push(HistoryEntry.LayerAddEntry(layerId))
+    }
+
+    fun pushLayerRemove(layer: LayerItem, index: Int) {
+        push(HistoryEntry.LayerRemoveEntry(layer, index.coerceAtLeast(0)))
+    }
+
+    fun pushLayerMove(layerId: String, from: Int, to: Int) {
+        if (from == to) return
+        push(HistoryEntry.LayerMoveEntry(layerId, from, to))
+    }
+
+    fun pushLayerProps(layerId: String, before: LayerProps, after: LayerProps) {
+        if (before == after) return
+        push(HistoryEntry.LayerPropEntry(layerId, before, after))
+    }
+
+    private fun push(entry: HistoryEntry) {
+        undoStack.add(entry)
         while (undoStack.size > maxHistory) {
-            undoStack.removeAt(0).bitmapSnapshot.recycle()
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
         }
         clearStack(redoStack)
         historyVersion++
@@ -34,38 +110,107 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
     fun canUndo(): Boolean = undoStack.isNotEmpty()
     fun canRedo(): Boolean = redoStack.isNotEmpty()
 
-    /**
-     * Undo mengembalikan snapshot ke LAYER PEMILIKNYA (dicari via layerId),
-     * bukan ke layer yang sedang aktif. Return false jika layer sudah dihapus.
-     */
+    // ---------- undo / redo ----------
+
     fun undo(layerManager: LayerManager): Boolean {
         if (undoStack.isEmpty()) return false
-        val snapshot = undoStack.removeAt(undoStack.lastIndex)
-        val layer = layerManager.findDrawingLayerById(snapshot.layerId)
-        if (layer == null) {
-            snapshot.bitmapSnapshot.recycle()
-            historyVersion++
-            return false
+        val entry = undoStack.removeAt(undoStack.lastIndex)
+        val ok = when (entry) {
+            is HistoryEntry.BitmapEntry -> {
+                val layer = layerManager.findDrawingLayerById(entry.layerId) ?: return false
+                redoStack.add(
+                    HistoryEntry.BitmapEntry(
+                        layer.id,
+                        layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
+                    )
+                )
+                restoreBitmap(layer, entry.bitmap)
+                true
+            }
+            is HistoryEntry.TextBoxEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) as? TextLayer
+                    ?: return false
+                redoStack.add(HistoryEntry.TextBoxEntry(layer.id, layer.box.copy()))
+                layer.box.setFrom(entry.box)
+                true
+            }
+            is HistoryEntry.LayerAddEntry -> {
+                val idx = layerManager.indexOfLayer(entry.layerId)
+                if (idx < 0) return false
+                val removed = layerManager.removeLayerById(entry.layerId) ?: return false
+                redoStack.add(HistoryEntry.LayerRemoveEntry(removed, idx))
+                true
+            }
+            is HistoryEntry.LayerRemoveEntry -> {
+                layerManager.insertLayerAt(entry.index, entry.layer)
+                redoStack.add(HistoryEntry.LayerAddEntry(entry.layer.id))
+                true
+            }
+            is HistoryEntry.LayerMoveEntry -> {
+                if (!layerManager.moveLayerTo(entry.layerId, entry.from)) return false
+                redoStack.add(entry)
+                true
+            }
+            is HistoryEntry.LayerPropEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) ?: return false
+                entry.before.applyTo(layer)
+                redoStack.add(entry)
+                true
+            }
         }
-        redoStack.add(LayerStateSnapshot(layer.id, layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)))
-        restoreSnapshot(layer, snapshot)
         historyVersion++
-        return true
+        return ok
     }
 
     fun redo(layerManager: LayerManager): Boolean {
         if (redoStack.isEmpty()) return false
-        val snapshot = redoStack.removeAt(redoStack.lastIndex)
-        val layer = layerManager.findDrawingLayerById(snapshot.layerId)
-        if (layer == null) {
-            snapshot.bitmapSnapshot.recycle()
-            historyVersion++
-            return false
+        val entry = redoStack.removeAt(redoStack.lastIndex)
+        val ok = when (entry) {
+            is HistoryEntry.BitmapEntry -> {
+                val layer = layerManager.findDrawingLayerById(entry.layerId) ?: return false
+                undoStack.add(
+                    HistoryEntry.BitmapEntry(
+                        layer.id,
+                        layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
+                    )
+                )
+                restoreBitmap(layer, entry.bitmap)
+                true
+            }
+            is HistoryEntry.TextBoxEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) as? TextLayer
+                    ?: return false
+                undoStack.add(HistoryEntry.TextBoxEntry(layer.id, layer.box.copy()))
+                layer.box.setFrom(entry.box)
+                true
+            }
+            is HistoryEntry.LayerAddEntry -> {
+                val idx = layerManager.indexOfLayer(entry.layerId)
+                if (idx < 0) return false
+                val removed = layerManager.removeLayerById(entry.layerId) ?: return false
+                undoStack.add(HistoryEntry.LayerRemoveEntry(removed, idx))
+                true
+            }
+            is HistoryEntry.LayerRemoveEntry -> {
+                layerManager.insertLayerAt(entry.index, entry.layer)
+                undoStack.add(HistoryEntry.LayerAddEntry(entry.layer.id))
+                true
+            }
+            is HistoryEntry.LayerMoveEntry -> {
+                if (!layerManager.moveLayerTo(entry.layerId, entry.to)) return false
+                undoStack.add(entry)
+                true
+            }
+            is HistoryEntry.LayerPropEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) ?: return false
+                entry.after.applyTo(layer)
+                undoStack.add(entry)
+                true
+            }
         }
-        undoStack.add(LayerStateSnapshot(layer.id, layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)))
-        restoreSnapshot(layer, snapshot)
+        trimUndo()
         historyVersion++
-        return true
+        return ok
     }
 
     fun clearAll() {
@@ -74,17 +219,23 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         historyVersion++
     }
 
-    private fun clearStack(stack: MutableList<LayerStateSnapshot>) {
-        stack.forEach { runCatching { it.bitmapSnapshot.recycle() } }
+    private fun trimUndo() {
+        while (undoStack.size > maxHistory) {
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
+        }
+    }
+
+    private fun clearStack(stack: MutableList<HistoryEntry>) {
+        stack.forEach { (it as? HistoryEntry.BitmapEntry)?.bitmap?.recycle() }
         stack.clear()
     }
 
-    private fun restoreSnapshot(layer: DrawingLayer, snapshot: LayerStateSnapshot) {
+    private fun restoreBitmap(layer: DrawingLayer, snapshot: Bitmap) {
         // compositeBitmap adalah sumber render, jadi harus dipulihkan langsung.
         val target = layer.getPersistentBitmap()
         val canvas = android.graphics.Canvas(target)
         canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-        canvas.drawBitmap(snapshot.bitmapSnapshot, 0f, 0f, null)
+        canvas.drawBitmap(snapshot, 0f, 0f, null)
         layer.tileMap.importFromBitmap(target)
         layer.markDirty()
     }
