@@ -228,6 +228,40 @@ class LayerManager(val width: Int, val height: Int) {
         return find(layers)
     }
 
+    /**
+     * Semua TextLayer yang EFEKTIF terlihat (rekursif; folder tersembunyi
+     * menyembunyikan isinya). Untuk hit-test, frame seleksi, dan blit aman.
+     */
+    fun visibleTextLayers(): List<TextLayer> {
+        val out = mutableListOf<TextLayer>()
+        fun walk(items: List<LayerItem>, ancestorsVisible: Boolean) {
+            for (item in items) {
+                val vis = ancestorsVisible && item.isVisible
+                if (item is TextLayer) {
+                    if (vis) out.add(item)
+                } else if (item.isFolder) {
+                    walk(item.children, vis)
+                }
+            }
+        }
+        walk(layers, true)
+        return out
+    }
+
+    /** Cari TextLayer berdasar box id (rekursif, termasuk dalam folder). */
+    fun findTextLayerByBoxId(boxId: String): TextLayer? {
+        fun walk(items: List<LayerItem>): TextLayer? {
+            for (item in items) {
+                if (item is TextLayer && item.box.id == boxId) return item
+                if (item.isFolder) {
+                    walk(item.children)?.let { return it }
+                }
+            }
+            return null
+        }
+        return walk(layers)
+    }
+
     /** Pindahkan layer top-level ke indeks tujuan (untuk reorder + undo). */
     fun moveLayerTo(id: String, toIndex: Int): Boolean {
         val from = indexOfLayer(id)

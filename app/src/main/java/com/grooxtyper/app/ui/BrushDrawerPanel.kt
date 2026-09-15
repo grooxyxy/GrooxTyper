@@ -373,7 +373,8 @@ fun LayerPanel(
     undoManager: UndoRedoManager,
     refreshTick: Int,
     onClose: () -> Unit,
-    onRefresh: () -> Unit
+    onRefresh: () -> Unit,
+    onEditText: (TextLayer) -> Unit = {}
 ) {
     BackHandler(onBack = onClose)
 
@@ -471,7 +472,8 @@ fun LayerPanel(
                             .clickable {
                                 layerManager.activeLayerId = layer.id
                                 if (layer is TextLayer) {
-                                    // handled externally
+                                    // Langsung buka editor teks (di layer mana pun).
+                                    onEditText(layer)
                                 }
                             },
                         colors = CardDefaults.cardColors(

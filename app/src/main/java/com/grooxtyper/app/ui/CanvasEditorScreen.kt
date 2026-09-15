@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.Image
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PanTool
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
@@ -168,6 +170,48 @@ private fun parseScriptRaw(raw: String): List<ScriptEntry> {
         .filterNot { it.startsWith("Page", ignoreCase = true) }
         .filterNot { it.equals("Terjemahan", ignoreCase = true) }
         .map { ScriptEntry(text = it) }
+}
+
+/** Pil status kecil di kepala dialog script. */
+@Composable
+private fun StatusPill(label: String, highlight: Boolean = false) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (highlight) Accent else Color(0xFF38383A))
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+/** Tombol aksi sumber naskah (ikon + label) di dialog script. */
+@Composable
+private fun ScriptActionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+        shape = RoundedCornerShape(10.dp),
+        modifier = modifier,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            horizontal = 8.dp, vertical = 10.dp
+        )
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = label, tint = Accent, modifier = Modifier.size(20.dp))
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(label, color = Color.White, fontSize = 11.sp)
+        }
+    }
 }
 
 private val Accent = Color(0xFFFF5722)
@@ -350,6 +394,9 @@ fun CanvasEditorScreen(
     var showExitDialog by remember { mutableStateOf(false) }
     var isSavingExit by remember { mutableStateOf(false) }
     var discardOnExit by remember { mutableStateOf(false) }
+    // Flatten bersifat destruktif (teks jadi piksel, tak bisa diedit lagi)
+    // sehingga selalu lewat konfirmasi — teks tetap editable selama mungkin.
+    var showFlattenConfirm by remember { mutableStateOf(false) }
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
@@ -478,9 +525,8 @@ fun CanvasEditorScreen(
         val bi = (b + rad + 1f).toInt().coerceIn(0, canvasHeight)
         if (ri - li < 1 || bi - ti < 1) return true
         // Teks yang tampil di dalam regio kotor → blit tak aman, render penuh.
-        for (item in layerManager.layers) {
-            val tl = item as? TextLayer ?: continue
-            if (!item.isVisible) continue
+        // (Rekursif: termasuk teks di dalam folder.)
+        for (tl in layerManager.visibleTextLayers()) {
             val tb = tl.box.getBounds()
             if (tb.left < ri && tb.right > li && tb.top < bi && tb.bottom > ti) return false
         }
@@ -945,9 +991,13 @@ fun CanvasEditorScreen(
         return createdCount
     }
 
+    /** Layer id untuk snapshot undo teks (undo mencari berdasar layer id). */
+    fun textLayerIdOf(box: TextBox): String =
+        layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
+
     fun flattenSelectedText() {
         val box = selectedTextBox ?: return
-        val textLayer = layerManager.layers.filterIsInstance<TextLayer>().find { it.box.id == box.id }
+        val textLayer = layerManager.findTextLayerByBoxId(box.id)
             ?: return
         val target = layerManager.ensureDrawingLayer()
         undoRedoManager.saveSnapshot(target)
@@ -963,7 +1013,7 @@ fun CanvasEditorScreen(
 
     fun deleteSelectedText() {
         val box = selectedTextBox ?: return
-        layerManager.layers.filterIsInstance<TextLayer>().find { it.box.id == box.id }
+        layerManager.findTextLayerByBoxId(box.id)
             ?.let {
                 val idx = layerManager.indexOfLayer(it.id)
                 undoRedoManager.pushLayerRemove(it, idx)
@@ -1319,16 +1369,15 @@ fun CanvasEditorScreen(
                                             if (handle != TextHandle.NONE) {
                                                 textHandleMode = handle
                                                 // Satu langkah undo untuk seluruh gestur ubah teks ini.
-                                                current?.let { undoRedoManager.pushTextBox(it.id, it.copy()) }
+                                                current?.let { undoRedoManager.pushTextBox(textLayerIdOf(it), it.copy()) }
                                             } else {
-                                                val hit = layerManager.layers
-                                                    .filterIsInstance<TextLayer>()
+                                                val hit = layerManager.visibleTextLayers()
                                                     .findLast { it.box.hitTest(touchCanvasPos) }
                                                 if (hit != null) {
                                                     selectedTextBox = hit.box
                                                     layerManager.activeLayerId = hit.id
                                                     textHandleMode = TextHandle.BODY
-                                                    undoRedoManager.pushTextBox(hit.box.id, hit.box.copy())
+                                                    undoRedoManager.pushTextBox(hit.id, hit.box.copy())
                                                     refreshComposite()
                                                 } else {
                                                     if (isMultiBubbleActive()) {
@@ -1638,7 +1687,7 @@ fun CanvasEditorScreen(
                     drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
                 }
 
-                layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
+                layerManager.visibleTextLayers().forEach { textLayer ->
                     val box = textLayer.box
                     if (box.id == selectedTextBox?.id) {
                         val native = drawContext.canvas.nativeCanvas
@@ -1857,7 +1906,8 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Top bar (ibisPaint style - minimal)
+        // Top bar (ibisPaint style - minimal) — BISA DI-SLIDE/SCROLL horizontal
+        // agar tombol Export dkk tak terpotong di layar sempit.
         // clickable noop agar tap di area kosong bar tidak tembus ke kanvas.
         Row(
             modifier = Modifier
@@ -1865,7 +1915,6 @@ fun CanvasEditorScreen(
                 .height(48.dp)
                 .background(TopBarBg)
                 .align(Alignment.TopCenter)
-                .padding(horizontal = 8.dp)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1873,11 +1922,18 @@ fun CanvasEditorScreen(
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val topBarScroll = rememberScrollState()
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .horizontalScroll(topBarScroll)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
             IconButton(onClick = { requestExit() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
-
-            Spacer(modifier = Modifier.width(4.dp))
 
             IconButton(
                 onClick = { undoRedoManager.undo(layerManager); refreshComposite() },
@@ -1909,7 +1965,7 @@ fun CanvasEditorScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.width(16.dp))
 
             // Fitur layer di top bar (cermin tombol layer bawah + jumlah layer).
             Box(
@@ -1950,6 +2006,7 @@ fun CanvasEditorScreen(
                 }
             }
         }
+        }
 
         // Floating text toolbar
         // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
@@ -1977,7 +2034,7 @@ fun CanvasEditorScreen(
                 IconButton(onClick = { showTextEditor = true }, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit teks", tint = Accent)
                 }
-                IconButton(onClick = { flattenSelectedText() }, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = { showFlattenConfirm = true }, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Layers, contentDescription = "Flatten ke layer", tint = Color.White)
                 }
                 IconButton(onClick = {
@@ -2242,7 +2299,7 @@ fun CanvasEditorScreen(
                         val box = selectedTextBox
                         val bounds = selectionEngine.selectionBounds()
                         if (box != null && bounds != null) {
-                            undoRedoManager.pushTextBox(box.id, box.copy())
+                            undoRedoManager.pushTextBox(textLayerIdOf(box), box.copy())
                             box.fitToRect(bounds)
                             refreshComposite()
                         }
@@ -2355,8 +2412,7 @@ fun CanvasEditorScreen(
                 // Sinkronkan nama layer agar panel Layers tetap informatif.
                 val key = box.id to box.text
                 androidx.compose.runtime.LaunchedEffect(key) {
-                    layerManager.layers.filterIsInstance<TextLayer>()
-                        .find { it.box.id == box.id }
+                    layerManager.findTextLayerByBoxId(box.id)
                         ?.let { it.name = "Text: ${box.text.take(16)}" }
                 }
                 Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
@@ -2366,14 +2422,14 @@ fun CanvasEditorScreen(
                         onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
                         onChange = { refreshCompositeCoalesced() },
                         onPushTextHistory = { before ->
-                            undoRedoManager.pushTextBox(box.id, before)
+                            undoRedoManager.pushTextBox(textLayerIdOf(box), before)
                         },
                         onCheckPrefix = { applyAllStylesTo(it) },
                         onOpenMultiBubble = {
                             multiBubbleDraft = ""
                             showMultiBubbleDialog = true
                         },
-                        onFlatten = { flattenSelectedText() },
+                        onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }
                     )
@@ -2416,6 +2472,37 @@ fun CanvasEditorScreen(
                         ) {
                             Text("Keluar tanpa menyimpan", color = Color.Red)
                         }
+                    }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
+        }
+
+        // Konfirmasi flatten: bakar teks ke layer = tak bisa diedit lagi.
+        if (showFlattenConfirm) {
+            AlertDialog(
+                onDismissRequest = { showFlattenConfirm = false },
+                title = { Text("Bakar teks ke layer?", color = Color.White) },
+                text = {
+                    Text(
+                        "Teks \"${selectedTextBox?.text?.take(24) ?: ""}\" akan menjadi piksel dan tidak bisa diedit lagi. Batalkan lewat Undo bila berubah pikiran.",
+                        color = Color.LightGray, fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showFlattenConfirm = false
+                            flattenSelectedText()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text("Bakar", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showFlattenConfirm = false }) {
+                        Text("Batal", color = Color.Gray)
                     }
                 },
                 containerColor = Color(0xFF2A2A2A)
@@ -2566,7 +2653,14 @@ fun CanvasEditorScreen(
                     undoManager = undoRedoManager,
                     refreshTick = refreshCanvasState,
                     onClose = { showLayersPanel = false },
-                    onRefresh = { refreshComposite() }
+                    onRefresh = { refreshComposite() },
+                    onEditText = { tl ->
+                        selectedTextBox = tl.box
+                        activeTool = ActiveTool.TEXT
+                        showLayersPanel = false
+                        showTextEditor = true
+                        refreshComposite()
+                    }
                 )
             }
         }
@@ -2785,31 +2879,77 @@ fun CanvasEditorScreen(
             val canRun = unusedCount > 0 && (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection)
             AlertDialog(
                 onDismissRequest = { showScriptPanel = false },
-                title = { Text("Script → Bubble / Seleksi", color = Color.White) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Description, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Script → Bubble", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
                 text = {
                     Column {
+                        // Status ringkas berupa pil.
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StatusPill("${scriptEntries.size} baris")
+                            StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
+                            StatusPill("${detectedBubbles.size} bubble")
+                            StatusPill(
+                                if (selectionEngine.hasSelection) "seleksi ✓" else "tanpa seleksi",
+                                highlight = selectionEngine.hasSelection
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        // Progres pemakaian.
+                        if (scriptEntries.isNotEmpty()) {
+                            val done = scriptEntries.size - unusedCount
+                            val frac = done.toFloat() / scriptEntries.size.toFloat()
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(Color(0xFF38383A))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(frac)
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(Accent)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                "$done/${scriptEntries.size} baris terpakai",
+                                color = Color.Gray, fontSize = 11.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        } else {
+                            Text(
+                                "Belum ada script. Import file atau ketik manual.",
+                                color = Color.LightGray, fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                         Text(
-                            if (scriptEntries.isEmpty()) "Belum ada script. Import file atau ketik manual."
-                            else "${scriptEntries.size} baris (${unusedCount} belum terpakai) • ${detectedBubbles.size} bubble • seleksi: ${if (selectionEngine.hasSelection) "ada" else "tidak ada"}",
-                            color = Color.LightGray, fontSize = 12.sp
+                            "Sumber naskah",
+                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            "Urutan render: atas→bawah, dalam baris kanan→kiri. Prioritas bubble bila ada; bila tidak ada bubble dipakai seleksi aktif (1 baris).",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Button(
-                                onClick = { scriptImportLauncher.launch(arrayOf("text/plain", "*/*")) },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Import", color = Color.White, fontSize = 11.sp) }
-                            Button(
+                            ScriptActionButton(
+                                label = "Import",
+                                icon = Icons.Default.FileUpload,
+                                modifier = Modifier.weight(1f),
+                                onClick = { scriptImportLauncher.launch(arrayOf("text/plain", "*/*")) }
+                            )
+                            ScriptActionButton(
+                                label = "Contoh",
+                                icon = Icons.Default.Description,
+                                modifier = Modifier.weight(1f),
                                 onClick = {
                                     // Muat contoh bawaan dari assets (offline, tanpa download).
                                     runCatching {
@@ -2821,45 +2961,53 @@ fun CanvasEditorScreen(
                                             scriptDraft = raw
                                         }
                                     }
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Contoh", color = Color.White, fontSize = 11.sp) }
-                            Button(
+                                }
+                            )
+                            ScriptActionButton(
+                                label = "Ketik",
+                                icon = Icons.Default.Edit,
+                                modifier = Modifier.weight(1f),
                                 onClick = {
                                     scriptDraft = scriptEntries.joinToString("\n") { it.text }
                                     showScriptEditor = true
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Ketik", color = Color.White, fontSize = 11.sp) }
-                            Button(
+                                }
+                            )
+                            IconButton(
                                 onClick = { resetScriptUsage() },
                                 enabled = scriptEntries.any { it.used },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp)
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(PanelBg)
+                                    .size(48.dp)
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Reset terpakai", tint = Color.White, modifier = Modifier.size(16.dp))
+                                Icon(Icons.Default.Refresh, contentDescription = "Reset terpakai", tint = Color.White, modifier = Modifier.size(18.dp))
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                stylePresetsTick++
-                                newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
-                                showStyleRules = true
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
+                        // Kartu style rules.
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(PanelBg)
+                                .clickable {
+                                    stylePresetsTick++
+                                    newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
+                                    showStyleRules = true
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                if (styleRules.isEmpty()) "Style Rules: nonaktif — ketuk untuk atur"
-                                else "Style Rules (${styleRules.size}): ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
-                                color = Color.White, fontSize = 11.sp
-                            )
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Accent, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
+                                    else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
+                                    color = Color.Gray, fontSize = 11.sp
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         if (scriptEntries.isEmpty()) {
@@ -2868,18 +3016,28 @@ fun CanvasEditorScreen(
                                 color = Color.Gray, fontSize = 11.sp
                             )
                         } else {
+                            Text(
+                                "Daftar baris — ketuk untuk tandai/batalkan terpakai",
+                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(220.dp)
+                                    .height(220.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 itemsIndexed(scriptEntries) { idx, e ->
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(vertical = 3.dp)
-                                            .clip(RoundedCornerShape(8.dp))
+                                            .clip(RoundedCornerShape(10.dp))
                                             .background(if (e.used) Color(0xFF1F3D2B) else PanelBg)
+                                            .border(
+                                                1.dp,
+                                                if (e.used) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                                RoundedCornerShape(10.dp)
+                                            )
                                             .clickable {
                                                 // Toggle manual: tandai / batalkan terpakai per baris.
                                                 val i = scriptEntries.indexOfFirst { it.id == e.id }
@@ -2888,30 +3046,38 @@ fun CanvasEditorScreen(
                                                     scriptEntries = scriptEntries.toList()
                                                 }
                                             }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                            .padding(horizontal = 10.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Text(
-                                            "${idx + 1}.",
-                                            color = Color.Gray, fontSize = 11.sp,
-                                            modifier = Modifier.width(28.dp)
-                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .size(24.dp)
+                                                .clip(CircleShape)
+                                                .background(if (e.used) Color(0xFF2E7D32) else Accent),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                "${idx + 1}",
+                                                color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
                                         Text(
                                             e.text,
                                             color = if (e.used) Color.Gray else Color.White,
                                             fontSize = 12.sp,
                                             modifier = Modifier.weight(1f)
                                         )
-                                        Spacer(modifier = Modifier.width(6.dp))
                                         if (e.used) {
-                                            Icon(Icons.Default.Check, contentDescription = "Terpakai", tint = Color(0xFF4CAF50), modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Icon(Icons.Default.Check, contentDescription = "Terpakai", tint = Color(0xFF4CAF50), modifier = Modifier.size(18.dp))
                                         }
                                     }
                                 }
                             }
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                "Ketuk baris untuk toggle terpakai. Tombol refresh untuk reset semua.",
+                                "Urutan render: atas→bawah, dalam baris kanan→kiri. Prioritas bubble bila ada.",
                                 color = Color.Gray, fontSize = 11.sp
                             )
                         }
@@ -2922,7 +3088,11 @@ fun CanvasEditorScreen(
                         onClick = { runScript() },
                         enabled = canRun,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Jalankan Script", color = Color.White) }
+                    ) {
+                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Jalankan", color = Color.White)
+                    }
                 },
                 dismissButton = {
                     TextButton(onClick = { showScriptPanel = false }) {
@@ -2935,22 +3105,38 @@ fun CanvasEditorScreen(
 
         // === Editor Script: ketik / tempel manual ===
         if (showScriptEditor) {
+            val draftLines = scriptDraft.lines().count { it.trim().isNotEmpty() }
             AlertDialog(
                 onDismissRequest = { showScriptEditor = false },
-                title = { Text("Ketik Script", color = Color.White) },
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Edit, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Ketik Script", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                },
                 text = {
                     Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            StatusPill("$draftLines baris", highlight = draftLines > 0)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Satu baris = satu bubble.",
+                                color = Color.Gray, fontSize = 12.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Satu baris = satu bubble. Baris 'Page …' dan 'Terjemahan' otomatis diabaikan.",
-                            color = Color.Gray, fontSize = 12.sp
+                            "Baris 'Page …' dan 'Terjemahan' otomatis diabaikan.",
+                            color = Color.Gray, fontSize = 11.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = scriptDraft,
                             onValueChange = { scriptDraft = it },
-                            label = { Text("Script") },
-                            minLines = 6,
-                            maxLines = 14,
+                            label = { Text("Tempel / ketik naskah di sini") },
+                            minLines = 8,
+                            maxLines = 16,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
