@@ -5,6 +5,7 @@ import android.graphics.Color as AndroidColor
 import android.graphics.Path
 import android.graphics.RectF
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -126,6 +127,10 @@ import com.grooxtyper.app.model.SelectionEngine
 import com.grooxtyper.app.model.TextBox
 import com.grooxtyper.app.model.TextHandle
 import com.grooxtyper.app.model.TextLayer
+import com.grooxtyper.app.model.TextLayerStore
+import com.grooxtyper.app.model.TextLayerStore.parseLayers
+import com.grooxtyper.app.model.TextLayerStore.restoreTextLayers
+import com.grooxtyper.app.model.TextLayerStore.textLayersToJson
 import com.grooxtyper.app.model.TextRenderer
 import com.grooxtyper.app.model.TextStyleManager
 import com.grooxtyper.app.model.StyleRule
@@ -340,6 +345,11 @@ fun CanvasEditorScreen(
     // Dibaca agar tombol Undo/Redo ikut recompose saat history berubah.
     val historyTick = undoRedoManager.historyVersion
 
+    // Flag dialog keluar (dideklarasikan awal agar auto-save/dispose bisa baca).
+    var showExitDialog by remember { mutableStateOf(false) }
+    var isSavingExit by remember { mutableStateOf(false) }
+    var discardOnExit by remember { mutableStateOf(false) }
+
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
         refreshCanvasState++
@@ -350,6 +360,48 @@ fun CanvasEditorScreen(
     fun refreshCanvasLight() {
         refreshCanvasState++
         dirtyVersion++
+    }
+
+    /**
+     * Simpan project SEKARANG: PNG basis = layer gambar SAJA (tanpa teks
+     * bakar) + JSON teks terpisah. Render basis di thread pemanggil (Main
+     * saat auto-save/keluar, setara copy 46MB yang sudah ada), tulis file
+     * di IO. Kembalikan true bila basis+teks tertulis.
+     */
+    suspend fun persistProjectNow(withPreview: Boolean): Boolean {
+        val dv = dirtyVersion
+        val base = runCatching {
+            Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+        }.getOrNull() ?: return false
+        var preview: Bitmap? = null
+        return try {
+            layerManager.renderDrawingOnly(base)
+            val textsJson = with(TextLayerStore) { layerManager.textLayersToJson() }
+            if (withPreview) {
+                preview = runCatching {
+                    val longest = max(canvasWidth, canvasHeight).coerceAtLeast(1)
+                    val s = (1024f / longest).coerceAtMost(1f)
+                    ImageImport.scaleTo(
+                        compositeBitmap,
+                        max(1, (canvasWidth * s).toInt()),
+                        max(1, (canvasHeight * s).toInt())
+                    )
+                }.getOrNull()
+            }
+            withContext(Dispatchers.IO) {
+                runCatching { projectManager.saveArtwork(projectId, base) }
+                runCatching { projectManager.saveTexts(projectId, textsJson) }
+                preview?.let { pv -> runCatching { projectManager.savePreview(projectId, pv) } }
+            }
+            lastSavedVersion = dv
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        } finally {
+            runCatching { base.recycle() }
+            runCatching { preview?.recycle() }
+        }
     }
 
     /**
@@ -407,50 +459,39 @@ fun CanvasEditorScreen(
     }
 
     LaunchedEffect(projectId) {
-        // Auto-save hemat: kanvas jangkung 720x16000 copy 46MB tiap 15s berat,
-        // jadi interval adaptif + copy di IO agar tidak jank UI.
+        // Auto-save hemat: kanvas jangkung 720x16000 render 46MB tiap 15s berat,
+        // jadi interval adaptif. Basis = gambar saja (teks di JSON terpisah).
         val isHuge = canvasWidth.toLong() * canvasHeight > 4_000_000L
         val interval = if (isHuge) 30_000L else 15_000L
         while (true) {
             delay(interval)
             if (dirtyVersion != lastSavedVersion) {
-                // Untuk kanvas jangkung, tunda copy ke IO (dengan lock ringan)
-                // agar Main tidak freeze 80-120ms per 15s. Sinkronisasi via
-                // snapshot di Main tetap aman, tapi interval lebih jarang.
-                val snap: Bitmap? = if (isHuge) {
-                    // Coba copy ringan; bila OOM langsung skip cycle ini.
-                    runCatching {
-                        // Copy di Main tetap tapi jarang; next step: pakai
-                        // tile diff, sementara tahan interval panjang.
-                        compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                    }.getOrNull()
-                } else {
-                    runCatching {
-                        compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                    }.getOrNull()
-                }
-                if (snap != null) {
-                    val dv = dirtyVersion
-                    withContext(Dispatchers.IO) {
-                        runCatching { projectManager.saveArtwork(projectId, snap) }
-                        runCatching { snap.recycle() }
-                    }
-                    lastSavedVersion = dv
-                }
+                runCatching { persistProjectNow(withPreview = false) }
             }
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            // Simpan terakhir tanpa memblokir navigasi.
-            val snap = runCatching {
-                compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-            }.getOrNull()
-            if (snap != null) {
-                scope.launch(Dispatchers.IO) {
-                    runCatching { projectManager.saveArtwork(projectId, snap) }
-                    runCatching { snap.recycle() }
+            // Jaring pengaman: simpan bila masih kotor, kecuali user eksplisit
+            // memilih "Keluar tanpa menyimpan" di dialog konfirmasi.
+            if (!discardOnExit && dirtyVersion != lastSavedVersion) {
+                val base = runCatching {
+                    Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+                }.getOrNull()
+                if (base != null) {
+                    try {
+                        layerManager.renderDrawingOnly(base)
+                        val textsJson = with(TextLayerStore) { layerManager.textLayersToJson() }
+                        scope.launch(Dispatchers.IO) {
+                            runCatching { projectManager.saveArtwork(projectId, base) }
+                            runCatching { projectManager.saveTexts(projectId, textsJson) }
+                            runCatching { base.recycle() }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        runCatching { base.recycle() }
+                    }
                 }
             }
         }
@@ -493,6 +534,72 @@ fun CanvasEditorScreen(
     var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
     var mlDetecting by remember { mutableStateOf(false) }
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
+
+    // Konfirmasi keluar: cegah ketekan Back tak sengaja langsung terlempar.
+    // (Flag showExitDialog/isSavingExit/discardOnExit dideklarasikan di atas.)
+    fun hasUnsavedChanges(): Boolean = dirtyVersion != lastSavedVersion
+    fun requestExit() {
+        // Panel bawah didahulukan (tutup dulu, bukan keluar).
+        if (showTextEditor || showLayersPanel || showBrushSettings) {
+            showTextEditor = false
+            showLayersPanel = false
+            showBrushSettings = false
+            return
+        }
+        if (hasUnsavedChanges()) {
+            showExitDialog = true
+        } else {
+            onBackToGallery()
+        }
+    }
+    fun doExitWithoutSaving() {
+        discardOnExit = true
+        showExitDialog = false
+        onBackToGallery()
+    }
+    fun doSaveAndExit() {
+        if (isSavingExit) return
+        isSavingExit = true
+        scope.launch {
+            // Simpan basis + teks + preview, TUNGGU selesai baru keluar
+            // agar tidak hilang bila proses mati tepat setelah navigasi.
+            runCatching { persistProjectNow(withPreview = true) }
+            isSavingExit = false
+            showExitDialog = false
+            onBackToGallery()
+        }
+    }
+
+    BackHandler(enabled = !isSavingExit) {
+        if (showExitDialog) {
+            showExitDialog = false
+        } else {
+            requestExit()
+        }
+    }
+
+    // Restore teks editable (format baru). Basis gambar tetap via initialBitmap.
+    // File teks absen = project lawas (teks bakar) → jalur legacy apa adanya.
+    LaunchedEffect(projectId) {
+        val raw = withContext(Dispatchers.IO) {
+            runCatching { projectManager.loadTexts(projectId) }.getOrNull()
+        }
+        if (!raw.isNullOrBlank()) {
+            val resolver: (String) -> android.graphics.Typeface = { name ->
+                fontList.find { it.first == name }?.second
+                    ?: android.graphics.Typeface.DEFAULT_BOLD
+            }
+            val restored = parseLayers(raw, resolver)
+            if (restored.topFirst.isNotEmpty()) {
+                with(TextLayerStore) {
+                    layerManager.restoreTextLayers(restored) { box ->
+                        selectedTextBox = box
+                    }
+                }
+                refreshComposite()
+            }
+        }
+    }
 
     // Style preset untuk pencocokan prefix otomatis ala TypeR.
     val textStyleManager = remember { TextStyleManager(context) }
@@ -1651,19 +1758,7 @@ fun CanvasEditorScreen(
                 ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = {
-                // Simpan di background agar tombol Back tidak macet; judul proyek dipertahankan.
-                val snap = runCatching {
-                    compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                }.getOrNull()
-                if (snap != null) {
-                    scope.launch(Dispatchers.IO) {
-                        runCatching { projectManager.saveArtwork(projectId, snap) }
-                        runCatching { snap.recycle() }
-                    }
-                }
-                onBackToGallery()
-            }) {
+            IconButton(onClick = { requestExit() }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
 
@@ -2118,6 +2213,47 @@ fun CanvasEditorScreen(
                     )
                 }
             } ?: run { showTextEditor = false }
+        }
+
+        // Konfirmasi keluar agar tombol Back tak sengaja tidak menutup editor.
+        if (showExitDialog) {
+            AlertDialog(
+                onDismissRequest = { if (!isSavingExit) showExitDialog = false },
+                title = { Text("Keluar dari editor?", color = Color.White) },
+                text = {
+                    Text(
+                        if (isSavingExit) "Menyimpan project…"
+                        else "Ada perubahan yang belum disimpan. Simpan dulu sebelum keluar?",
+                        color = Color.LightGray, fontSize = 13.sp
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = { doSaveAndExit() },
+                        enabled = !isSavingExit,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
+                    ) {
+                        Text(if (isSavingExit) "Menyimpan…" else "Simpan & keluar", color = Color.Black)
+                    }
+                },
+                dismissButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = { showExitDialog = false },
+                            enabled = !isSavingExit
+                        ) {
+                            Text("Batal", color = Color.Gray)
+                        }
+                        TextButton(
+                            onClick = { doExitWithoutSaving() },
+                            enabled = !isSavingExit
+                        ) {
+                            Text("Keluar tanpa menyimpan", color = Color.Red)
+                        }
+                    }
+                },
+                containerColor = Color(0xFF2A2A2A)
+            )
         }
 
         if (showMLInpaintDialog) {

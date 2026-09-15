@@ -104,8 +104,42 @@ class ProjectManager(private val context: Context) {
         if (target != null) {
             val f = File(target.imagePath)
             if (f.exists()) f.delete()
+            runCatching { textsFileFor(id).takeIf { it.exists() }?.delete() }
+            runCatching { previewFileFor(id).takeIf { it.exists() }?.delete() }
             current.remove(target)
             persistProjects(current)
+        }
+    }
+
+    // ---------- State editable (teks tetap bisa diedit setelah apk ditutup) ----------
+    // Basis gambar (proj_<id>.png) kini = PNG layer gambar SAJA (tanpa teks
+    // bakar); teks disimpan terpisah sebagai JSON. File lama (format lawas)
+    // berisi komposit + teks bakar: tetap dibuka via jalur legacy apa adanya.
+
+    /** JSON teks terpisah per project. */
+    fun textsFileFor(id: String): File = File(projectsDir, "proj_${id}_texts.json")
+
+    /** Preview kecil komposit + teks untuk thumbnail galeri (opsional). */
+    fun previewFileFor(id: String): File = File(projectsDir, "proj_${id}_preview.png")
+
+    fun saveTexts(id: String, json: String) {
+        runCatching { textsFileFor(id).writeText(json) }
+    }
+
+    /** null bila belum pernah disimpan format baru (project lawas → jalur legacy). */
+    fun loadTexts(id: String): String? = runCatching {
+        textsFileFor(id).takeIf { it.exists() }?.readText()
+    }.getOrNull()
+
+    fun previewPathFor(id: String): String? = runCatching {
+        previewFileFor(id).takeIf { it.exists() }?.absolutePath
+    }.getOrNull()
+
+    fun savePreview(id: String, bmp: Bitmap) {
+        runCatching {
+            previewFileFor(id).outputStream().use { out ->
+                bmp.compress(Bitmap.CompressFormat.PNG, 90, out)
+            }
         }
     }
 

@@ -211,10 +211,14 @@ fun GalleryScreen(
                 ) {
                     items(savedProjects, key = { it.id }) { proj ->
                         // Thumbnail di-decode sampled di IO agar daftar riwayat tetap ringan.
+                        // Prioritaskan preview berteks (basis edit tidak lagi memuat teks bakar).
                         var thumbBmp by remember(proj.imagePath) { mutableStateOf<Bitmap?>(null) }
                         LaunchedEffect(proj.imagePath) {
                             thumbBmp = withContext(Dispatchers.IO) {
-                                ImageImport.decodeFileSampled(proj.imagePath, ImageImport.MAX_THUMB_DIM)
+                                val preview = runCatching { projectManager.previewPathFor(proj.id) }.getOrNull()
+                                ImageImport.decodeFileSampled(
+                                    preview ?: proj.imagePath, ImageImport.MAX_THUMB_DIM
+                                )
                             }
                         }
                         Card(

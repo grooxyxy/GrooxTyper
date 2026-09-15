@@ -91,8 +91,9 @@ class DrawingLayer(
 
 class TextLayer(
     val box: TextBox,
-    name: String = "Text: ${box.text.take(16)}"
-) : LayerItem(name = name, isFolder = false)
+    name: String = "Text: ${box.text.take(16)}",
+    layerId: String = UUID.randomUUID().toString()
+) : LayerItem(name = name, isFolder = false, id = layerId)
 
 class LayerManager(val width: Int, val height: Int) {
     val layers = mutableStateListOf<LayerItem>()
@@ -253,6 +254,19 @@ class LayerManager(val width: Int, val height: Int) {
     }
 
     fun renderComposite(targetBitmap: Bitmap) {
+        renderInternal(targetBitmap, withText = true)
+    }
+
+    /**
+     * Render HANYA layer gambar (tanpa teks) untuk file basis project.
+     * Basis tanpa teks + JSON teks terpisah = teks tetap editable setelah
+     * apk ditutup (tidak lagi menyatu/baked ke Layer 1).
+     */
+    fun renderDrawingOnly(targetBitmap: Bitmap) {
+        renderInternal(targetBitmap, withText = false)
+    }
+
+    private fun renderInternal(targetBitmap: Bitmap, withText: Boolean) {
         val canvas = Canvas(targetBitmap)
         canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
 
@@ -302,6 +316,7 @@ class LayerManager(val width: Int, val height: Int) {
                     }
                 }
             } else if (layer is TextLayer) {
+                if (!withText) continue
                 // Jalur cepat: tanpa bitmap intermediate saat opacity penuh & blend normal.
                 if (layer.opacity >= 1f && layer.blendMode == LayerBlendMode.NORMAL) {
                     TextRenderer.render(canvas, layer.box)

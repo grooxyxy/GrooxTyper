@@ -621,6 +621,145 @@ class TextBox(
             }
             return w - extraPerChar
         }
+
+        /**
+         * Serialisasi untuk penyimpanan project (teks tetap editable setelah
+         * apk ditutup: font disimpan sebagai nama, bukan Typeface).
+         */
+        fun TextBox.toJson(): org.json.JSONObject = org.json.JSONObject().apply {
+            put("id", id)
+            put("text", text)
+            put("x", position.x.toDouble())
+            put("y", position.y.toDouble())
+            put("fontSize", fontSize.toDouble())
+            put("color", color)
+            put("bold", bold)
+            put("italic", italic)
+            put("align", align.name)
+            put("outlineWidth", outlineWidth.toDouble())
+            put("outlineColor", outlineColor)
+            put("strokeOpacity", strokeOpacity.toDouble())
+            put("strokePosition", strokePosition.name)
+            put("fillType", fillType.name)
+            put("gradient", org.json.JSONObject().apply {
+                put("colorStart", gradient.colorStart)
+                put("colorEnd", gradient.colorEnd)
+                put("angle", gradient.angle.toDouble())
+            })
+            shadow?.let { s ->
+                put("shadow", org.json.JSONObject().apply {
+                    put("dx", s.dx.toDouble())
+                    put("dy", s.dy.toDouble())
+                    put("blur", s.blur.toDouble())
+                    put("color", s.color)
+                    put("opacity", s.opacity.toDouble())
+                    put("spread", s.spread.toDouble())
+                })
+            }
+            put("letterSpacing", letterSpacing.toDouble())
+            put("wordSpacing", wordSpacing.toDouble())
+            put("lineSpacing", lineSpacing.toDouble())
+            put("textOpacity", textOpacity.toDouble())
+            put("uppercase", uppercase)
+            put("underline", underline)
+            put("strikethrough", strikethrough)
+            glow?.let { g ->
+                put("glow", org.json.JSONObject().apply {
+                    put("color", g.color)
+                    put("blur", g.blur.toDouble())
+                    put("spread", g.spread.toDouble())
+                    put("opacity", g.opacity.toDouble())
+                })
+            }
+            bevel?.let { b ->
+                put("bevel", org.json.JSONObject().apply {
+                    put("size", b.size.toDouble())
+                    put("opacity", b.opacity.toDouble())
+                })
+            }
+            put("scale", scale.toDouble())
+            put("textScaleX", textScaleX.toDouble())
+            put("rotation", rotation.toDouble())
+            put("fontName", fontName)
+            boxWidth?.let { put("boxWidth", it.toDouble()) }
+        }
+
+        /** Pasangan dari [toJson]: typeface dicari via [typefaceFor], fallback bold. */
+        fun boxFromJson(o: org.json.JSONObject, typefaceFor: (String) -> Typeface): TextBox {
+            val fontName = o.optString("fontName", "Default Bold")
+            val gradientObj = o.optJSONObject("gradient")
+            val shadowObj = o.optJSONObject("shadow")
+            val glowObj = o.optJSONObject("glow")
+            val bevelObj = o.optJSONObject("bevel")
+            return TextBox(
+                id = o.optString("id", java.util.UUID.randomUUID().toString()),
+                text = o.optString("text", "Teks baru"),
+                position = Offset(
+                    o.optDouble("x", 640.0).toFloat(),
+                    o.optDouble("y", 640.0).toFloat()
+                ),
+                fontSize = o.optDouble("fontSize", 64.0).toFloat(),
+                color = o.optInt("color", android.graphics.Color.WHITE),
+                bold = o.optBoolean("bold", true),
+                italic = o.optBoolean("italic", false),
+                align = runCatching { TextAlignMode.valueOf(o.optString("align", "CENTER")) }
+                    .getOrDefault(TextAlignMode.CENTER),
+                outlineWidth = o.optDouble("outlineWidth", 0.0).toFloat(),
+                outlineColor = o.optInt("outlineColor", android.graphics.Color.BLACK),
+                strokeOpacity = o.optDouble("strokeOpacity", 1.0).toFloat(),
+                strokePosition = runCatching {
+                    StrokePosition.valueOf(o.optString("strokePosition", "OUTSIDE"))
+                }.getOrDefault(StrokePosition.OUTSIDE),
+                fillType = runCatching {
+                    TextFillType.valueOf(o.optString("fillType", "SOLID"))
+                }.getOrDefault(TextFillType.SOLID),
+                gradient = TextGradientSpec(
+                    colorStart = gradientObj?.optInt("colorStart", android.graphics.Color.WHITE)
+                        ?: android.graphics.Color.WHITE,
+                    colorEnd = gradientObj?.optInt(
+                        "colorEnd", android.graphics.Color.parseColor("#FF5722")
+                    ) ?: android.graphics.Color.parseColor("#FF5722"),
+                    angle = gradientObj?.optDouble("angle", 90.0)?.toFloat() ?: 90f
+                ),
+                shadow = shadowObj?.let { s ->
+                    TextShadowSpec(
+                        dx = s.optDouble("dx", 4.0).toFloat(),
+                        dy = s.optDouble("dy", 4.0).toFloat(),
+                        blur = s.optDouble("blur", 8.0).toFloat(),
+                        color = s.optInt("color", 0x80000000.toInt()),
+                        opacity = s.optDouble("opacity", 0.75).toFloat(),
+                        spread = s.optDouble("spread", 0.0).toFloat()
+                    )
+                },
+                letterSpacing = o.optDouble("letterSpacing", 0.0).toFloat(),
+                wordSpacing = o.optDouble("wordSpacing", 0.0).toFloat(),
+                lineSpacing = o.optDouble("lineSpacing", 12.0).toFloat(),
+                textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
+                uppercase = o.optBoolean("uppercase", false),
+                underline = o.optBoolean("underline", false),
+                strikethrough = o.optBoolean("strikethrough", false),
+                glow = glowObj?.let { g ->
+                    TextGlowSpec(
+                        color = g.optInt("color", 0xFFFFEE58.toInt()),
+                        blur = g.optDouble("blur", 14.0).toFloat(),
+                        spread = g.optDouble("spread", 0.0).toFloat(),
+                        opacity = g.optDouble("opacity", 0.75).toFloat()
+                    )
+                },
+                bevel = bevelObj?.let { b ->
+                    TextBevelSpec(
+                        size = b.optDouble("size", 2.0).toFloat(),
+                        opacity = b.optDouble("opacity", 0.8).toFloat()
+                    )
+                },
+                scale = o.optDouble("scale", 1.0).toFloat(),
+                textScaleX = o.optDouble("textScaleX", 1.0).toFloat(),
+                rotation = o.optDouble("rotation", 0.0).toFloat(),
+                fontName = fontName,
+                typeface = runCatching { typefaceFor(fontName) }.getOrDefault(Typeface.DEFAULT_BOLD),
+                boxWidth = if (o.has("boxWidth")) o.optDouble("boxWidth").toFloat() else null
+            )
+        }
     }
 }
 
