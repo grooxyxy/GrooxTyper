@@ -33,6 +33,8 @@ object TextRenderer {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = box.fontSize * box.scale
             typeface = box.effectiveTypeface()
+            // Sempitkan horizontal (menyatukan lebar baris tanpa mematahkan kata).
+            textScaleX = box.textScaleX.coerceIn(0.3f, 1f)
         }
         val fm = paint.fontMetrics
         val extra = box.letterSpacing * box.scale
@@ -286,6 +288,7 @@ object TextRenderer {
         val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = box.fontSize * box.scale
             typeface = box.effectiveTypeface()
+            textScaleX = box.textScaleX.coerceIn(0.3f, 1f)
             style = Paint.Style.FILL
             color = Color.BLACK
         }
@@ -385,6 +388,7 @@ object TextRenderer {
             glow = base.glow?.copy(),
             bevel = base.bevel?.copy(),
             scale = base.scale * fit,
+            textScaleX = base.textScaleX,
             rotation = 0f,
             fontName = base.fontName,
             typeface = base.typeface

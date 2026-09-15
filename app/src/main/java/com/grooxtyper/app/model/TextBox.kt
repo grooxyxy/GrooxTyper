@@ -80,6 +80,10 @@ class TextBox(
     var glow: TextGlowSpec? = null,
     var bevel: TextBevelSpec? = null,
     var scale: Float = 1f,
+    // Skala horizontal glif (menyempitkan teks TANPA memotong kata).
+    // 1f = normal, <1f = sempit (mis. 0.6f). Dipakai otomatis oleh fitToRect
+    // dan manual lewat slider "Sempitkan teks" di panel teks.
+    var textScaleX: Float = 1f,
     var rotation: Float = 0f,
     var fontName: String = "Default Bold",
     var typeface: Typeface = Typeface.DEFAULT_BOLD
@@ -96,22 +100,41 @@ class TextBox(
     fun basePaint(): Paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = fontSize * scale
         typeface = effectiveTypeface()
+        this.textScaleX = textScaleX.coerceIn(0.3f, 1f)
     }
 
     /** Teks yang tampil (kapital bila opsi menyala; asli tetap tersimpan). */
     fun displayText(): String = if (uppercase) text.uppercase() else text
 
     /**
-     * Pas-kan box ke dalam [rect] (gaya TypeR auto-fit): posisi ke tengah
-     * lalu ukuran font dikecilkan sampai muat. Satu arah (mengecil) saja.
+     * Pas-kan box ke dalam [rect] (gaya TypeR auto-fit): posisi ke tengah, lalu
+     * ukuran font dikecilkan sampai muat. Bila font sudah mentok di lantai dan
+     * teks masih terlalu lebar, teks DISEMPITKAN secara horizontal lewat
+     * [textScaleX] (tanpa mematahkan kata/baris). Satu arah (mengecil) saja.
      */
-    fun fitToRect(rect: RectF, fill: Float = 0.92f, minFont: Float = 10f) {
+    fun fitToRect(
+        rect: RectF,
+        fill: Float = 0.92f,
+        minFont: Float = 10f,
+        minCondense: Float = 0.6f
+    ) {
         position = Offset(rect.centerX(), rect.centerY())
+        // Selalu hitung ulang dari keadaan normal agar hasil-fit konsisten.
+        textScaleX = 1f
         var guard = 0
-        while (guard++ < 80) {
+        while (guard++ < 120) {
             val (w, h) = contentSize()
-            if ((w <= rect.width() * fill && h <= rect.height() * fill) || fontSize <= minFont) break
-            fontSize = max(minFont, fontSize * 0.92f)
+            if (w <= rect.width() * fill && h <= rect.height() * fill) break
+            if (fontSize > minFont) {
+                // 1) Kecilkan font dulu.
+                fontSize = max(minFont, fontSize * 0.92f)
+            } else if (textScaleX > minCondense + 0.01f) {
+                // 2) Font mentok: sempitkan glif agar tetap muat (baris utuh).
+                textScaleX = max(minCondense, textScaleX * 0.92f)
+            } else {
+                // 3) Sudah paling sempit; berhenti.
+                break
+            }
         }
     }
 
@@ -138,6 +161,7 @@ class TextBox(
         strikethrough = o.strikethrough
         glow = o.glow?.copy()
         bevel = o.bevel?.copy()
+        textScaleX = o.textScaleX
         fontName = o.fontName
         typeface = o.typeface
     }
@@ -241,6 +265,7 @@ class TextBox(
         glow = glow?.copy(),
         bevel = bevel?.copy(),
         scale = scale,
+        textScaleX = textScaleX,
         rotation = rotation,
         fontName = fontName,
         typeface = typeface
@@ -272,6 +297,7 @@ class TextBox(
         glow = o.glow?.copy()
         bevel = o.bevel?.copy()
         scale = o.scale
+        textScaleX = o.textScaleX
         rotation = o.rotation
         fontName = o.fontName
         typeface = o.typeface
@@ -303,6 +329,7 @@ class TextBox(
             glow == o.glow &&
             bevel == o.bevel &&
             scale == o.scale &&
+            textScaleX == o.textScaleX &&
             rotation == o.rotation &&
             fontName == o.fontName
     }

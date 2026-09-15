@@ -142,6 +142,7 @@ fun TextEditorPanel(
     var letterSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.letterSpacing) }
     var wordSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.wordSpacing) }
     var lineSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.lineSpacing) }
+    var scaleX by remember(box.id, styleVersion) { mutableFloatStateOf(box.textScaleX) }
 
     var textOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.textOpacity) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
@@ -198,7 +199,7 @@ fun TextEditorPanel(
         fillType, gradStart, gradEnd, gradAngle,
         outlineW, outlineColor, strokeOpacity, strokePos,
         shadowOn, shadowColor, shadowOpacity, shadowDist, shadowAngle, shadowSize, shadowSpread,
-        letterSp, wordSp, lineSp, styleVersion,
+        letterSp, wordSp, lineSp, scaleX, styleVersion,
         textOpacity, uppercase, underline, strike,
         glowOn, glowColor, glowOpacity, glowSize, glowSpread,
         bevelOn, bevelSize, bevelOpacity
@@ -225,6 +226,7 @@ fun TextEditorPanel(
                 letterSpacing = letterSp,
                 wordSpacing = wordSp,
                 lineSpacing = lineSp,
+                textScaleX = scaleX,
                 textOpacity = textOpacity,
                 uppercase = uppercase,
                 underline = underline,
@@ -421,6 +423,8 @@ fun TextEditorPanel(
                         onWordSp = { wordSp = it; box.wordSpacing = it; push() },
                         lineSp = lineSp,
                         onLineSp = { lineSp = it; box.lineSpacing = it; push() },
+                        scaleX = scaleX,
+                        onScaleX = { scaleX = it; box.textScaleX = it; push() },
                         textOpacity = textOpacity,
                         onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
                         uppercase = uppercase,
@@ -720,6 +724,8 @@ private fun EffectTab(
     onWordSp: (Float) -> Unit,
     lineSp: Float,
     onLineSp: (Float) -> Unit,
+    scaleX: Float,
+    onScaleX: (Float) -> Unit,
     textOpacity: Float,
     onTextOpacity: (Float) -> Unit,
     uppercase: Boolean,
@@ -805,6 +811,15 @@ private fun EffectTab(
     Slider(
         value = lineSp, onValueChange = onLineSp,
         valueRange = -50f..80f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
+    Text(
+        "Sempitkan teks ${(scaleX * 100).toInt()}%",
+        color = Color.Gray, fontSize = 12.sp
+    )
+    Slider(
+        value = scaleX, onValueChange = onScaleX,
+        valueRange = 0.5f..1f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
     Text("Opacity teks ${(textOpacity * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
