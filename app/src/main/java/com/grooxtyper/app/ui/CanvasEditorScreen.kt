@@ -94,7 +94,6 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.input.pointer.ExperimentalPointerInput
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -293,7 +292,6 @@ private fun drawVisibleBitmap(
     }
 }
 
-@OptIn(ExperimentalPointerInput::class)
 @Composable
 fun CanvasEditorScreen(
     projectId: String,
@@ -1258,22 +1256,39 @@ fun CanvasEditorScreen(
                                                 refreshComposite()
                                             }
                                         } else {
-                                            // Proses SEMUA titik historis antar frame, bukan
-                                            // hanya posisi terakhir: di kanvas 720x16000 event
-                                            // move bisa terjeda puluhan ms (frame berat) sehingga
-                                            // lompatan besar antar titik = goresan patah-patah.
-                                            val movePts = ArrayList<Offset>(change.historical.size + 1)
-                                            for (h in change.historical) movePts.add(h.position)
-                                            movePts.add(change.position)
+                                            // Goresan mulus di kanvas 720x16000: bila lompatan
+                                            // antar-event besar (frame berat → event move terjeda),
+                                            // interpolasi titik perantara di RUANG KANVAS per
+                                            // ~setengah diameter brush agar stroke tidak
+                                            // patah-patah. Stabil di semua versi Compose
+                                            // (tanpa API historis eksperimental).
                                             val target = strokeLayer ?: layerManager.ensureDrawingLayer()
+                                            val startPt = lastCanvasPoint ?: touchCanvasPos
+                                            val jump = (touchCanvasPos - startPt).getDistance()
+                                            val stepLen = (brushEngine.size * 0.5f).coerceIn(4f, 24f)
+                                            val movePts = ArrayList<Offset>()
+                                            if (jump > stepLen * 2f) {
+                                                val segments = (jump / stepLen).toInt().coerceAtMost(64)
+                                                for (si in 1..segments) {
+                                                    val t = si / (segments + 1f)
+                                                    movePts.add(
+                                                        Offset(
+                                                            startPt.x + (touchCanvasPos.x - startPt.x) * t,
+                                                            startPt.y + (touchCanvasPos.y - startPt.y) * t
+                                                        )
+                                                    )
+                                                }
+                                            }
+                                            movePts.add(touchCanvasPos)
                                             if (strokeLayer == null) strokeLayer = target
                                             val fastPath = isSingleLayerFastPath()
                                             var needFullRefresh = false
                                             for (pt in movePts) {
-                                                if ((pt - pressStartScreen).getDistance() > 16f) {
+                                                // pt sudah di ruang kanvas; cek gerakan layar pakai titik event.
+                                                if ((change.position - pressStartScreen).getDistance() > 16f) {
                                                     pressMoved = true
                                                 }
-                                                val cpt = screenToCanvasCoordinates(pt.x, pt.y)
+                                                val cpt = pt
                                                 val prev = lastCanvasPoint ?: continue
                                                 val dist = (cpt - prev).getDistance()
                                                 strokeLength += dist
