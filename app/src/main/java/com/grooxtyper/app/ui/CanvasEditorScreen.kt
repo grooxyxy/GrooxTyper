@@ -552,7 +552,9 @@ fun CanvasEditorScreen(
                 compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
             }.getOrNull() ?: return@launch
             bubbleDetecting = true
-            val found = bubbleDetector.detect(snap, bubbleModel)
+            // Teruskan applicationContext agar opsi koharu menjalankan inferensi
+            // ONNX Runtime nyata (fallback heuristik otomatis bila gagal).
+            val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
             runCatching { snap.recycle() }
             detectedBubbles = found
             bubbleDetecting = false

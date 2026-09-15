@@ -83,6 +83,12 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    // Model ONNX/PT sudah terkompresi; jangan dikompresi ulang di APK
+    // agar bisa di-load via mmap oleh ONNX Runtime (lebih cepat, hemat RAM).
+    androidResources {
+        noCompress += listOf("onnx", "pt", "ort")
+    }
 }
 
 dependencies {
@@ -103,6 +109,11 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.0")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.0")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.0")
+
+    // ONNX Runtime Mobile: menjalankan koharu-yolo26s-seg.onnx (bubble detector)
+    // langsung di perangkat — menggantikan heuristik fallback. Ukuran APK ditambah
+    // ~10-15MB per ABI (arm64-v8a + x86_64) sesuai abiFilters di atas.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

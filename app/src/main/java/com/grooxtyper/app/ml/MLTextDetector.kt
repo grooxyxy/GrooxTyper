@@ -233,6 +233,15 @@ class MLTextDetector {
         }
     }
 
+    /**
+     * Buat bitmap mask kanvas penuh untuk daftar region teks.
+     *
+     * MASK_BENTUK_TEKS ditulis ulang dari nol: alih-alih ambang rata-rata
+     * (yang rapuh pada latar gelap/teks terang), kini memakai Otsu biner
+     * sesungguhnya per region + deteksi polaritas otomatis (teks gelap ATAU
+     * terang) + dilatasi 1px agar anti-alias tepi stroke ikut tertutup.
+     * Bila cornerPoints ML Kit tersedia, hasil di-clip ke polygon teks miring.
+     */
     fun generateMaskBitmap(
         canvasWidth: Int,
         canvasHeight: Int,
@@ -253,7 +262,6 @@ class MLTextDetector {
                     // Mask Kotak: persegi panjang solid dengan padding kecil agar
                     // inpaint menutup tepi huruf sepenuhnya (variasi kotak).
                     val box = region.boundingBox
-                    // Padding 2-4px tergantung ukuran box, dijepit ke kanvas.
                     val padX = (box.width() * 0.04f).coerceIn(2f, 6f)
                     val padY = (box.height() * 0.04f).coerceIn(2f, 6f)
                     val l = (box.left - padX).coerceIn(0f, canvasWidth.toFloat())
@@ -263,90 +271,182 @@ class MLTextDetector {
                     canvas.drawRect(l, t, r, b, fillPaint)
                 }
                 MLMaskType.MASK_BENTUK_TEKS -> {
-                    // Mask Bentuk Teks: mengikuti bentuk huruf, bukan kotak penuh.
-                    // Strategi:
-                    // 1) Jika cornerPoints tersedia (4 titik dari ML Kit), buat Path polygon sebagai clip.
-                    // 2) Di dalam bounding box, gunakan luminance threshold untuk hanya menutupi stroke teks.
-                    // 3) Fallback tetap Otsu tight bila tidak ada cornerPoints.
                     val box = region.boundingBox
-                    val left = maxOf(0, box.left)
-                    val top = maxOf(0, box.top)
-                    val right = minOf(sourceBitmap.width, box.right)
-                    val bottom = minOf(sourceBitmap.height, box.bottom)
+                    // Perluas box sedikit agar tepi stroke (anti-alias) ikut.
+                    val grow = maxOf(2, box.height() / 12)
+                    val left = maxOf(0, box.left - grow)
+                    val top = maxOf(0, box.top - grow)
+                    val right = minOf(sourceBitmap.width, box.right + grow)
+                    val bottom = minOf(sourceBitmap.height, box.bottom + grow)
                     val boxW = right - left
                     val boxH = bottom - top
-                    if (boxW <= 0 || boxH <= 0) continue
+                    if (boxW <= 2 || boxH <= 2) continue
+
+                    val shape = buildTextShapeMask(sourceBitmap, left, top, boxW, boxH) ?: continue
 
                     val hasPolygon = region.cornerPoints != null && region.cornerPoints.size >= 4
                     if (hasPolygon) {
-                        // Gunakan polygon cornerPoints + threshold untuk tight shape.
+                        // Clip ke polygon cornerPoints agar mask mengikuti rotasi teks.
                         val pts = region.cornerPoints!!
-                        // Build path polygon di koordinat kanvas
                         val polyPath = Path().apply {
                             moveTo(pts[0].x.toFloat(), pts[0].y.toFloat())
                             for (i in 1 until pts.size) lineTo(pts[i].x.toFloat(), pts[i].y.toFloat())
                             close()
                         }
-                        // Ambil pixel di dalam rect untuk threshold, lalu mask hanya di dalam polygon
-                        val pixels = IntArray(boxW * boxH)
-                        sourceBitmap.getPixels(pixels, 0, boxW, left, top, boxW, boxH)
-                        var sumLum = 0L
-                        for (p in pixels) {
-                            val r = (p shr 16) and 0xFF
-                            val g = (p shr 8) and 0xFF
-                            val b = p and 0xFF
-                            sumLum += (0.299 * r + 0.587 * g + 0.114 * b).toLong()
-                        }
-                        val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128L
-                        val thresh = (avgLum * 0.92).toInt() // sedikit lebih ketat untuk bentuk teks
-                        val maskPixels = IntArray(boxW * boxH)
-                        for (i in pixels.indices) {
-                            val p = pixels[i]
-                            val r = (p shr 16) and 0xFF
-                            val g = (p shr 8) and 0xFF
-                            val b = p and 0xFF
-                            val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                            // Hanya piksel gelap = teks → putih di mask, lainnya transparan
-                            maskPixels[i] = if (lum < thresh) -1 else 0
-                        }
-                        val tmp = Bitmap.createBitmap(boxW, boxH, Bitmap.Config.ARGB_8888)
-                        tmp.setPixels(maskPixels, 0, boxW, 0, 0, boxW, boxH)
-                        // Clip ke polygon agar tepi mask mengikuti rotasi/bentuk teks
                         val save = canvas.save()
                         canvas.clipPath(polyPath)
-                        canvas.drawBitmap(tmp, left.toFloat(), top.toFloat(), null)
+                        canvas.drawBitmap(shape, left.toFloat(), top.toFloat(), null)
                         canvas.restoreToCount(save)
-                        tmp.recycle()
+                        shape.recycle()
                     } else {
-                        // Fallback: Otsu tight tanpa polygon (tetap bentuk teks via threshold)
-                        val pixels = IntArray(boxW * boxH)
-                        sourceBitmap.getPixels(pixels, 0, boxW, left, top, boxW, boxH)
-                        var sumLum = 0L
-                        for (p in pixels) {
-                            val r = (p shr 16) and 0xFF
-                            val g = (p shr 8) and 0xFF
-                            val b = p and 0xFF
-                            sumLum += (0.299 * r + 0.587 * g + 0.114 * b).toLong()
-                        }
-                        val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128L
-                        val thresh = (avgLum * 0.95).toInt()
-                        val maskPixels = IntArray(boxW * boxH)
-                        for (i in pixels.indices) {
-                            val p = pixels[i]
-                            val r = (p shr 16) and 0xFF
-                            val g = (p shr 8) and 0xFF
-                            val b = p and 0xFF
-                            val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                            maskPixels[i] = if (lum < thresh) -1 else 0
-                        }
-                        val tmp = Bitmap.createBitmap(boxW, boxH, Bitmap.Config.ARGB_8888)
-                        tmp.setPixels(maskPixels, 0, boxW, 0, 0, boxW, boxH)
-                        canvas.drawBitmap(tmp, left.toFloat(), top.toFloat(), null)
-                        tmp.recycle()
+                        canvas.drawBitmap(shape, left.toFloat(), top.toFloat(), null)
+                        shape.recycle()
                     }
                 }
             }
         }
         return maskBitmap
+    }
+
+    /**
+     * Mask bentuk teks untuk satu region: Otsu pada luminance, polaritas
+     * otomatis, dilatasi 1px, dan pembersihan komponen kecil (noise).
+     * Mengembalikan bitmap ARGB sebesar [w x h] (putih = teks).
+     */
+    private fun buildTextShapeMask(
+        source: Bitmap, left: Int, top: Int, w: Int, h: Int
+    ): Bitmap? {
+        return try {
+            val pixels = IntArray(w * h)
+            source.getPixels(pixels, 0, w, left, top, w, h)
+
+            // 1) Histogram luminance untuk Otsu.
+            val hist = IntArray(256)
+            val lum = IntArray(w * h)
+            var opaque = 0
+            for (i in pixels.indices) {
+                val p = pixels[i]
+                if ((p ushr 24) < 16) { lum[i] = -1; continue }
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val l = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+                lum[i] = l
+                hist[l]++
+                opaque++
+            }
+            if (opaque < 16) return null
+
+            // 2) Ambang Otsu (maksimalkan varians antar-kelas).
+            var sum = 0L
+            for (t in 0 until 256) sum += t.toLong() * hist[t]
+            var sumB = 0L
+            var wB = 0L
+            var maxVar = -1.0
+            var thresh = 127
+            for (t in 0 until 256) {
+                wB += hist[t]
+                if (wB == 0L) continue
+                val wF = opaque - wB
+                if (wF == 0L) break
+                sumB += t.toLong() * hist[t]
+                val mB = sumB / wB.toDouble()
+                val mF = (sum - sumB) / wF.toDouble()
+                val between = wB.toDouble() * wF.toDouble() * (mB - mF) * (mB - mF)
+                if (between > maxVar) {
+                    maxVar = between
+                    thresh = t
+                }
+            }
+
+            // 3) Polaritas: coba dua arah, pilih yang rasio tintanya masuk
+            //    akal untuk teks (2%..60% area box).
+            fun inkCount(dark: Boolean): Int {
+                var c = 0
+                for (l in lum) {
+                    if (l < 0) continue
+                    if (if (dark) l <= thresh else l > thresh) c++
+                }
+                return c
+            }
+            val darkCount = inkCount(true)
+            val lightCount = opaque - darkCount
+            val darkFrac = darkCount / opaque.toFloat()
+            val lightFrac = lightCount / opaque.toFloat()
+            // Default teks gelap; pakai teks terang bila gelap tak masuk akal
+            // tapi terang masuk (mis. bubble hitam dengan teks putih).
+            val inkIsDark = when {
+                darkFrac in 0.02f..0.60f -> true
+                lightFrac in 0.02f..0.60f -> false
+                else -> darkFrac >= lightFrac // fallback pilih minoritas
+            }
+
+            // 4) Biner + dilatasi 1px (menutup anti-alias tepi stroke).
+            val bin = BooleanArray(w * h)
+            for (i in lum.indices) {
+                val l = lum[i]
+                bin[i] = l >= 0 && (if (inkIsDark) l <= thresh else l > thresh)
+            }
+            val dil = BooleanArray(w * h)
+            for (y in 0 until h) {
+                val rowOff = y * w
+                for (x in 0 until w) {
+                    val i = rowOff + x
+                    if (!bin[i]) continue
+                    dil[i] = true
+                    if (x > 0) dil[i - 1] = true
+                    if (x < w - 1) dil[i + 1] = true
+                    if (y > 0) dil[i - w] = true
+                    if (y < h - 1) dil[i + w] = true
+                }
+            }
+
+            // 5) Buang komponen sangat kecil (< 4 piksel) sisa noise threshold.
+            val label = IntArray(w * h) { -1 }
+            val stack = IntArray(w * h)
+            var cur = 0
+            for (i in dil.indices) {
+                if (!dil[i] || label[i] != -1) continue
+                var sp = 0
+                stack[sp++] = i
+                label[i] = cur
+                var area = 0
+                var minX = w; var minY = h; var maxX = -1; var maxY = -1
+                while (sp > 0) {
+                    val p = stack[--sp]
+                    val x = p % w
+                    val y = p / w
+                    area++
+                    if (x < minX) minX = x
+                    if (y < minY) minY = y
+                    if (x > maxX) maxX = x
+                    if (y > maxY) maxY = y
+                    if (x > 0) { val n = p - 1; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
+                    if (x < w - 1) { val n = p + 1; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
+                    if (y > 0) { val n = p - w; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
+                    if (y < h - 1) { val n = p + w; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
+                }
+                if (area < 4) {
+                    // Hapus komponen noise ini.
+                    for (yy in minY..maxY) {
+                        val ro = yy * w
+                        for (xx in minX..maxX) {
+                            if (label[ro + xx] == cur) dil[ro + xx] = false
+                        }
+                    }
+                }
+                cur++
+            }
+
+            // 6) Render ke bitmap mask (putih solid = area inpaint).
+            val maskPixels = IntArray(w * h)
+            for (i in dil.indices) if (dil[i]) maskPixels[i] = -1
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(maskPixels, 0, w, 0, 0, w, h)
+            bmp
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
     }
 }

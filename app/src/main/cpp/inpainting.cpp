@@ -54,8 +54,14 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
     uint32_t* srcPtr = (uint32_t*)srcPixels;
     uint32_t* maskPtr = (uint32_t*)maskPixels;
 
+    // Performa: distMap float (4B) bukan double (8B) → setengah memori,
+    // cache lebih ramah untuk tile besar. Radius dijepit agar loop tetangga
+    // tidak kuadratik membesar.
+    if (radius > 12.0) radius = 12.0;
+    if (radius < 1.0) radius = 1.0;
+
     std::vector<uint8_t> maskState(width * height, 0); // 0: Known, 1: Band, 2: Unknown
-    std::vector<double> distMap(width * height, 1e9);
+    std::vector<float> distMap(width * height, 1e9f);
 
     std::priority_queue<PixelPoint, std::vector<PixelPoint>, std::greater<PixelPoint>> narrowBand;
 
@@ -94,7 +100,7 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
                 }
                 if (nearKnown) {
                     maskState[idx] = 1; // Band
-                    distMap[idx] = 0.0;
+                    distMap[idx] = 0.0f;
                     narrowBand.push({x, y, 0.0});
                 }
             }
@@ -123,9 +129,11 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
                 if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
                     int nIdx = ny * width + nx;
                     if (maskState[nIdx] == 0) { // Known neighbor
-                        double dist = std::sqrt(rx * rx + ry * ry);
-                        if (dist <= radius && dist > 0.0001) {
-                            double weight = 1.0 / (dist * dist);
+                        float dist2 = (float)(rx * rx + ry * ry);
+                        float rad2 = (float)(radius * radius);
+                        if (dist2 <= rad2 && dist2 > 0.0001f) {
+                            // weight = 1/dist^2 — tanpa sqrt (lebih cepat).
+                            float weight = 1.0f / dist2;
                             uint32_t px = srcPtr[nIdx];
                             aAcc += ((px >> 24) & 0xFF) * weight;
                             bAcc += ((px >> 16) & 0xFF) * weight;
@@ -155,7 +163,7 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
                 int nIdx = ny * width + nx;
                 if (maskState[nIdx] == 2) {
                     maskState[nIdx] = 1;
-                    double nDist = curr.dist + 1.0;
+                    float nDist = (float)(curr.dist + 1.0);
                     distMap[nIdx] = nDist;
                     narrowBand.push({nx, ny, nDist});
                 }

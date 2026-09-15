@@ -37,8 +37,60 @@ data class LayerProps(
 
 /** Satu langkah history untuk SEMUA action (cat/lukis/teks/layer). */
 sealed interface HistoryEntry {
-    /** Isi bitmap SEBELUM action cat (import/stroke/lasso/inpaint/flip/flatten). */
-    data class BitmapEntry(val layerId: String, val bitmap: Bitmap) : HistoryEntry
+    /**
+     * Isi bitmap SEBELUM action cat (import/stroke/lasso/inpaint/flip/flatten).
+     *
+     * Performa/memori untuk kanvas jangkung 720x16000 (~46MB/bitmap mentah):
+     * snapshot besar TIDAK disalin mentah, melainkan dikompresi PNG sekali
+     * (~1-4MB untuk halaman manga) lalu bitmap sumber dibiarkan. Snapshot
+     * di-materialize kembali (decode) hanya saat undo/redo benar-benar
+     * dipanggil. Kanvas kecil tetap menyalin bitmap (lebih cepat).
+     */
+    class BitmapEntry(val layerId: String, source: Bitmap) : HistoryEntry {
+        private var liveBitmap: Bitmap? = null
+        private var pngBytes: ByteArray? = null
+        private val w = source.width
+        private val h = source.height
+
+        init {
+            if (w.toLong() * h.toLong() > HUGE_CANVAS_PIXELS) {
+                // Kompresi langsung dari sumber TANPA copy 46MB dulu.
+                val out = java.io.ByteArrayOutputStream(1 shl 20)
+                try {
+                    source.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    pngBytes = out.toByteArray()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    // Fallback: tetap salin mentah bila kompresi gagal.
+                    liveBitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+                } catch (e: OutOfMemoryError) {
+                    e.printStackTrace()
+                    liveBitmap = null // biarkan null; materialize() akan gagal aman
+                }
+            } else {
+                liveBitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+            }
+        }
+
+        /** Bitmap siap pakai (decode bila disimpan terkompresi). */
+        fun materialize(): Bitmap? {
+            liveBitmap?.let { return it }
+            val bytes = pngBytes ?: return null
+            return try {
+                val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                decoded?.copy(Bitmap.Config.ARGB_8888, true)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+
+        fun recycle() {
+            runCatching { liveBitmap?.recycle() }
+            liveBitmap = null
+            pngBytes = null
+        }
+    }
 
     /** Isi TextBox SEBELUM diubah (geser/skala/putar/edit panel). */
     data class TextBoxEntry(val layerId: String, val box: TextBox) : HistoryEntry
@@ -79,7 +131,7 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         while (count > cap) {
             val idx = undoStack.indexOfFirst { it is HistoryEntry.BitmapEntry }
             if (idx < 0) break
-            (undoStack.removeAt(idx) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
+            (undoStack.removeAt(idx) as? HistoryEntry.BitmapEntry)?.recycle()
             count--
         }
     }
@@ -93,14 +145,13 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
 
     // ---------- push ----------
 
-    /** Snapshot bitmap sebelum action cat. */
+    /** Snapshot bitmap sebelum action cat. Kanvas raksasa dikompresi PNG. */
     fun saveSnapshot(layer: DrawingLayer) {
         val bmp = layer.getBitmap()
         val pixels = bmp.width.toLong() * bmp.height.toLong()
-        // Batasi adaptif dulu agar snapshot 46MB tidak menumpuk hingga OOM.
+        // Batasi adaptif dulu agar snapshot tidak menumpuk hingga OOM.
         trimBitmapHistory(pixels)
-        val copy = bmp.copy(Bitmap.Config.ARGB_8888, true)
-        push(HistoryEntry.BitmapEntry(layer.id, copy))
+        push(HistoryEntry.BitmapEntry(layer.id, bmp))
     }
 
     /** Snapshot isi teks sebelum diubah. */
@@ -129,7 +180,7 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
     private fun push(entry: HistoryEntry) {
         undoStack.add(entry)
         while (undoStack.size > maxHistory) {
-            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycle()
         }
         clearStack(redoStack)
         historyVersion++
@@ -146,13 +197,10 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         val ok = when (entry) {
             is HistoryEntry.BitmapEntry -> {
                 val layer = layerManager.findDrawingLayerById(entry.layerId) ?: return false
-                redoStack.add(
-                    HistoryEntry.BitmapEntry(
-                        layer.id,
-                        layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
-                    )
-                )
-                restoreBitmap(layer, entry.bitmap)
+                redoStack.add(HistoryEntry.BitmapEntry(layer.id, layer.getBitmap()))
+                val snap = entry.materialize() ?: return false
+                restoreBitmap(layer, snap)
+                runCatching { snap.recycle() }
                 true
             }
             is HistoryEntry.TextBoxEntry -> {
@@ -196,13 +244,10 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         val ok = when (entry) {
             is HistoryEntry.BitmapEntry -> {
                 val layer = layerManager.findDrawingLayerById(entry.layerId) ?: return false
-                undoStack.add(
-                    HistoryEntry.BitmapEntry(
-                        layer.id,
-                        layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
-                    )
-                )
-                restoreBitmap(layer, entry.bitmap)
+                undoStack.add(HistoryEntry.BitmapEntry(layer.id, layer.getBitmap()))
+                val snap = entry.materialize() ?: return false
+                restoreBitmap(layer, snap)
+                runCatching { snap.recycle() }
                 true
             }
             is HistoryEntry.TextBoxEntry -> {
@@ -249,12 +294,12 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
 
     private fun trimUndo() {
         while (undoStack.size > maxHistory) {
-            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycle()
         }
     }
 
     private fun clearStack(stack: MutableList<HistoryEntry>) {
-        stack.forEach { (it as? HistoryEntry.BitmapEntry)?.bitmap?.recycle() }
+        stack.forEach { (it as? HistoryEntry.BitmapEntry)?.recycle() }
         stack.clear()
     }
 

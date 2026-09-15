@@ -1,5 +1,6 @@
 package com.grooxtyper.app.ml
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import kotlinx.coroutines.Dispatchers
@@ -14,9 +15,10 @@ import kotlin.math.min
  * - KOHARU_YOLO26S_SEG -> `koharu/koharu-yolo26s-seg.onnx` (YOLO26s-seg, ganti best.pt)
  * - BEST1_PT            -> `best1.pt` (YOLOv11n-seg, tetap)
  *
- * Output dibiarkan MENTAH apa adanya per opsi (single-pass, tanpa refine
- * lintas-skala). Tiling strip + dedupe overlap hanya dipakai agar kanvas
- * jangkung (mis. 720x16000) tetap terbaca, bukan refine.
+ * Opsi KOHARU kini dieksekusi NYATA via ONNX Runtime (lihat [OnnxRuntimeEngine]):
+ * letterbox 1024 → forward → filter skor/kelas 'balloon' → NMS → bbox + mask
+ * segmentasi per bubble. Opsi BEST1_PT tetap heuristik putih-tersaturasi-rendah
+ * (checkpoint .pt PyTorch tidak bisa dieksekusi langsung di Android).
  */
 enum class BubbleModel(
     val displayName: String,
@@ -24,58 +26,69 @@ enum class BubbleModel(
     val asset: String
 ) {
     KOHARU_YOLO26S_SEG(
-        "koharu yolo26s-seg • ONNX",
-        "Koharu — output mentah apa adanya",
+        "koharu yolo26s-seg • ONNX Runtime",
+        "Inferensi nyata di perangkat — bbox + mask segmentasi",
         "models/koharu/koharu-yolo26s-seg.onnx"
     ),
     BEST1_PT(
         "best1.pt • YOLOv11n-seg",
-        "Segmentasi — output mentah apa adanya",
+        "Heuristik putih (fallback, .pt belum mobile)",
         "models/best1.pt"
     )
 }
 
 data class DetectedBubble(
     val boundingBox: RectF,
-    val score: Float
+    val score: Float,
+    /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null). */
+    val mask: Bitmap? = null,
+    /** Id kelas model ONNX (bila tersedia): 0=frame,1=dialogue_text,2=balloon,3=onomatopoeia. */
+    val classId: Int = -1
 )
 
 /**
  * Detektor balon teks manga on-device.
- * Tiap opsi [BubbleModel] bekerja mentah apa adanya (single-pass sesuai
- * karakter modelnya). Mendukung kanvas jangkung (mis. 720x16000) via
- * deteksi strip ber-overlap agar sisi pendek tidak hancur saat downscale.
  *
- * CATATAN YOLO: opsi KOHARU menunjuk ke `assets/models/koharu/koharu-yolo26s-seg.onnx`
- * (YOLO26s-seg) yang menggantikan `best.pt`; `best1.pt` tetap sebagai opsi kedua.
- * Kedua file adalah checkpoint Python Ultralytics sehingga belum bisa dieksekusi
- * langsung di Android (butuh runtime + export mobile). Opsi di dialog
- * memetakan 1:1 ke berkas assets; pipeline di bawah TIDAK di-refine
- * lagi — hanya menjalankan ciri mentah tiap opsi.
+ * KOHARU_YOLO26S_SEG: inferensi ONNX Runtime sungguhan per tile persegi
+ * (letterbox ke 1024, sesuai input model). Untuk kanvas jangkung
+ * (mis. 720x16000) gambar dipotong jadi tile persegi 720px ber-overlap 15%
+ * sehingga sisi pendek tidak hancur saat downscale; duplikat di area overlap
+ * dibuang via NMS global.
+ *
+ * BEST1_PT: fallback heuristik (area putih jenuh-rendah ber-outline gelap),
+ * dipertahankan apa adanya sebagai opsi kedua.
  */
 class BubbleDetector {
 
+    /** Ambang skor minimum deteksi ONNX (konservatif; bubble manga skornya tinggi). */
+    private val onnxScoreThresh = 0.25f
+
     /**
-     * Jalankan opsi terpilih MENTAH apa adanya: satu pass tunggal sesuai
-     * karakter opsi (tanpa refine multi-skala). Kanvas jangkung dipotong
-     * jadi strip agar sisi pendek tidak hancur; dedupe hanya untuk
-     * menghilangkan duplikat di area overlap strip.
+     * Jalankan opsi terpilih. [appContext] dipakai untuk memuat session ONNX
+     * (opsional — bila null atau runtime gagal, otomatis fallback heuristik).
      */
-    suspend fun detect(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> =
+    suspend fun detect(
+        bitmap: Bitmap,
+        model: BubbleModel,
+        appContext: Context? = null
+    ): List<DetectedBubble> =
         withContext(Dispatchers.Default) {
             try {
-                // Kanvas jangkung (aspek >= 4 atau sisi panjang > 3000):
-                // deteksi per strip persegi ber-overlap agar sisi pendek
-                // (mis. 720px) tidak hancur jadi ~34px saat downscale global.
+                val useOnnx = model == BubbleModel.KOHARU_YOLO26S_SEG &&
+                    appContext != null && OnnxRuntimeEngine.isAvailable()
+                if (useOnnx) {
+                    val result = detectOnnx(bitmap, appContext!!)
+                    if (result != null) return@withContext result
+                }
+                // Fallback heuristik (juga untuk BEST1_PT).
                 val longSide = max(bitmap.width, bitmap.height)
                 val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
                 val aspect = longSide / shortSide.toFloat()
                 if (aspect >= 4f || longSide > 3000) {
-                    return@withContext detectTall(bitmap, model)
+                    return@withContext detectTallHeuristic(bitmap, model)
                 }
-                // RAW: satu pass, tanpa refine.
                 val (maxDim, thresh, cap) = rawParams(model)
-                detectAtScale(bitmap, maxDim, thresh)
+                detectAtScaleHeuristic(bitmap, maxDim, thresh)
                     .sortedByDescending { it.score }
                     .take(cap)
             } catch (e: Exception) {
@@ -84,35 +97,163 @@ class BubbleDetector {
             }
         }
 
-    /** Parameter mentah per opsi model (1:1 ke file, tanpa refine). */
+    /** Parameter mentah per opsi model (untuk jalur heuristik). */
     private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
         return when (model) {
-            // koharu yolo26s-seg (ONNX): mengacu panduan model asli
-            // (HF: Liiesl/bubble-segment-onnx — koharu-yolo26s, input 1024),
-            // kelas 'balloon' = area PUTIH BERSIH; ambang luma dinaikkan
-            // 190→225 agar area abu/krem tidak ikut terdeteksi.
             BubbleModel.KOHARU_YOLO26S_SEG -> Triple(1024, 225, 90)
-            // best1.pt (YOLOv11n-seg): ciri segmentasi mentah (tetap).
             BubbleModel.BEST1_PT -> Triple(1024, 220, 80)
         }
     }
 
+    // ------------------------------------------------------------------
+    // Jalur ONNX Runtime (inferensi nyata)
+    // ------------------------------------------------------------------
+
     /**
-     * Deteksi strip mentah untuk gambar jangkung/lebar ekstrem
-     * (mis. 720x16000): potong sepanjang sumbu panjang jadi jendela
-     * persegi (sisi = sisi pendek) dengan overlap 15%, tiap jendela
-     * dijalankan SATU pass mentah sesuai opsi, offset ke koordinat global,
-     * lalu dedupe overlap. Bukan refine — hanya agar tiling tidak
-     * menggandakan bubble di sambungan.
+     * Inferensi ONNX per tile persegi sepanjang sumbu panjang. Tile = sisi
+     * pendek (min 512, maks 1024 agar tak melebihi input model), overlap 15%.
+     * Koordinat output dipetakan kembali ke kanvas global, lalu NMS.
      */
-    private fun detectTall(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
+    private fun detectOnnx(bitmap: Bitmap, context: Context): List<DetectedBubble>? {
         val w = bitmap.width
         val h = bitmap.height
         if (w <= 0 || h <= 0) return emptyList()
         val vertical = h >= w
         val shortSide = min(w, h)
         val longSide = max(w, h)
-        // Jendela persegi sebesar sisi pendek (min 512 agar detail cukup).
+        val win = shortSide.coerceIn(256, OnnxRuntimeEngine.INPUT_SIZE)
+        val step = max(64, (win * 0.85f).toInt())
+        val inputSize = OnnxRuntimeEngine.INPUT_SIZE.toFloat()
+
+        val all = mutableListOf<DetectedBubble>()
+        val maskPool = ByteArray(256 * 256)
+        var offset = 0
+        while (offset < longSide) {
+            val end = min(offset + win, longSide)
+            val start = max(0, end - win)
+            val crop = try {
+                if (vertical) Bitmap.createBitmap(bitmap, 0, start, w, end - start)
+                else Bitmap.createBitmap(bitmap, start, 0, end - start, h)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+            if (crop != null) {
+                try {
+                    val result = OnnxRuntimeEngine.run(context, crop)
+                    if (result != null) {
+                        // Skala dari ruang model 1024 ke piksel crop.
+                        val sx = crop.width / inputSize
+                        val sy = crop.height / inputSize
+                        for (i in result.detections.indices) {
+                            val det = result.detections[i]
+                            if (det.size < 6 + OnnxRuntimeEngine.NUM_MASK_COEF) continue
+                            val score = det[4]
+                            val cls = det[5].toInt()
+                            if (score < onnxScoreThresh || cls != OnnxRuntimeEngine.CLASS_BALLOON) continue
+                            val cx = det[0] * sx
+                            val cy = det[1] * sy
+                            val bw = det[2] * sx
+                            val bh = det[3] * sy
+                            if (bw < 8f || bh < 8f) continue
+                            val box = if (vertical) {
+                                RectF(cx - bw / 2f, cy - bh / 2f + start, cx + bw / 2f, cy + bh / 2f + start)
+                            } else {
+                                RectF(cx - bw / 2f + start, cy - bh / 2f, cx + bw / 2f + start, cy + bh / 2f)
+                            }
+                            // Bangun mask segmentasi instan (dipotong ke bbox).
+                            java.util.Arrays.fill(maskPool, 0.toByte())
+                            OnnxRuntimeEngine.buildInstanceMask(
+                                result, i, det[0], det[1], det[2], det[3], maskPool
+                            )
+                            val mask = instanceMaskToBitmap(
+                                maskPool, result.protoDim, box, start, vertical, sx, sy
+                            )
+                            all.add(DetectedBubble(box, score, mask, cls))
+                        }
+                    }
+                } finally {
+                    runCatching { crop.recycle() }
+                }
+            }
+            if (end >= longSide) break
+            offset += step
+            if (offset >= longSide) break
+        }
+        return nms(all, iouThresh = 0.5f)
+            .sortedByDescending { it.score }
+            .take(150)
+    }
+
+    /**
+     * Konversi mask instan (ruang proto 256, dipotong bbox 1024) menjadi
+     * Bitmap alpha sebesar bbox kanvas global.
+     */
+    private fun instanceMaskToBitmap(
+        maskBytes: ByteArray,
+        protoDim: Int,
+        globalBox: RectF,
+        stripOffset: Int,
+        vertical: Boolean,
+        sx: Float,
+        sy: Float
+    ): Bitmap? {
+        return try {
+            val bw = (globalBox.width()).toInt().coerceAtLeast(1)
+            val bh = (globalBox.height()).toInt().coerceAtLeast(1)
+            val pixels = IntArray(bw * bh)
+            val inputSize = OnnxRuntimeEngine.INPUT_SIZE.toFloat()
+            val protoScale = protoDim / inputSize
+            // Posisi bbox dalam ruang model (1024), globalBox sudah termasuk offset strip.
+            val localLeft = if (vertical) globalBox.left else globalBox.left - stripOffset
+            val localTop = if (vertical) globalBox.top - stripOffset else globalBox.top
+            val boxLeftModel = localLeft / sx
+            val boxTopModel = localTop / sy
+            for (y in 0 until bh) {
+                val modelY = boxTopModel + y / sy
+                val py = (modelY * protoScale).toInt().coerceIn(0, protoDim - 1)
+                val rowOff = y * bw
+                val protoRow = py * protoDim
+                for (x in 0 until bw) {
+                    val modelX = boxLeftModel + x / sx
+                    val px = (modelX * protoScale).toInt().coerceIn(0, protoDim - 1)
+                    val a = maskBytes[protoRow + px].toInt() and 0xFF
+                    if (a > 8) pixels[rowOff + x] = (a shl 24) or 0xFFFFFF
+                }
+            }
+            Bitmap.createBitmap(pixels, bw, bh, Bitmap.Config.ARGB_8888)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /** NMS berbasis IoU: simpan skor tertinggi, buang yang tumpang tindih. */
+    private fun nms(list: List<DetectedBubble>, iouThresh: Float): List<DetectedBubble> {
+        val out = mutableListOf<DetectedBubble>()
+        for (b in list.sortedByDescending { it.score }) {
+            if (out.none { iou(it.boundingBox, b.boundingBox) > iouThresh }) out.add(b)
+            else runCatching { b.mask?.recycle() }
+        }
+        return out
+    }
+
+    // ------------------------------------------------------------------
+    // Jalur heuristik (fallback / BEST1_PT)
+    // ------------------------------------------------------------------
+
+    /**
+     * Deteksi strip mentah untuk gambar jangkung/lebar ekstrem
+     * (mis. 720x16000): potong sepanjang sumbu panjang jadi jendela
+     * persegi (sisi = sisi pendek) dengan overlap 15%.
+     */
+    private fun detectTallHeuristic(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= 0 || h <= 0) return emptyList()
+        val vertical = h >= w
+        val shortSide = min(w, h)
+        val longSide = max(w, h)
         val win = shortSide.coerceAtLeast(256)
         val step = max(64, (win * 0.85f).toInt())
         val (maxDim, thresh, _) = rawParams(model)
@@ -130,9 +271,7 @@ class BubbleDetector {
             }
             if (crop != null) {
                 try {
-                    // Skala deteksi dihitung dari jendela (persegi), bukan
-                    // gambar utuh, sehingga sisi pendek tidak hancur.
-                    val found = detectAtScale(crop, maxDim, thresh)
+                    val found = detectAtScaleHeuristic(crop, maxDim, thresh)
                     for (b in found) {
                         val r = b.boundingBox
                         val shifted = if (vertical) {
@@ -150,15 +289,12 @@ class BubbleDetector {
             offset += step
             if (offset >= longSide) break
         }
-        // Cap longgar untuk halaman jangkung (banyak panel). Dedupe
-        // overlap saja, tanpa refine tambahan.
-        val cap = 150
-        return merge(out, iouThresh = 0.45f)
+        return nms(out, iouThresh = 0.45f)
             .sortedByDescending { it.score }
-            .take(cap)
+            .take(150)
     }
 
-    private fun detectAtScale(src: Bitmap, maxDim: Int, whiteThresh: Int): List<DetectedBubble> {
+    private fun detectAtScaleHeuristic(src: Bitmap, maxDim: Int, whiteThresh: Int): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
         val s = min(1f, maxDim / max(src.width, src.height).toFloat())
         val w = max(32, (src.width * s).toInt())
@@ -174,8 +310,6 @@ class BubbleDetector {
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                // Bubble manga hampir selalu putih JENUH-RENDAH; area warna
-                // terang (langit, kulit, ilustrasi) bukan bubble → ditolak.
                 val sat = max(max(r, g), b) - min(min(r, g), b)
                 white[i] = (0.299 * r + 0.587 * g + 0.114 * b) >= whiteThresh && sat <= 40
             }
@@ -245,11 +379,8 @@ class BubbleDetector {
                         fill in 0.45f..0.97f &&
                         min(bw, bh) >= 20
                     ) {
-                        // Filter ala kelas 'balloon' pada model koharu-yolo26s
-                        // (HF: Liiesl/bubble-segment-onnx): bubble asli =
-                        // area putih dengan OUTLINE GELAP mengelilingi DAN
-                        // berisi teks gelap. Area putih polos (margin, panel
-                        // kosong, highlight gambar) → bukan bubble, ditolak.
+                        // Filter ala kelas 'balloon': area putih dengan OUTLINE
+                        // GELAP mengelilingi DAN berisi teks gelap.
                         val ring = max(2, min(bw, bh) / 12)
                         var ringTotal = 0
                         var ringDark = 0
@@ -276,12 +407,11 @@ class BubbleDetector {
                         val borderDarkFrac = ringDark / max(1, ringTotal).toFloat()
                         val innerDarkFrac = innerDark / max(1, innerTotal).toFloat()
                         if (borderDarkFrac >= 0.22f && innerDarkFrac in 0.003f..0.45f) {
-                            // Skor: isi mendekati ellipse ideal (π/4) + outline kuat.
                             val fillScore = (1f - abs(fill - 0.785f) * 1.5f).coerceIn(0.05f, 1f)
                             val score = (fillScore * 0.6f + borderDarkFrac * 0.4f).coerceIn(0.05f, 1f)
                             out.add(
-                            DetectedBubble(
-                                RectF(minX / s, minY / s, (maxX + 1) / s, (maxY + 1) / s),
+                                DetectedBubble(
+                                    RectF(minX / s, minY / s, (maxX + 1) / s, (maxY + 1) / s),
                                     score
                                 )
                             )
@@ -296,14 +426,6 @@ class BubbleDetector {
         }
     }
 
-    private fun merge(list: List<DetectedBubble>, iouThresh: Float): List<DetectedBubble> {
-        val out = mutableListOf<DetectedBubble>()
-        for (b in list.sortedByDescending { it.score }) {
-            if (out.none { iou(it.boundingBox, b.boundingBox) > iouThresh }) out.add(b)
-        }
-        return out
-    }
-
     private fun iou(a: RectF, b: RectF): Float {
         val ix = max(0f, min(a.right, b.right) - max(a.left, b.left))
         val iy = max(0f, min(a.bottom, b.bottom) - max(a.top, b.top))
@@ -314,18 +436,13 @@ class BubbleDetector {
     }
 }
 
-/**
- * STUB engine YOLO masa depan. Opsi [BubbleModel] sudah memetakan 1:1 ke
- * `assets/models/koharu/koharu-yolo26s-seg.onnx` (koharu yolo26s-seg) dan
- * `best1.pt` (seg). Aktifkan fungsi ini bila runtime ONNX/TorchScript
- * ditambahkan: load model → letterbox → forward → NMS → List<DetectedBubble>.
- * Sampai saat itu pipeline di atas dibiarkan mentah.
- */
+/** Engine YOLO ONNX (koharu-yolo26s-seg) kini aktif via [OnnxRuntimeEngine]. */
 object YoloBubbleModel {
     const val DETECT_ASSET = "models/koharu/koharu-yolo26s-seg.onnx"
     const val SEG_ASSET = "models/best1.pt"
 
-    fun isAvailable(): Boolean = false // TODO: true bila runtime + export mobile tersedia
+    /** True bila ONNX Runtime + model siap (diinisialisasi saat pemakaian pertama). */
+    fun isAvailable(): Boolean = OnnxRuntimeEngine.isAvailable()
 }
 
 /** Urutan baca manga: baris atas→bawah, dalam baris kanan→kiri. */
