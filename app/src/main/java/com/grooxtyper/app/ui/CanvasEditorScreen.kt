@@ -1089,7 +1089,7 @@ fun CanvasEditorScreen(
         // membantu orientasi spasial sehingga posisi kanvas selalu terbaca.
         Canvas(modifier = Modifier.fillMaxSize()) {
             val gridStep = 32.dp.toPx()
-            val gridColor = Color(0xFF26262A)
+            val gridColor = Color(0xFF3A3A41)
             var gx = 0f
             while (gx <= size.width) {
                 drawLine(gridColor, Offset(gx, 0f), Offset(gx, size.height), 1f)
@@ -1432,9 +1432,21 @@ fun CanvasEditorScreen(
                                     colorPickActive = false
                                     pressId++
                                     twoFingerActive = false
-                                    // Kunci sketsa lasso bebas menjadi seleksi.
-                                    lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
-                                    // Kunci drag kotak menjadi seleksi persegi.
+                                    // Kunci sketsa lasso bebas menjadi SATU area baru (multi).
+                                    // Sketsa super-kecil = tap → hapus area yang diketuk.
+                                    lassoPath?.let { sketch ->
+                                        val lb = RectF()
+                                        sketch.computeBounds(lb, true)
+                                        val lp = lastCanvasPoint
+                                        if (lb.width() < 8f && lb.height() < 8f && lp != null) {
+                                            selectionEngine.removeRegionAt(lp.x, lp.y)
+                                        } else {
+                                            selectionEngine.setLassoPath(sketch)
+                                        }
+                                        lassoPath = null
+                                    }
+                                    // Kunci drag kotak menjadi SATU area persegi baru (multi).
+                                    // Tap tanpa drag = hapus area yang diketuk.
                                     val s = boxStart
                                     val e = boxCurrent
                                     if (s != null && e != null) {
@@ -1444,6 +1456,8 @@ fun CanvasEditorScreen(
                                         )
                                         if (rect.width() >= 8f && rect.height() >= 8f) {
                                             selectionEngine.selectRect(rect)
+                                        } else {
+                                            selectionEngine.removeRegionAt(s.x, s.y)
                                         }
                                         boxStart = null
                                         boxCurrent = null
@@ -1461,7 +1475,17 @@ fun CanvasEditorScreen(
                                 strokeLayer = null
                                 brushEngine.endStroke()
                                 twoFingerActive = false
-                                lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
+                                lassoPath?.let { sketch ->
+                                    val lb = RectF()
+                                    sketch.computeBounds(lb, true)
+                                    val lp = lastCanvasPoint
+                                    if (lb.width() < 8f && lb.height() < 8f && lp != null) {
+                                        selectionEngine.removeRegionAt(lp.x, lp.y)
+                                    } else {
+                                        selectionEngine.setLassoPath(sketch)
+                                    }
+                                    lassoPath = null
+                                }
                                 boxStart = null
                                 boxCurrent = null
                                 lastCanvasPoint = null
@@ -1904,6 +1928,36 @@ fun CanvasEditorScreen(
             }
         }
 
+        // Hint bar multi-seleksi (di atas toolbar bawah, gantian dengan bubble).
+        if (!isMultiBubbleActive() &&
+            (activeTool == ActiveTool.LASSO || activeTool == ActiveTool.SELECT_BOX) &&
+            selectionEngine.hasSelection
+        ) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 72.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(PanelBg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "${selectionEngine.selectionCount} area — drag tambah, ketuk hapus",
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(
+                    onClick = { selectionEngine.clearSelection(); refreshComposite() }
+                ) { Text("Bersihkan", color = Color.Red, fontSize = 12.sp) }
+            }
+        }
+
         // Bottom toolbar (ibisPaint style) — BISA DI-SLIDE/SCROLL horizontal
         // agar semua tool muat di layar sempit dan Text Detector tidak hilang.
         // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
@@ -2112,6 +2166,24 @@ fun CanvasEditorScreen(
                 DropdownMenuItem(text = { Text("Invert Selection") }, onClick = {
                     selectionEngine.invertSelection(); refreshComposite(); showLassoMenu = false
                 })
+                DropdownMenuItem(
+                    text = { Text("Hapus area terakhir (${selectionEngine.selectionCount})") },
+                    enabled = selectionEngine.selectionCount > 0,
+                    onClick = {
+                        selectionEngine.removeLastRegion()
+                        refreshComposite()
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Bersihkan seleksi") },
+                    enabled = selectionEngine.hasSelection,
+                    onClick = {
+                        selectionEngine.clearSelection()
+                        refreshComposite()
+                        showLassoMenu = false
+                    }
+                )
                 DropdownMenuItem(text = { Text("Copy Area") }, onClick = {
                     layerManager.getActiveLayer()?.let { selectionEngine.copySelectedArea(it) }
                     showLassoMenu = false
@@ -2534,7 +2606,7 @@ fun CanvasEditorScreen(
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Ketuk bubble di mode Lasso/Kotak untuk jadikan seleksi (atau hapus bila Mode hapus aktif). Drag di tool Kotak Seleksi untuk seleksi persegi.",
+                            "Ketuk bubble di mode Lasso/Kotak untuk TAMBAH ke seleksi (multi). Ketuk area terseleksi untuk menghapusnya. Drag di tool Kotak Seleksi untuk tambah area persegi.",
                             color = Color.Gray, fontSize = 11.sp
                         )
                         if (multiBubbleLines.isEmpty()) {

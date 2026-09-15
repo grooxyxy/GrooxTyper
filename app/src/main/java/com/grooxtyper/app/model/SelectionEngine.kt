@@ -14,8 +14,17 @@ import androidx.compose.runtime.setValue
 
 class SelectionEngine(val width: Int, val height: Int) {
     var hasSelection by mutableStateOf(false)
+    /** Jumlah area terpisah dalam seleksi gabungan (untuk label UI). */
+    var selectionCount by mutableStateOf(0)
     val selectionPath = Path()
     var clipboardBitmap: Bitmap? = null
+
+    // Multi-seleksi: tiap drag/tap bubble MENAMBAH satu region; union-nya
+    // yang dipakai render, mask, dan bounds. Satu-dua area yang tak
+    // diinginkan bisa dihapus via tap (removeRegionAt) atau menu.
+    private val regions = mutableListOf<Path>()
+    private val regionBounds = mutableListOf<RectF>()
+    private val fullClip = android.graphics.Region(0, 0, width, height)
 
     // Alokasi malas: 720x16000 = 46MB. Jangan alokasi sebelum user
     // benar-benar memakai seleksi — hemat permanen bila tak dipakai.
@@ -37,23 +46,87 @@ class SelectionEngine(val width: Int, val height: Int) {
             return _maskCanvas!!
         }
 
+    /** Tambah sketsa lasso bebas sebagai SATU area baru (multi-seleksi). */
     fun setLassoPath(path: Path) {
-        selectionPath.reset()
-        selectionPath.addPath(path)
-        selectionPath.close()
-        hasSelection = true
-        updateMaskFromPath()
+        val single = Path(path)
+        single.close()
+        addRegion(single)
     }
 
     fun clearSelection() {
+        regions.clear()
+        regionBounds.clear()
         selectionPath.reset()
         hasSelection = false
+        selectionCount = 0
         // Jangan alokasi hanya untuk clear — mask yang belum ada sudah kosong.
         _maskBitmap?.let { b ->
             if (!b.isRecycled) {
                 (_maskCanvas ?: Canvas(b)).drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
             }
         }
+    }
+
+    /** Hapus area terakhir yang ditambahkan. True bila ada yang dihapus. */
+    fun removeLastRegion(): Boolean {
+        if (regions.isEmpty()) return false
+        regions.removeAt(regions.lastIndex)
+        regionBounds.removeAt(regionBounds.lastIndex)
+        rebuildUnion()
+        return true
+    }
+
+    /**
+     * Hapus SATU area yang memuat titik kanvas (x, y) — untuk membuang satu
+     * atau dua area yang tidak diinginkan via tap. Cek dari teratas dulu
+     * dengan uji geometri tepat (Region), bukan sekadar bounding box.
+     */
+    fun removeRegionAt(x: Float, y: Float): Boolean {
+        for (i in regions.indices.reversed()) {
+            if (!regionBounds[i].contains(x, y)) continue
+            val hit = android.graphics.Region()
+            hit.setPath(regions[i], fullClip)
+            if (hit.contains(x.toInt(), y.toInt())) {
+                regions.removeAt(i)
+                regionBounds.removeAt(i)
+                rebuildUnion()
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Gabungkan ulang semua region menjadi [selectionPath] + mask. */
+    private fun rebuildUnion() {
+        selectionPath.reset()
+        for ((i, r) in regions.withIndex()) {
+            if (i == 0) {
+                selectionPath.addPath(r)
+            } else if (!selectionPath.op(r, Path.Op.UNION)) {
+                selectionPath.addPath(r)
+            }
+        }
+        selectionPath.close()
+        hasSelection = regions.isNotEmpty()
+        selectionCount = regions.size
+        if (hasSelection) {
+            updateMaskFromPath()
+        } else {
+            _maskBitmap?.let { b ->
+                if (!b.isRecycled) {
+                    (_maskCanvas ?: Canvas(b)).drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+                }
+            }
+        }
+    }
+
+    private fun addRegion(region: Path) {
+        val b = RectF()
+        region.computeBounds(b, true)
+        if (b.isEmpty) return
+        regions.add(region)
+        regionBounds.add(b)
+        rebuildUnion()
     }
 
     /** Batas seleksi aktif (untuk auto-fit teks ke bubble). Null bila tak ada seleksi. */
@@ -64,16 +137,15 @@ class SelectionEngine(val width: Int, val height: Int) {
         return if (r.isEmpty) null else r
     }
 
-    /** Jadikan oval sebagai seleksi aktif (mis. dari bubble terdeteksi). */
+    /** Tambah oval sebagai SATU area baru (tap bubble menumpuk, multi-seleksi). */
     fun selectOval(rect: RectF) {
-        selectionPath.reset()
-        selectionPath.addOval(rect, Path.Direction.CW)
-        hasSelection = true
-        updateMaskFromPath()
+        val oval = Path()
+        oval.addOval(rect, Path.Direction.CW)
+        addRegion(oval)
     }
 
     /**
-     * Kotak seleksi: jadikan persegi [rect] sebagai seleksi aktif.
+     * Tambah kotak sebagai SATU area baru (drag menumpuk, multi-seleksi).
      * Koordinat dinormalisasi + dijepit ke kanvas. Dipakai untuk tambah
      * bubble manual dan seleksi area cepat via drag.
      */
@@ -83,10 +155,9 @@ class SelectionEngine(val width: Int, val height: Int) {
         val right = maxOf(rect.left, rect.right).coerceIn(0f, width.toFloat())
         val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, height.toFloat())
         if (right - left < 2f || bottom - top < 2f) return
-        selectionPath.reset()
-        selectionPath.addRect(left, top, right, bottom, Path.Direction.CW)
-        hasSelection = true
-        updateMaskFromPath()
+        val box = Path()
+        box.addRect(left, top, right, bottom, Path.Direction.CW)
+        addRegion(box)
     }
 
     private fun updateMaskFromPath() {
@@ -118,6 +189,18 @@ class SelectionEngine(val width: Int, val height: Int) {
             rectPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
             rectPath.op(selectionPath, Path.Op.DIFFERENCE)
             selectionPath.set(rectPath)
+            // Sinkronkan daftar region agar tambah/hapus berikutnya tidak
+            // menghidupkan kembali bentuk sebelum invert.
+            regions.clear()
+            regionBounds.clear()
+            val single = Path(selectionPath)
+            val b = RectF()
+            single.computeBounds(b, true)
+            if (!b.isEmpty) {
+                regions.add(single)
+                regionBounds.add(b)
+            }
+            selectionCount = regions.size
         } finally {
             runCatching { invertedBmp.recycle() }
         }
