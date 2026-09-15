@@ -404,8 +404,8 @@ class TextBox(
         val hw = w / 2f + pad
         val hh = h / 2f + pad
         val rad = Math.toRadians(rotation.toDouble())
-        val c = kotlin.math.abs(cos(rad))
-        val s = kotlin.math.abs(sin(rad))
+        val c = kotlin.math.abs(cos(rad)).toFloat()
+        val s = kotlin.math.abs(sin(rad)).toFloat()
         val ew = hw * c + hh * s
         val eh = hw * s + hh * c
         return RectF(
