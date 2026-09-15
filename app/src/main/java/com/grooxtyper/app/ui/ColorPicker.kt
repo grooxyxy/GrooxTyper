@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,8 +16,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -64,6 +63,19 @@ fun ColorPickerDialog(
 
     val currentColorInt = android.graphics.Color.HSVToColor(hsv)
 
+    // Satu-satunya penulis hsv/hex dari roda (dipakai tap & drag).
+    fun pickFromWheel(pos: Offset, viewPx: Float) {
+        val center = viewPx / 2f
+        val dx = pos.x - center
+        val dy = pos.y - center
+        val angle = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+        val hue = if (angle < 0) angle + 360f else angle
+        val dist = kotlin.math.hypot(dx, dy)
+        val sat = (dist / (viewPx / 2f)).coerceIn(0f, 1f)
+        hsv = floatArrayOf(hue, sat, hsv[2])
+        hexText = String.format("#%06X", (0xFFFFFF and android.graphics.Color.HSVToColor(hsv)))
+    }
+
     val paletteColors = listOf(
         Color.Black, Color.DarkGray, Color.Gray, Color.LightGray, Color.White,
         Color.Red, Color(0xFFFF5722), Color(0xFFFF9800), Color(0xFFFFEB3B), Color(0xFF4CAF50),
@@ -106,10 +118,13 @@ fun ColorPickerDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Color Wheel
+                // Color Wheel (ketuk & seret; hitam via palet/hex/V=0).
                 Canvas(
                     modifier = Modifier
                         .size(160.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures { pos -> pickFromWheel(pos, size.width.toFloat()) }
+                        }
                         .pointerInput(Unit) {
                             detectDragGestures { change, _ ->
                                 val center = Offset(size.width / 2f, size.height / 2f)
@@ -169,28 +184,29 @@ fun ColorPickerDialog(
                     valueRange = 0f..1f
                 )
 
-                // Color Palette
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(5),
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(paletteColors.size) { idx ->
-                        val c = paletteColors[idx]
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(c)
-                                .border(1.dp, Color.Gray, CircleShape)
-                                .clickable {
-                                    val newHsv = FloatArray(3)
-                                    android.graphics.Color.colorToHSV(c.toArgb(), newHsv)
-                                    hsv = newHsv
-                                    hexText = String.format("#%06X", (0xFFFFFF and c.toArgb()))
-                                }
-                        )
+                // Palet statis (tanpa lazy agar tak bergantung batas ukur dialog).
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    paletteColors.chunked(5).forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            row.forEach { c ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(c)
+                                        .border(1.dp, Color.Gray, CircleShape)
+                                        .clickable {
+                                            val newHsv = FloatArray(3)
+                                            android.graphics.Color.colorToHSV(c.toArgb(), newHsv)
+                                            hsv = newHsv
+                                            hexText = String.format("#%06X", (0xFFFFFF and c.toArgb()))
+                                        }
+                                )
+                            }
+                        }
                     }
                 }
             }

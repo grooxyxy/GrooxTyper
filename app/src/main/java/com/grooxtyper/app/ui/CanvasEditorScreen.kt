@@ -137,6 +137,7 @@ import com.grooxtyper.app.model.StyleRule
 import com.grooxtyper.app.model.StyleRuleManager
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -362,6 +363,27 @@ fun CanvasEditorScreen(
         dirtyVersion++
     }
 
+    // Panel teks (slider/switch/warna) menembak tiap tick; di kanvas besar
+    // render penuh 46MB per tick = lag & perubahan tampak "macet". Gabungkan
+    // (trailing 120ms) agar UI responsif; nilai akhir selalu ter-render.
+    var panelRefreshJob by remember { mutableStateOf<Job?>(null) }
+    fun refreshCompositeCoalesced() {
+        panelRefreshJob?.cancel()
+        panelRefreshJob = scope.launch {
+            delay(120)
+            refreshComposite()
+        }
+    }
+
+    /** Paksa render tweak panel yang tertunda (sebelum cek kotor/keluar). */
+    fun flushPanelRefresh() {
+        if (panelRefreshJob?.isActive == true) {
+            panelRefreshJob?.cancel()
+            refreshComposite()
+        }
+        panelRefreshJob = null
+    }
+
     /**
      * Simpan project SEKARANG: PNG basis = layer gambar SAJA (tanpa teks
      * bakar) + JSON teks terpisah. Render basis di thread pemanggil (Main
@@ -406,16 +428,21 @@ fun CanvasEditorScreen(
 
     /**
      * Jalur cepat brush: true bila composite == 1 drawing layer saja
-     * (tanpa teks/folder/blend/opacity/clip) sehingga dab bisa di-blit
-     * langsung ke composite tanpa render ulang 46MB per move.
+     * (tanpa folder/blend/opacity/clip) sehingga dab bisa di-blit langsung
+     * ke composite tanpa render ulang 46MB per move. Layer TEKS boleh ada:
+     * [blitLayerToComposite] menolak blit bila regio kotor menyentuh teks.
      */
     fun isSingleLayerFastPath(): Boolean {
         var drawings = 0
         for (item in layerManager.layers) {
             if (!item.isVisible) continue
-            if (item.isFolder) return false
+            if (item.isFolder) {
+                // Folder tanpa isi gambar/teks terlihat tetap boleh cepat.
+                if (item.children.isNotEmpty()) return false
+                continue
+            }
             when (item) {
-                is TextLayer -> return false
+                is TextLayer -> continue
                 is DrawingLayer -> {
                     drawings++
                     if (drawings > 1) return false
@@ -432,8 +459,12 @@ fun CanvasEditorScreen(
     /**
      * Blit regio kotor kecil (sekitar segmen brush) dari layer ke composite.
      * 1 blit ~50x50px vs render penuh 720x16000 (11,5MP) → ~200× lebih murah.
+     * Kembalikan false bila pemanggil harus render penuh: struktur tak cocok
+     * ATAU regio menyentuh teks tampil (teks vector tak ikut ter-blit).
+     * Clear-then-draw agar penghapus ikut tampil live (bukan stale).
      */
-    fun blitLayerToComposite(layer: DrawingLayer, p1: Offset?, p2: Offset) {
+    fun blitLayerToComposite(layer: DrawingLayer, p1: Offset?, p2: Offset): Boolean {
+        if (!isSingleLayerFastPath()) return false
         val rad = brushEngine.size * 1.5f + 16f
         val ax = p1?.x ?: p2.x
         val ay = p1?.y ?: p2.y
@@ -445,17 +476,32 @@ fun CanvasEditorScreen(
         val ti = (t - rad).toInt().coerceIn(0, canvasHeight)
         val ri = (r + rad + 1f).toInt().coerceIn(0, canvasWidth)
         val bi = (b + rad + 1f).toInt().coerceIn(0, canvasHeight)
-        if (ri - li < 1 || bi - ti < 1) return
+        if (ri - li < 1 || bi - ti < 1) return true
+        // Teks yang tampil di dalam regio kotor → blit tak aman, render penuh.
+        for (item in layerManager.layers) {
+            val tl = item as? TextLayer ?: continue
+            if (!item.isVisible) continue
+            val tb = tl.box.getBounds()
+            if (tb.left < ri && tb.right > li && tb.top < bi && tb.bottom > ti) return false
+        }
         try {
             val src = android.graphics.Rect(li, ti, ri, bi)
-            android.graphics.Canvas(compositeBitmap)
-                .drawBitmap(layer.getPersistentBitmap(), src, src, null)
+            val canvas = android.graphics.Canvas(compositeBitmap)
+            // Batasi kerja ke regio kotor (tanpa alokasi bitmap).
+            canvas.save()
+            canvas.clipRect(src)
+            canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            canvas.drawBitmap(layer.getPersistentBitmap(), src, src, null)
+            canvas.restore()
         } catch (e: Exception) {
             e.printStackTrace()
+            return false
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
+            return false
         }
         refreshCanvasLight()
+        return true
     }
 
     LaunchedEffect(projectId) {
@@ -475,6 +521,7 @@ fun CanvasEditorScreen(
         onDispose {
             // Jaring pengaman: simpan bila masih kotor, kecuali user eksplisit
             // memilih "Keluar tanpa menyimpan" di dialog konfirmasi.
+            flushPanelRefresh()
             if (!discardOnExit && dirtyVersion != lastSavedVersion) {
                 val base = runCatching {
                     Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
@@ -546,6 +593,7 @@ fun CanvasEditorScreen(
             showBrushSettings = false
             return
         }
+        flushPanelRefresh()
         if (hasUnsavedChanges()) {
             showExitDialog = true
         } else {
@@ -563,6 +611,7 @@ fun CanvasEditorScreen(
         scope.launch {
             // Simpan basis + teks + preview, TUNGGU selesai baru keluar
             // agar tidak hilang bila proses mati tepat setelah navigasi.
+            flushPanelRefresh()
             runCatching { persistProjectNow(withPreview = true) }
             isSavingExit = false
             showExitDialog = false
@@ -678,21 +727,48 @@ fun CanvasEditorScreen(
 
     /** Tambah bubble manual dari kotak [rect] (dijepit ke kanvas). */
     fun addBubbleFromRect(rect: RectF) {
+        if (addBubbleRect(rect)) {
+            showBubbleOverlay = true
+            refreshComposite()
+        }
+    }
+
+    /** Tambah bubble dari seleksi aktif (kotak/lasso/oval). */
+    fun addBubbleFromSelection(): Boolean = addBubblesFromSelection() > 0
+
+    /**
+     * Tambah SATU bubble per AREA seleksi: 3 area terpisah → 3 bubble
+     * (bukan satu bubble gabungan dari bounds union). Kembalikan jumlah
+     * bubble yang ditambahkan.
+     */
+    fun addBubblesFromSelection(): Int {
+        val list = selectionEngine.regionBoundsList()
+        if (list.isEmpty()) {
+            // Fallback: seleksi lawas tanpa region (mis. hasil invert).
+            val bounds = selectionEngine.selectionBounds() ?: return 0
+            return if (addBubbleRect(bounds)) 1 else 0
+        }
+        var n = 0
+        for (b in list) {
+            if (addBubbleRect(b)) n++
+        }
+        if (n > 0) {
+            showBubbleOverlay = true
+            refreshComposite()
+        }
+        return n
+    }
+
+    /** Inti tambah bubble dari [rect] (dijepit ke kanvas). True bila jadi. */
+    private fun addBubbleRect(rect: RectF): Boolean {
         val left = minOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
         val top = minOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
         val right = maxOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
         val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
-        if (right - left < 4f || bottom - top < 4f) return
-        val box = RectF(left, top, right, bottom)
-        detectedBubbles = detectedBubbles + com.grooxtyper.app.ml.DetectedBubble(box, 1f)
-        showBubbleOverlay = true
-        refreshComposite()
-    }
-
-    /** Tambah bubble dari seleksi aktif (kotak/lasso/oval). */
-    fun addBubbleFromSelection(): Boolean {
-        val bounds = selectionEngine.selectionBounds() ?: return false
-        addBubbleFromRect(bounds)
+        if (right - left < 4f || bottom - top < 4f) return false
+        detectedBubbles = detectedBubbles + com.grooxtyper.app.ml.DetectedBubble(
+            RectF(left, top, right, bottom), 1f
+        )
         return true
     }
 
@@ -927,16 +1003,34 @@ fun CanvasEditorScreen(
     val fontPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
-        uri?.let {
+        uri?.let { u ->
             try {
-                context.contentResolver.openInputStream(it)?.use { stream ->
-                    val name = "font_${System.currentTimeMillis()}.ttf"
-                    val tf = fontRegistry.import(stream, name)
+                // Pakai nama file asli (bukan font_<timestamp>) agar daftar
+                // font menampilkan nama yang sesuai.
+                val displayName: String? = runCatching {
+                    context.contentResolver.query(u, null, null, null, null)?.use { c ->
+                        val idx = c.getColumnIndex(
+                            android.provider.OpenableColumns.DISPLAY_NAME
+                        )
+                        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                    }
+                }.getOrNull()
+                val rawBase = (displayName ?: "font_${System.currentTimeMillis()}.ttf")
+                    .substringAfterLast('/').substringAfterLast('\\').trim()
+                val withExt = if (rawBase.contains('.')) rawBase else "$rawBase.ttf"
+                val safe = withExt.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(64).ifBlank { "font_${System.currentTimeMillis()}.ttf" }
+                val customDir = java.io.File(context.filesDir, "custom_fonts")
+                val fileName = if (java.io.File(customDir, safe).exists()) {
+                    "${System.currentTimeMillis()}_$safe"
+                } else safe
+                context.contentResolver.openInputStream(u)?.use { stream ->
+                    val tf = fontRegistry.import(stream, fileName)
                     if (tf != null) {
                         fontList = fontRegistry.fonts()
                         selectedTextBox?.let { box ->
                             box.typeface = tf
-                            box.fontName = name.removeSuffix(".ttf")
+                            box.fontName = fileName.substringBeforeLast('.')
                             refreshComposite()
                         }
                     }
@@ -1365,9 +1459,8 @@ fun CanvasEditorScreen(
                                             brushEngine.beginStroke()
                                             brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos, 0f)
                                             // Jalur cepat: blit dot kecil, bukan render 46MB.
-                                            if (isSingleLayerFastPath()) {
-                                                blitLayerToComposite(activeLayer, null, touchCanvasPos)
-                                            } else {
+                                            // False (mis. menyentuh teks) → render penuh.
+                                            if (!blitLayerToComposite(activeLayer, null, touchCanvasPos)) {
                                                 refreshComposite()
                                             }
                                         } else {
@@ -1396,7 +1489,6 @@ fun CanvasEditorScreen(
                                             }
                                             movePts.add(touchCanvasPos)
                                             if (strokeLayer == null) strokeLayer = target
-                                            val fastPath = isSingleLayerFastPath()
                                             var needFullRefresh = false
                                             for (pt in movePts) {
                                                 // pt sudah di ruang kanvas; cek gerakan layar pakai titik event.
@@ -1409,10 +1501,9 @@ fun CanvasEditorScreen(
                                                 strokeLength += dist
                                                 val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
                                                 brushEngine.strokeSegmentOnLayer(target, prev, cpt, progress)
-                                                // Jalur cepat: blit regio kotor kecil per titik.
-                                                if (fastPath) {
-                                                    blitLayerToComposite(target, prev, cpt)
-                                                } else {
+                                                // Jalur cepat per titik; false bila regio
+                                                // menyentuh teks → render penuh sekali.
+                                                if (!blitLayerToComposite(target, prev, cpt)) {
                                                     needFullRefresh = true
                                                 }
                                                 lastCanvasPoint = cpt
@@ -2134,7 +2225,10 @@ fun CanvasEditorScreen(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Jadikan Bubble dari Seleksi") },
+                    text = {
+                        val n = selectionEngine.selectionCount.coerceAtLeast(1)
+                        Text(if (n > 1) "Jadikan $n Bubble dari Seleksi" else "Jadikan Bubble dari Seleksi")
+                    },
                     enabled = selectionEngine.hasSelection,
                     onClick = {
                         addBubbleFromSelection()
@@ -2270,7 +2364,7 @@ fun CanvasEditorScreen(
                         box = box,
                         fonts = fontList,
                         onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
-                        onChange = { refreshComposite() },
+                        onChange = { refreshCompositeCoalesced() },
                         onPushTextHistory = { before ->
                             undoRedoManager.pushTextBox(box.id, before)
                         },

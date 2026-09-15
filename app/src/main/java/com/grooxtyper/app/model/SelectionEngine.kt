@@ -137,6 +137,12 @@ class SelectionEngine(val width: Int, val height: Int) {
         return if (r.isEmpty) null else r
     }
 
+    /**
+     * Salinan batas TIAP area terpisah (atas-dulu) — untuk dijadikan satu
+     * bubble per area, bukan satu bubble gabungan.
+     */
+    fun regionBoundsList(): List<RectF> = regionBounds.map { RectF(it) }
+
     /** Tambah oval sebagai SATU area baru (tap bubble menumpuk, multi-seleksi). */
     fun selectOval(rect: RectF) {
         val oval = Path()

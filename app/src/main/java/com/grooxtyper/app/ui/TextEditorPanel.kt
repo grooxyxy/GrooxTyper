@@ -44,6 +44,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -73,6 +75,8 @@ import com.grooxtyper.app.model.TextRenderer
 import com.grooxtyper.app.model.TextShadowSpec
 import com.grooxtyper.app.model.TextStyleManager
 import com.grooxtyper.app.model.TextStylePreset
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -607,24 +611,10 @@ private fun WriteTab(
         Text("Import TTF/OTF", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold,
             modifier = Modifier.clickable { onImportFont() })
     }
-    // Daftar font: tiap item di-render dengan typeface aslinya (preview putih).
+    // Daftar font: preview di-render async agar panel langsung muncul.
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         fonts.forEach { (name, tf) ->
             val sel = boxFontName == name
-            val sample = remember(name, tf) {
-                try {
-                    val tmp = TextBox(
-                        text = "Ag", fontSize = 64f,
-                        color = android.graphics.Color.WHITE,
-                        bold = false, italic = false,
-                        shadow = null, fontName = name, typeface = tf
-                    )
-                    TextRenderer.renderSampleBox(tmp, "Ag", 200, 84, forceWhiteText = true)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    null
-                }
-            }
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -639,14 +629,28 @@ private fun WriteTab(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (sample != null) {
-                        Image(
-                            bitmap = sample.asImageBitmap(),
-                            contentDescription = "Preview $name",
-                            modifier = Modifier.size(width = 72.dp, height = 30.dp),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
+                    AsyncSampleImage(
+                        key = name,
+                        modifier = Modifier.size(width = 72.dp, height = 30.dp),
+                        contentDescription = "Preview $name",
+                        placeholder = {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 72.dp, height = 30.dp)
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .background(PanelLight)
+                            )
+                        },
+                        render = {
+                            val tmp = TextBox(
+                                text = "Ag", fontSize = 64f,
+                                color = android.graphics.Color.WHITE,
+                                bold = false, italic = false,
+                                shadow = null, fontName = name, typeface = tf
+                            )
+                            TextRenderer.renderSampleBox(tmp, "Ag", 200, 84, forceWhiteText = true)
+                        }
+                    )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
                         name, color = Color.White, fontSize = 13.sp,
@@ -1011,41 +1015,6 @@ private fun StyleTab(
         )
     }
     presets.forEach { preset ->
-        val tf = fonts.find { it.first == preset.fontName }?.second
-        val sample = remember(preset) {
-            try {
-                val tmp = TextBox(
-                    text = "Ag",
-                    fontSize = preset.fontSize,
-                    color = preset.color,
-                    bold = preset.bold,
-                    italic = preset.italic,
-                    align = TextAlignMode.CENTER,
-                    outlineWidth = preset.outlineWidth,
-                    outlineColor = preset.outlineColor,
-                    strokeOpacity = preset.strokeOpacity,
-                    strokePosition = preset.strokePosition,
-                    fillType = preset.fillType,
-                    gradient = preset.gradient.copy(),
-                    shadow = preset.shadow?.copy(),
-                    letterSpacing = preset.letterSpacing,
-                    wordSpacing = preset.wordSpacing,
-                    lineSpacing = preset.lineSpacing,
-                    textOpacity = preset.textOpacity,
-                    uppercase = preset.uppercase,
-                    underline = preset.underline,
-                    strikethrough = preset.strikethrough,
-                    glow = preset.glow?.copy(),
-                    bevel = preset.bevel?.copy(),
-                    fontName = preset.fontName,
-                    typeface = tf ?: Typeface.DEFAULT_BOLD
-                )
-                TextRenderer.renderSampleBox(tmp, "Ag", 420, 120, forceWhiteText = true)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-        }
         Card(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1054,19 +1023,55 @@ private fun StyleTab(
             shape = RoundedCornerShape(10.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
-                if (sample != null) {
-                    Image(
-                        bitmap = sample.asImageBitmap(),
-                        contentDescription = "Preview ${preset.name}",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF101012)),
-                        contentScale = ContentScale.Fit
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                }
+                AsyncSampleImage(
+                    key = preset,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF101012)),
+                    contentDescription = "Preview ${preset.name}",
+                    placeholder = {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF101012))
+                        )
+                    },
+                    render = {
+                        val tf = fonts.find { it.first == preset.fontName }?.second
+                        val tmp = TextBox(
+                            text = "Ag",
+                            fontSize = preset.fontSize,
+                            color = preset.color,
+                            bold = preset.bold,
+                            italic = preset.italic,
+                            align = TextAlignMode.CENTER,
+                            outlineWidth = preset.outlineWidth,
+                            outlineColor = preset.outlineColor,
+                            strokeOpacity = preset.strokeOpacity,
+                            strokePosition = preset.strokePosition,
+                            fillType = preset.fillType,
+                            gradient = preset.gradient.copy(),
+                            shadow = preset.shadow?.copy(),
+                            letterSpacing = preset.letterSpacing,
+                            wordSpacing = preset.wordSpacing,
+                            lineSpacing = preset.lineSpacing,
+                            textOpacity = preset.textOpacity,
+                            uppercase = preset.uppercase,
+                            underline = preset.underline,
+                            strikethrough = preset.strikethrough,
+                            glow = preset.glow?.copy(),
+                            bevel = preset.bevel?.copy(),
+                            fontName = preset.fontName,
+                            typeface = tf ?: Typeface.DEFAULT_BOLD
+                        )
+                        TextRenderer.renderSampleBox(tmp, "Ag", 420, 120, forceWhiteText = true)
+                    }
+                )
+                Spacer(modifier = Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -1096,9 +1101,45 @@ private fun StyleTab(
     }
 }
 
+/**
+ * Preview bitmap yang di-render di background agar panel teks muncul instan
+ * (render puluhan preview font/style yang efeknya berat tak lagi memblokir
+ * frame pertama). Key stabil → render sekali per key.
+ */
 @Composable
-private fun FillChip(label: String, active: Boolean, onClick: () -> Unit) {
-    Box(
+private fun AsyncSampleImage(
+    key: Any,
+    modifier: Modifier,
+    contentDescription: String?,
+    placeholder: @Composable () -> Unit,
+    render: () -> Bitmap?
+) {
+    var bmp by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(key) {
+        val rendered = withContext(Dispatchers.Default) {
+            runCatching { render() }.getOrNull()
+        }
+        bmp?.recycle()
+        bmp = rendered
+    }
+    DisposableEffect(Unit) {
+        onDispose { runCatching { bmp?.recycle() } }
+    }
+    val b = bmp
+    if (b != null) {
+        Image(
+            bitmap = b.asImageBitmap(),
+            contentDescription = contentDescription,
+            modifier = modifier,
+            contentScale = ContentScale.Fit
+        )
+    } else {
+        placeholder()
+    }
+}
+
+@Composable
+private fun FillChip(label: String, active: Boolean, onClick: () -> Unit) {    Box(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
             .background(if (active) Accent else PanelLight)
