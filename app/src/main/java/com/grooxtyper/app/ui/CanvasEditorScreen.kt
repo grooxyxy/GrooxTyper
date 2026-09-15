@@ -308,6 +308,35 @@ fun CanvasEditorScreen(
         }
     }
 
+    /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
+    fun applyPrefixStyleTo(box: TextBox): Boolean {
+        val t = box.text.trimStart()
+        if (!t.startsWith("[")) {
+            if (lastAutoPrefix?.first == box.id) lastAutoPrefix = null
+            return false
+        }
+        val match = textStyleManager.list().firstOrNull { preset ->
+            preset.prefix.isNotBlank() && t.startsWith(preset.prefix, ignoreCase = true)
+        } ?: return false
+        if (lastAutoPrefix?.first == box.id && lastAutoPrefix?.second == match.id) return false
+        val tf = fontList.find { it.first == match.fontName }?.second
+        match.applyTo(box, tf)
+        lastAutoPrefix = box.id to match.id
+        return true
+    }
+
+    fun runMLDetection() {
+        scope.launch {
+            val active = layerManager.getActiveLayer()
+            if (active != null) {
+                mlDetecting = true
+                detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                mlDetecting = false
+                showMLInpaintDialog = true
+            }
+        }
+    }
+
     /** Isi semua bubble terdeteksi dari antrean multi-bubble (urutan baca manga). */
     fun autoFillBubbles() {
         if (multiBubbleLines.isEmpty() || detectedBubbles.isEmpty()) return
@@ -345,35 +374,6 @@ fun CanvasEditorScreen(
             showTextEditor = true
         }
         refreshComposite()
-    }
-
-    /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
-    fun applyPrefixStyleTo(box: TextBox): Boolean {
-        val t = box.text.trimStart()
-        if (!t.startsWith("[")) {
-            if (lastAutoPrefix?.first == box.id) lastAutoPrefix = null
-            return false
-        }
-        val match = textStyleManager.list().firstOrNull { preset ->
-            preset.prefix.isNotBlank() && t.startsWith(preset.prefix, ignoreCase = true)
-        } ?: return false
-        if (lastAutoPrefix?.first == box.id && lastAutoPrefix?.second == match.id) return false
-        val tf = fontList.find { it.first == match.fontName }?.second
-        match.applyTo(box, tf)
-        lastAutoPrefix = box.id to match.id
-        return true
-    }
-
-    fun runMLDetection() {
-        scope.launch {
-            val active = layerManager.getActiveLayer()
-            if (active != null) {
-                mlDetecting = true
-                detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
-                mlDetecting = false
-                showMLInpaintDialog = true
-            }
-        }
     }
 
     fun flattenSelectedText() {
