@@ -108,6 +108,7 @@ import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.ImageImport
+import com.grooxtyper.app.model.FontRegistry
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
