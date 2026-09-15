@@ -1,6 +1,7 @@
 package com.grooxtyper.app.ui
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -23,11 +24,14 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,9 +57,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.R
 import com.grooxtyper.app.model.ImageImport
 import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.SavedProject
@@ -69,9 +76,15 @@ fun GalleryScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val uriHandler = LocalUriHandler.current
     val projectManager = remember { ProjectManager(context) }
     val savedProjects = remember { mutableStateListOf<SavedProject>() }
     var isImporting by remember { mutableStateOf(false) }
+    var showDonatePage by remember { mutableStateOf(false) }
+
+    BackHandler(enabled = showDonatePage) {
+        showDonatePage = false
+    }
 
     fun refreshProjects() {
         savedProjects.clear()
@@ -196,7 +209,12 @@ fun GalleryScreen(
             }
 
             if (savedProjects.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text("No saved projects yet. Tap '+' to create a canvas!", color = Color.Gray, fontSize = 14.sp)
                 }
             } else {
@@ -204,7 +222,8 @@ fun GalleryScreen(
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
                     modifier = Modifier
-                        .fillMaxSize()
+                        .fillMaxWidth()
+                        .weight(1f)
                         .padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -281,6 +300,52 @@ fun GalleryScreen(
                     }
                 }
             }
+            // Footer: channel resmi, kredit developer, dan donasi.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF1F1F1F))
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Send,
+                    contentDescription = "Telegram",
+                    tint = Color(0xFF29A9EB),
+                    modifier = Modifier.size(28.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { runCatching { uriHandler.openUri("https://t.me/VasiliasPV") } }
+                ) {
+                    Text(
+                        "Official Telegram Channel",
+                        color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "t.me/VasiliasPV",
+                        color = Color(0xFF29A9EB), fontSize = 11.sp
+                    )
+                    Text(
+                        "Develop by @AnergiaPV",
+                        color = Color.Gray, fontSize = 11.sp,
+                        modifier = Modifier.clickable {
+                            runCatching { uriHandler.openUri("https://t.me/AnergiaPV") }
+                        }
+                    )
+                }
+                Button(
+                    onClick = { showDonatePage = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800)),
+                    shape = RoundedCornerShape(20.dp)
+                ) {
+                    Icon(Icons.Default.Favorite, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Donate", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
         }
 
         // FAB to create new canvas
@@ -288,7 +353,7 @@ fun GalleryScreen(
             onClick = { showCreateDialog = true },
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(24.dp),
+                .padding(end = 24.dp, bottom = 96.dp),
             containerColor = Color(0xFFFF9800),
             contentColor = Color.Black
         ) {
@@ -349,6 +414,88 @@ fun GalleryScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text("Mengimpor gambar…", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // Halaman donasi: QR QRIS + channel resmi.
+        if (showDonatePage) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF141414))
+            ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(64.dp)
+                            .background(Color(0xFF1F1F1F))
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = { showDonatePage = false }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Kembali",
+                                tint = Color.White
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            "Donate",
+                            color = Color.White,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            "Dukung pengembangan GrooxTyper",
+                            color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Scan QRIS di bawah untuk donasi",
+                            color = Color.Gray, fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Image(
+                            painter = painterResource(id = R.drawable.qris_donate),
+                            contentDescription = "Kode QRIS donasi",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.White)
+                                .padding(12.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Send,
+                                contentDescription = null,
+                                tint = Color(0xFF29A9EB),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "t.me/VasiliasPV",
+                                color = Color(0xFF29A9EB), fontSize = 13.sp,
+                                modifier = Modifier.clickable {
+                                    runCatching { uriHandler.openUri("https://t.me/VasiliasPV") }
+                                }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Develop by @AnergiaPV", color = Color.Gray, fontSize = 12.sp)
+                    }
+                }
             }
         }
     }
