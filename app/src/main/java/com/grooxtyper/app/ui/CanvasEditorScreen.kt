@@ -84,6 +84,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -108,6 +109,8 @@ import com.grooxtyper.app.ml.DetectedTextRegion
 import com.grooxtyper.app.ml.MLMaskType
 import com.grooxtyper.app.ml.MLScript
 import com.grooxtyper.app.ml.MLTextDetector
+import com.grooxtyper.app.ml.PpocrDetector
+import com.grooxtyper.app.ml.TextEngine
 import com.grooxtyper.app.ml.BubbleDetector
 import com.grooxtyper.app.ml.BubbleModel
 import com.grooxtyper.app.ml.readingOrder
@@ -360,6 +363,8 @@ fun CanvasEditorScreen(
     val fontRegistry = remember { FontRegistry(context) }
     val inpaintingManager = remember { InpaintingManager() }
     val mlTextDetector = remember { MLTextDetector() }
+    // PP-OCR v6 small (ORT, model dari folder privat filesDir/ppocr bila ada).
+    val ppocrDetector = remember { PpocrDetector(context.filesDir) }
     val undoRedoManager = remember { UndoRedoManager() }
     val exportManager = remember { FileExportManager(context) }
     val viewState = remember { CanvasViewState(canvasWidth, canvasHeight) }
@@ -439,9 +444,16 @@ fun CanvasEditorScreen(
      */
     suspend fun persistProjectNow(withPreview: Boolean): Boolean {
         val dv = dirtyVersion
-        val base = runCatching {
+        val base = try {
             Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
-        }.getOrNull() ?: return false
+        } catch (e: OutOfMemoryError) {
+            // Memori mepet (kanvas 46MB): lewati siklus ini daripada crash.
+            e.printStackTrace()
+            return false
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        }
         var preview: Bitmap? = null
         return try {
             layerManager.renderDrawingOnly(base)
@@ -464,6 +476,9 @@ fun CanvasEditorScreen(
             }
             lastSavedVersion = dv
             true
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            false
         } catch (e: Exception) {
             e.printStackTrace()
             false
@@ -615,6 +630,12 @@ fun CanvasEditorScreen(
     var showTextEditor by remember { mutableStateOf(false) }
     var showRulerDialog by remember { mutableStateOf(false) }
     var showExportMenu by remember { mutableStateOf(false) }
+    // Dialog export: pilih format + atur kualitas, ada progres & hasil.
+    var showExportDialog by remember { mutableStateOf(false) }
+    var exportFormat by remember { mutableStateOf(ExportFormat.PNG) }
+    var exportQuality by remember { mutableFloatStateOf(90f) }
+    var isExporting by remember { mutableStateOf(false) }
+    var exportResult by remember { mutableStateOf<String?>(null) }
     var showLassoMenu by remember { mutableStateOf(false) }
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
@@ -625,6 +646,7 @@ fun CanvasEditorScreen(
     var selectedMaskType by remember { mutableStateOf(MLMaskType.MASK_KOTAK) }
     var makeEditableText by remember { mutableStateOf(true) }
     var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
+    var textEngine by remember { mutableStateOf(TextEngine.ML_KIT) }
     var mlDetecting by remember { mutableStateOf(false) }
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
 
@@ -869,7 +891,17 @@ fun CanvasEditorScreen(
             val active = layerManager.getActiveLayer()
             if (active != null) {
                 mlDetecting = true
-                detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                detectedTextRegions = try {
+                    if (textEngine == TextEngine.PPOCR_V6 && ppocrDetector.isAvailable()) {
+                        ppocrDetector.detect(active.getBitmap(), mlScripts)
+                    } else {
+                        // Termasuk fallback bila model PP-OCR belum ada di perangkat.
+                        mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    emptyList()
+                }
                 mlDetecting = false
                 showMLInpaintDialog = true
             }
@@ -1997,15 +2029,111 @@ fun CanvasEditorScreen(
             DropdownMenu(expanded = showExportMenu, onDismissRequest = { showExportMenu = false }) {
                 ExportFormat.values().forEach { fmt ->
                     DropdownMenuItem(
-                        text = { Text("Export as ${fmt.name}") },
+                        text = { Text("Export ${fmt.name}") },
                         onClick = {
+                            exportFormat = fmt
+                            exportResult = null
                             showExportMenu = false
-                            exportManager.exportArtwork(layerManager, fmt)
+                            showExportDialog = true
                         }
                     )
                 }
             }
         }
+        }
+
+        // Dialog export: format + kualitas + progres + hasil (tak lagi gagal diam-diam).
+        if (showExportDialog) {
+            AlertDialog(
+                onDismissRequest = { if (!isExporting) showExportDialog = false },
+                title = { Text("Export Artwork", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text(
+                            "${canvasWidth} x ${canvasHeight} px • teks & layer ikut ter-render",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Format", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ExportFormat.values().forEach { fmt ->
+                                val sel = exportFormat == fmt
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (sel) Accent else PanelBg)
+                                        .clickable(enabled = !isExporting) { exportFormat = fmt }
+                                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        fmt.name, color = Color.White, fontSize = 12.sp,
+                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (exportFormat.supportsQuality) "Kualitas ${exportQuality.toInt()}%"
+                            else "Kualitas: lossless (PNG mengabaikan slider)",
+                            color = Color.Gray, fontSize = 12.sp
+                        )
+                        Slider(
+                            value = exportQuality,
+                            onValueChange = { exportQuality = it },
+                            enabled = !isExporting && exportFormat.supportsQuality,
+                            valueRange = 10f..100f,
+                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                        )
+                        if (isExporting) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("Mengekspor… jangan tutup aplikasi.", color = Accent, fontSize = 12.sp)
+                        }
+                        exportResult?.let { msg ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(msg, color = Color.LightGray, fontSize = 12.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (isExporting) return@Button
+                            isExporting = true
+                            exportResult = null
+                            val fmt = exportFormat
+                            val q = exportQuality.toInt()
+                            scope.launch {
+                                val msg = withContext(Dispatchers.Default) {
+                                    val file = exportManager.exportArtwork(layerManager, fmt, quality = q)
+                                    if (file == null) {
+                                        "Gagal export (memori habis?). Coba tutup aplikasi lain / kualitas lebih rendah."
+                                    } else {
+                                        val shown = withContext(Dispatchers.IO) {
+                                            exportManager.publishToGallery(file, fmt.mime)
+                                        } ?: file.absolutePath
+                                        "Tersimpan: $shown"
+                                    }
+                                }
+                                exportResult = msg
+                                isExporting = false
+                            }
+                        },
+                        enabled = !isExporting,
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                    ) {
+                        Text(if (isExporting) "Mengekspor…" else "Export", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { if (!isExporting) showExportDialog = false }) {
+                        Text("Tutup", color = Color.Gray)
+                    }
+                },
+                containerColor = PanelBg
+            )
         }
 
         // Floating text toolbar
@@ -2512,7 +2640,7 @@ fun CanvasEditorScreen(
         if (showMLInpaintDialog) {
             AlertDialog(
                 onDismissRequest = { showMLInpaintDialog = false },
-                title = { Text("ML Kit Text Detection", color = Color.White) },
+                title = { Text("Deteksi Teks", color = Color.White, fontWeight = FontWeight.Bold) },
                 text = {
                     Column {
                         Text(
@@ -2520,7 +2648,41 @@ fun CanvasEditorScreen(
                             color = Color.LightGray, fontSize = 13.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
+                        Text("Mesin deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            TextEngine.values().forEach { engine ->
+                                val on = textEngine == engine
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (on) Accent else PanelBg)
+                                        .clickable { textEngine = engine }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(engine.displayName, color = Color.White, fontSize = 11.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                                }
+                            }
+                        }
+                        Text(
+                            if (textEngine == TextEngine.PPOCR_V6) {
+                                val st = ppocrDetector.modelStatus()
+                                if (ppocrDetector.isAvailable()) "PP-OCR siap ($st). Korea⊃Inggris • China⊃Inggris."
+                                else "Model belum ada ($st). Taruh det.onnx + rec_{en,ko,zh}.onnx + dict di folder ppocr, atau jalankan (otomatis fallback ML Kit)."
+                            } else {
+                                "ML Kit bawaan, tanpa file tambahan."
+                            },
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            "PP-OCR: Jepang tak didukung (pakai ML Kit untuk Jepang).",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)

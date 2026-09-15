@@ -118,7 +118,7 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
      */
     private fun maxBitmapEntriesFor(pixels: Long): Int {
         return when {
-            pixels > 12_000_000L -> 3
+            pixels > 12_000_000L -> 2
             pixels > 8_000_000L -> 5
             pixels > 4_000_000L -> 8
             else -> maxHistory

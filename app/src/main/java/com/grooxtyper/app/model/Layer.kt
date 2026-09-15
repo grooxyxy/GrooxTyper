@@ -355,13 +355,67 @@ class LayerManager(val width: Int, val height: Int) {
                 if (layer.opacity >= 1f && layer.blendMode == LayerBlendMode.NORMAL) {
                     TextRenderer.render(canvas, layer.box)
                 } else {
-                    val textBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    val textCanvas = Canvas(textBmp)
-                    TextRenderer.render(textCanvas, layer.box)
-                    canvas.drawBitmap(textBmp, 0f, 0f, paint)
-                    textBmp.recycle()
+                    renderStyledTextCropped(canvas, layer, paint)
                 }
             }
+        }
+    }
+
+    /**
+     * Render teks ber-blend/opacity ke bitmap SEBESAR BOUNDS teks (bukan
+     * full-canvas): di 720x16000 versi lama mengalokasi 46MB per teks per
+     * render → OOM/crash saat brush memaksa render penuh tiap move.
+     * Mode blend eksotis (CLEAR/XOR/DST) tetap pakai jalur full-canvas
+     * karena piksel transparan ikut memengaruhi hasil.
+     */
+    private fun renderStyledTextCropped(
+        canvas: Canvas,
+        layer: TextLayer,
+        paint: Paint
+    ) {
+        val useCropped = when (layer.blendMode) {
+            LayerBlendMode.NORMAL, LayerBlendMode.MULTIPLY, LayerBlendMode.SCREEN,
+            LayerBlendMode.DARKEN, LayerBlendMode.LIGHTEN, LayerBlendMode.ADD,
+            LayerBlendMode.SRC_ATOP -> true
+            else -> false
+        }
+        if (!useCropped) {
+            var full: Bitmap? = null
+            try {
+                full = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                TextRenderer.render(Canvas(full), layer.box)
+                canvas.drawBitmap(full, 0f, 0f, paint)
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                // Daripada crash: gambar langsung (efek blend dikorbankan).
+                runCatching { TextRenderer.render(canvas, layer.box) }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                runCatching { full?.recycle() }
+            }
+            return
+        }
+        val b = layer.box.getBounds()
+        val li = b.left.toInt().coerceIn(0, width)
+        val ti = b.top.toInt().coerceIn(0, height)
+        val ri = (b.right + 0.999f).toInt().coerceIn(0, width)
+        val bi = (b.bottom + 0.999f).toInt().coerceIn(0, height)
+        if (ri - li < 2 || bi - ti < 2) return
+        var cropped: Bitmap? = null
+        try {
+            cropped = Bitmap.createBitmap(ri - li, bi - ti, Bitmap.Config.ARGB_8888)
+            val tc = Canvas(cropped)
+            tc.translate(-li.toFloat(), -ti.toFloat())
+            TextRenderer.render(tc, layer.box)
+            canvas.drawBitmap(cropped, li.toFloat(), ti.toFloat(), paint)
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            runCatching { TextRenderer.render(canvas, layer.box) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            runCatching { cropped?.recycle() }
         }
     }
 }
