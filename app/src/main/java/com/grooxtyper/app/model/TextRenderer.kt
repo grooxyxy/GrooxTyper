@@ -39,7 +39,7 @@ object TextRenderer {
         val fm = paint.fontMetrics
         val extra = box.letterSpacing * box.scale
         val wordExtra = box.wordSpacing * box.scale
-        val lines = box.displayText().split("\n")
+        val lines = box.wrappedLines()
         val lineH = box.lineHeightPx()
 
         var contentW = 0f
@@ -48,6 +48,12 @@ object TextRenderer {
             val w = TextBox.spacedWidth(paint, lines[i], extra, wordExtra)
             widths[i] = w
             if (w > contentW) contentW = w
+        }
+        // Paragraph: lebar acuan = lebar box (agar align kiri/tengah/kanan
+        // terasa seperti Photoshop/IbisPaint, bukan menyusut ke baris terpendek).
+        val bw = box.boxWidth
+        if (bw != null && bw.isFinite() && bw > 0f) {
+            contentW = bw * box.scale
         }
         val contentH = lineH * lines.size
 

@@ -1173,6 +1173,15 @@ fun CanvasEditorScreen(
                                                         var d = Math.toDegrees(aNew - aOld).toFloat()
                                                         box.rotation = ((box.rotation + d) % 360f + 360f) % 360f
                                                     }
+                                                    TextHandle.WIDTH_LEFT, TextHandle.WIDTH_RIGHT -> {
+                                                        // Paragraph-resize ala PS/IbisPaint: sempitkan
+                                                        // tepi kiri/kanan agar teks re-wrap berbaris.
+                                                        box.dragWidthHandle(
+                                                            textHandleMode,
+                                                            lastCanvasPoint!!,
+                                                            touchCanvasPos
+                                                        )
+                                                    }
                                                     TextHandle.NONE -> Unit
                                                 }
                                                 refreshComposite()
@@ -1453,10 +1462,25 @@ fun CanvasEditorScreen(
                             strokeWidth = 2f / viewState.scale
                             color = android.graphics.Color.WHITE
                         }
+                        val widthPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.parseColor("#FF9800")
+                        }
                         val r = 14f / viewState.scale
                         for (h in listOf(box.scaleHandlePosition(), box.rotateHandlePosition())) {
                             native.drawCircle(h.x, h.y, r, handlePaint)
                             native.drawCircle(h.x, h.y, r, ringPaint)
+                        }
+                        val wr = 12f / viewState.scale
+                        val half = 1.6f * wr
+                        for (h in listOf(box.widthHandleLeft(), box.widthHandleRight())) {
+                            native.drawRect(h.x - half, h.y - half, h.x + half, h.y + half, widthPaint)
+                            val ring = android.graphics.Paint().apply {
+                                style = android.graphics.Paint.Style.STROKE
+                                strokeWidth = 2f / viewState.scale
+                                color = android.graphics.Color.WHITE
+                            }
+                            native.drawRect(h.x - half, h.y - half, h.x + half, h.y + half, ring)
                         }
                     }
                 }

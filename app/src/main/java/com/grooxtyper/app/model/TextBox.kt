@@ -14,7 +14,7 @@ import kotlin.math.sin
 
 enum class TextAlignMode { LEFT, CENTER, RIGHT }
 
-enum class TextHandle { NONE, BODY, SCALE, ROTATE }
+enum class TextHandle { NONE, BODY, SCALE, ROTATE, WIDTH_LEFT, WIDTH_RIGHT }
 
 enum class TextFillType { SOLID, GRADIENT }
 
@@ -86,8 +86,35 @@ class TextBox(
     var textScaleX: Float = 1f,
     var rotation: Float = 0f,
     var fontName: String = "Default Bold",
-    var typeface: Typeface = Typeface.DEFAULT_BOLD
+    var typeface: Typeface = Typeface.DEFAULT_BOLD,
+    /**
+     * Lebar kotak paragraph dalam px kanvas pada scale=1 (unscaled).
+     * null = point-text (ukuran mengikuti isi, perilaku lama).
+     * non-null = paragraph-text ala Photoshop/IbisPaint: teks di-wrap
+     * otomatis ke [boxWidth], sehingga menyempitkan box membuat teks
+     * berbaris/berparagraph, bukan mengecilkan font.
+     * Lebar aktual di kanvas = boxWidth * scale.
+     * Kombinasi dengan [textScaleX]: condense mempersempit glif,
+     * paragraph mempersempit box + wrap (keduanya bisa aktif bersamaan).
+     */
+    var boxWidth: Float? = null
 ) {
+    fun isParagraph(): Boolean = boxWidth != null
+
+    /** Ubah ke paragraph dengan lebar awal yang aman (tidak mengubah tampilan). */
+    fun enableParagraph(fallbackWidth: Float = 600f) {
+        if (boxWidth != null) return
+        val curW = try {
+            val (w, _) = contentSizePoint()
+            w / scale.coerceAtLeast(0.2f)
+        } catch (e: Exception) { fallbackWidth }
+        boxWidth = curW.coerceIn(40f, 4000f).takeIf { it.isFinite() } ?: fallbackWidth
+        if (boxWidth!! < 80f) boxWidth = 80f
+    }
+
+    fun disableParagraph() {
+        boxWidth = null
+    }
     fun effectiveTypeface(): Typeface {
         val style = (if (bold) Typeface.BOLD else 0) or (if (italic) Typeface.ITALIC else 0)
         return try {
@@ -111,6 +138,8 @@ class TextBox(
      * ukuran font dikecilkan sampai muat. Bila font sudah mentok di lantai dan
      * teks masih terlalu lebar, teks DISEMPITKAN secara horizontal lewat
      * [textScaleX] (tanpa mematahkan kata/baris). Satu arah (mengecil) saja.
+     * Bila paragraph: lebar box mengikuti rect dulu agar wrap,
+     * lalu hanya tinggi yang di-fit via font/condense.
      */
     fun fitToRect(
         rect: RectF,
@@ -121,6 +150,10 @@ class TextBox(
         position = Offset(rect.centerX(), rect.centerY())
         // Selalu hitung ulang dari keadaan normal agar hasil-fit konsisten.
         textScaleX = 1f
+        if (isParagraph()) {
+            val targetW = (rect.width() * fill / scale.coerceAtLeast(0.2f)).coerceIn(40f, 4000f)
+            if (targetW.isFinite()) boxWidth = targetW
+        }
         var guard = 0
         while (guard++ < 120) {
             val (w, h) = contentSize()
@@ -172,8 +205,8 @@ class TextBox(
         return max(4f, (fm.descent - fm.ascent) + lineSpacing * scale)
     }
 
-    /** Ukuran konten (tanpa padding outline/shadow), dalam px kanvas. */
-    fun contentSize(): Pair<Float, Float> {
+    /** Ukuran konten point-text (tanpa wrap), dalam px kanvas. */
+    private fun contentSizePoint(): Pair<Float, Float> {
         val paint = basePaint()
         val lines = displayText().split("\n").ifEmpty { listOf("") }
         var maxW = 0f
@@ -184,12 +217,117 @@ class TextBox(
         return maxW to lineHeightPx() * lines.size
     }
 
+    /**
+     * Baris efektif untuk render/ukur: bila paragraph, tiap paragraph
+     * (\n) di-wrap ke [boxWidth] ala Photoshop/IbisPaint.
+     */
+    fun wrappedLines(): List<String> {
+        val rawParas = displayText().split("\n")
+        val bw = boxWidth ?: return rawParas.ifEmpty { listOf("") }
+        if (!bw.isFinite() || bw <= 0f) return rawParas.ifEmpty { listOf("") }
+        val maxW = bw * scale
+        if (maxW <= 10f) return rawParas.ifEmpty { listOf("") }
+        val paint = basePaint()
+        val extra = letterSpacing * scale
+        val wordExtra = wordSpacing * scale
+        val out = mutableListOf<String>()
+        for (para in rawParas) {
+            if (para.isEmpty()) {
+                out.add("")
+                continue
+            }
+            out.addAll(wrapParagraph(para, paint, maxW, extra, wordExtra))
+        }
+        if (out.isEmpty()) out.add("")
+        return out
+    }
+
+    private fun wrapParagraph(
+        para: String,
+        paint: Paint,
+        maxW: Float,
+        extra: Float,
+        wordExtra: Float
+    ): List<String> {
+        if (spacedWidth(paint, para, extra, wordExtra) <= maxW) return listOf(para)
+        if (!para.contains(' ') && !para.contains('　')) {
+            return breakByChar(para, paint, maxW, extra, wordExtra)
+        }
+        val words = para.split(' ', '　').filter { it.isNotEmpty() }
+        if (words.isEmpty()) return listOf("")
+        val lines = mutableListOf<String>()
+        var cur: String = if (spacedWidth(paint, words[0], extra, wordExtra) > maxW) {
+            val broken = breakByChar(words[0], paint, maxW, extra, wordExtra)
+            for (i in 0 until broken.size - 1) lines.add(broken[i])
+            broken.last()
+        } else {
+            words[0]
+        }
+        for (wi in 1 until words.size) {
+            val w = words[wi]
+            val cand = "$cur $w"
+            if (spacedWidth(paint, cand, extra, wordExtra) <= maxW) {
+                cur = cand
+            } else {
+                lines.add(cur)
+                cur = if (spacedWidth(paint, w, extra, wordExtra) > maxW) {
+                    val broken = breakByChar(w, paint, maxW, extra, wordExtra)
+                    for (i in 0 until broken.size - 1) lines.add(broken[i])
+                    broken.last()
+                } else {
+                    w
+                }
+            }
+        }
+        lines.add(cur)
+        return lines
+    }
+
+    private fun breakByChar(
+        s: String,
+        paint: Paint,
+        maxW: Float,
+        extra: Float,
+        wordExtra: Float
+    ): List<String> {
+        val lines = mutableListOf<String>()
+        val cur = StringBuilder()
+        for (ch in s) {
+            val test = cur.toString() + ch
+            val wExtra = if (ch == ' ' || ch == '　') wordExtra else 0f
+            if (cur.isEmpty() || spacedWidth(paint, test, extra, wExtra) <= maxW) {
+                cur.append(ch)
+            } else {
+                lines.add(cur.toString())
+                cur.setLength(0)
+                cur.append(ch)
+            }
+        }
+        if (cur.isNotEmpty() || lines.isEmpty()) lines.add(cur.toString())
+        return lines
+    }
+
+    /** Ukuran konten (tanpa padding outline/shadow), dalam px kanvas. */
+    fun contentSize(): Pair<Float, Float> {
+        val bw = boxWidth
+        if (bw != null && bw.isFinite() && bw > 0f) {
+            val w = bw * scale
+            return w to lineHeightPx() * wrappedLines().size
+        }
+        return contentSizePoint()
+    }
+
+    /** Padding bounds (outline/shadow/glow + margin sentuh), dalam px kanvas. */
+    fun boundsPad(): Float {
+        val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
+        return outlineWidth * scale + (shadow?.blur ?: 0f) * scale +
+            (shadow?.spread ?: 0f) * scale + glowPad + 16f * scale
+    }
+
     /** Bounds lengkap termasuk padding outline/shadow, dalam px kanvas. */
     fun getBounds(): RectF {
         val (w, h) = contentSize()
-        val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
-        val pad = outlineWidth * scale + (shadow?.blur ?: 0f) * scale +
-            (shadow?.spread ?: 0f) * scale + glowPad + 16f * scale
+        val pad = boundsPad()
         return RectF(
             position.x - w / 2f - pad,
             position.y - h / 2f - pad,
@@ -230,12 +368,60 @@ class TextBox(
         return rotatePoint(Offset((b.left + b.right) / 2f, b.top - grip))
     }
 
-    /** Urutan uji: handle putar -> handle skala -> badan. */
+    /** Handle kiri-tengah & kanan-tengah di frame untuk atur lebar paragraph. */
+    fun widthHandleLeft(): Offset {
+        val b = getBounds()
+        return rotatePoint(Offset(b.left, (b.top + b.bottom) / 2f))
+    }
+
+    fun widthHandleRight(): Offset {
+        val b = getBounds()
+        return rotatePoint(Offset(b.right, (b.top + b.bottom) / 2f))
+    }
+
+    /** Urutan uji: handle putar -> skala -> lebar paragraph -> badan. */
     fun hitHandle(p: Offset, radiusPx: Float): TextHandle {
         if ((p - rotateHandlePosition()).getDistance() <= radiusPx) return TextHandle.ROTATE
         if ((p - scaleHandlePosition()).getDistance() <= radiusPx) return TextHandle.SCALE
+        if ((p - widthHandleRight()).getDistance() <= radiusPx * 1.15f) return TextHandle.WIDTH_RIGHT
+        if ((p - widthHandleLeft()).getDistance() <= radiusPx * 1.15f) return TextHandle.WIDTH_LEFT
         if (hitTest(p)) return TextHandle.BODY
         return TextHandle.NONE
+    }
+
+    /**
+     * Geser handle lebar paragraph ala Photoshop/IbisPaint: tepi seberang
+     * dikunci, lebar konten berubah sehingga teks re-wrap (bukan scale font).
+     * Bila masih point-text, otomatis jadi paragraph dulu.
+     */
+    fun dragWidthHandle(handle: TextHandle, lastCanvas: Offset, curCanvas: Offset) {
+        if (handle != TextHandle.WIDTH_LEFT && handle != TextHandle.WIDTH_RIGHT) return
+        if (boxWidth == null) enableParagraph()
+        val bw = boxWidth ?: return
+        if (!bw.isFinite()) return
+        val lastLocal = unrotate(lastCanvas)
+        val curLocal = unrotate(curCanvas)
+        val dx = curLocal.x - lastLocal.x
+        if (dx == 0f) return
+        val safeScale = scale.coerceAtLeast(0.2f)
+        val pad = boundsPad()
+        val oldPaddedW = bw * safeScale + pad * 2f
+        val newPaddedW = if (handle == TextHandle.WIDTH_RIGHT) {
+            oldPaddedW + dx
+        } else {
+            oldPaddedW - dx
+        }
+        val minPadded = 40f * safeScale + pad * 2f
+        val clampedPadded = newPaddedW.coerceIn(minPadded, 4000f * safeScale + pad * 2f)
+        val appliedDx = clampedPadded - oldPaddedW
+        if (appliedDx == 0f) return
+        val newContentActual = (clampedPadded - pad * 2f).coerceAtLeast(10f)
+        boxWidth = (newContentActual / safeScale).coerceIn(40f, 4000f)
+        val halfDx = appliedDx / 2f
+        val rad = Math.toRadians(rotation.toDouble())
+        val cdx = (halfDx * cos(rad)).toFloat()
+        val cdy = (halfDx * sin(rad)).toFloat()
+        position = Offset(position.x + cdx, position.y + cdy)
     }
 
     /** Salinan lepas untuk snapshot history (typeface dipakai bersama, aman). */
@@ -268,7 +454,8 @@ class TextBox(
         textScaleX = textScaleX,
         rotation = rotation,
         fontName = fontName,
-        typeface = typeface
+        typeface = typeface,
+        boxWidth = boxWidth
     )
 
     /** Pulihkan semua field dari [o] tanpa ganti objek (referensi seleksi tetap valid). */
@@ -301,6 +488,7 @@ class TextBox(
         rotation = o.rotation
         fontName = o.fontName
         typeface = o.typeface
+        boxWidth = o.boxWidth
     }
 
     /** Samakan isi visual (untuk deteksi sesi edit panel). */
@@ -331,7 +519,8 @@ class TextBox(
             scale == o.scale &&
             textScaleX == o.textScaleX &&
             rotation == o.rotation &&
-            fontName == o.fontName
+            fontName == o.fontName &&
+            boxWidth == o.boxWidth
     }
 
     companion object {

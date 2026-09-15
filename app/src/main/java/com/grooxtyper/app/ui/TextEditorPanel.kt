@@ -143,6 +143,9 @@ fun TextEditorPanel(
     var wordSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.wordSpacing) }
     var lineSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.lineSpacing) }
     var scaleX by remember(box.id, styleVersion) { mutableFloatStateOf(box.textScaleX) }
+    // Paragraph-text ala Photoshop/IbisPaint: null = point, non-null = wrap.
+    var isParagraph by remember(box.id, styleVersion) { mutableStateOf(box.isParagraph()) }
+    var boxW by remember(box.id, styleVersion) { mutableFloatStateOf(box.boxWidth ?: 600f) }
 
     var textOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.textOpacity) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
@@ -348,6 +351,23 @@ fun TextEditorPanel(
                         onBold = { bold = it; box.bold = it; push() },
                         onItalic = { italic = it; box.italic = it; push() },
                         onAlign = { align = it; box.align = it; push() },
+                        isParagraph = isParagraph,
+                        boxWidth = boxW,
+                        onToggleParagraph = { para ->
+                            isParagraph = para
+                            if (para) {
+                                box.enableParagraph(boxW)
+                                boxW = box.boxWidth ?: boxW
+                            } else {
+                                box.disableParagraph()
+                            }
+                            push()
+                        },
+                        onBoxWidth = { w ->
+                            boxW = w
+                            box.boxWidth = w
+                            push()
+                        },
                         fonts = fonts,
                         boxFontName = box.fontName,
                         onPickFont = { name ->
@@ -519,6 +539,10 @@ private fun WriteTab(
     onBold: (Boolean) -> Unit,
     onItalic: (Boolean) -> Unit,
     onAlign: (TextAlignMode) -> Unit,
+    isParagraph: Boolean,
+    boxWidth: Float,
+    onToggleParagraph: (Boolean) -> Unit,
+    onBoxWidth: (Float) -> Unit,
     fonts: List<Pair<String, Typeface>>,
     boxFontName: String,
     onPickFont: (String) -> Unit,
@@ -546,6 +570,33 @@ private fun WriteTab(
         AlignButton(align == TextAlignMode.LEFT, Icons.Default.FormatAlignLeft) { onAlign(TextAlignMode.LEFT) }
         AlignButton(align == TextAlignMode.CENTER, Icons.Default.FormatAlignCenter) { onAlign(TextAlignMode.CENTER) }
         AlignButton(align == TextAlignMode.RIGHT, Icons.Default.FormatAlignRight) { onAlign(TextAlignMode.RIGHT) }
+    }
+    // Mode paragraph ala Photoshop/IbisPaint: sempitkan box agar teks berbaris.
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Paragraph (wrap otomatis)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(
+                if (isParagraph) "Sempitkan via kotak oranye di kanvas / slider" else "Point-text: satu baris memanjang",
+                color = Color.Gray, fontSize = 11.sp
+            )
+        }
+        Switch(
+            checked = isParagraph,
+            onCheckedChange = onToggleParagraph,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    if (isParagraph) {
+        Text("Lebar box ${boxWidth.toInt()} px", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = boxWidth, onValueChange = onBoxWidth,
+            valueRange = 60f..1600f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text(
+            "Tips: drag handle kotak oranye di sisi kiri/kanan frame teks untuk wrap langsung di kanvas.",
+            color = Color.Gray, fontSize = 11.sp
+        )
     }
     Row(
         modifier = Modifier.fillMaxWidth(),
