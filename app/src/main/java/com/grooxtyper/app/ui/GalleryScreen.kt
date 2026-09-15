@@ -217,9 +217,10 @@ fun GalleryScreen(
                                         .background(Color(0xFF383838), RoundedCornerShape(8.dp)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    if (thumbBmp != null) {
+                                    val thumb = thumbBmp
+                                    if (thumb != null) {
                                         Image(
-                                            bitmap = thumbBmp.asImageBitmap(),
+                                            bitmap = thumb.asImageBitmap(),
                                             contentDescription = null,
                                             modifier = Modifier.fillMaxSize()
                                         )
