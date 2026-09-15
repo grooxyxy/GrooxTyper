@@ -3,6 +3,7 @@ package com.grooxtyper.app.ui
 import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.Path
+import android.graphics.RectF
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
@@ -62,6 +63,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -93,7 +95,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.ml.DetectedTextRegion
 import com.grooxtyper.app.ml.MLMaskType
+import com.grooxtyper.app.ml.MLScript
 import com.grooxtyper.app.ml.MLTextDetector
+import com.grooxtyper.app.ml.BubbleDetector
+import com.grooxtyper.app.ml.BubbleModel
+import com.grooxtyper.app.ml.readingOrder
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
@@ -108,10 +114,10 @@ import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
 import com.grooxtyper.app.model.TextBox
-import com.grooxtyper.app.model.FontRegistry
 import com.grooxtyper.app.model.TextHandle
 import com.grooxtyper.app.model.TextLayer
 import com.grooxtyper.app.model.TextRenderer
+import com.grooxtyper.app.model.TextStyleManager
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -261,7 +267,113 @@ fun CanvasEditorScreen(
     var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
     var selectedMaskType by remember { mutableStateOf(MLMaskType.REFINED_TEXT) }
     var makeEditableText by remember { mutableStateOf(true) }
+    var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
+    var mlDetecting by remember { mutableStateOf(false) }
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
+
+    // Style preset untuk pencocokan prefix otomatis ala TypeR.
+    val textStyleManager = remember { TextStyleManager(context) }
+    var lastAutoPrefix by remember { mutableStateOf<Pair<String, String>?>(null) }
+
+    // Mode multi-bubble: antrean baris teks untuk ditaruh berurutan.
+    var showMultiBubbleDialog by remember { mutableStateOf(false) }
+    var multiBubbleDraft by remember { mutableStateOf("") }
+    var multiBubbleLines by remember { mutableStateOf(listOf<String>()) }
+    var multiBubbleIndex by remember { mutableIntStateOf(0) }
+    var multiBubbleTemplate by remember { mutableStateOf<TextBox?>(null) }
+    fun isMultiBubbleActive() = multiBubbleLines.isNotEmpty() && multiBubbleIndex < multiBubbleLines.size
+
+    // Bubble detector: dua profil model yang bisa dipilih user.
+    val bubbleDetector = remember { BubbleDetector() }
+    var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
+    var showBubbleDialog by remember { mutableStateOf(false) }
+    var bubbleModel by remember { mutableStateOf(BubbleModel.FAST) }
+    var bubbleDetecting by remember { mutableStateOf(false) }
+    var showBubbleOverlay by remember { mutableStateOf(true) }
+    var lassoPath by remember { mutableStateOf<Path?>(null) }
+
+    fun runBubbleDetection() {
+        scope.launch {
+            val snap = runCatching {
+                compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+            }.getOrNull() ?: return@launch
+            bubbleDetecting = true
+            val found = bubbleDetector.detect(snap, bubbleModel)
+            runCatching { snap.recycle() }
+            detectedBubbles = found
+            bubbleDetecting = false
+            showBubbleOverlay = true
+            refreshComposite()
+        }
+    }
+
+    /** Isi semua bubble terdeteksi dari antrean multi-bubble (urutan baca manga). */
+    fun autoFillBubbles() {
+        if (multiBubbleLines.isEmpty() || detectedBubbles.isEmpty()) return
+        val ordered = readingOrder(detectedBubbles)
+        val n = minOf(ordered.size, multiBubbleLines.size)
+        if (n <= 0) return
+        val template = selectedTextBox?.copy()
+        var last: TextBox? = null
+        var lastLayerId = ""
+        for (i in 0 until n) {
+            val b = ordered[i].boundingBox
+            val inset = RectF(
+                b.left + b.width() * 0.12f,
+                b.top + b.height() * 0.12f,
+                b.right - b.width() * 0.12f,
+                b.bottom - b.height() * 0.12f
+            )
+            val box = TextBox(
+                text = multiBubbleLines[i],
+                position = Offset(inset.centerX(), inset.centerY()),
+                color = brushEngine.color
+            )
+            template?.let { box.applyStyleFrom(it) }
+            applyPrefixStyleTo(box)
+            box.fitToRect(inset)
+            val created = layerManager.addTextLayer(box)
+            undoRedoManager.pushLayerAdd(created.id)
+            last = box
+            lastLayerId = created.id
+        }
+        last?.let {
+            selectedTextBox = it
+            layerManager.activeLayerId = lastLayerId
+            activeTool = ActiveTool.TEXT
+            showTextEditor = true
+        }
+        refreshComposite()
+    }
+
+    /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
+    fun applyPrefixStyleTo(box: TextBox): Boolean {
+        val t = box.text.trimStart()
+        if (!t.startsWith("[")) {
+            if (lastAutoPrefix?.first == box.id) lastAutoPrefix = null
+            return false
+        }
+        val match = textStyleManager.list().firstOrNull { preset ->
+            preset.prefix.isNotBlank() && t.startsWith(preset.prefix, ignoreCase = true)
+        } ?: return false
+        if (lastAutoPrefix?.first == box.id && lastAutoPrefix?.second == match.id) return false
+        val tf = fontList.find { it.first == match.fontName }?.second
+        match.applyTo(box, tf)
+        lastAutoPrefix = box.id to match.id
+        return true
+    }
+
+    fun runMLDetection() {
+        scope.launch {
+            val active = layerManager.getActiveLayer()
+            if (active != null) {
+                mlDetecting = true
+                detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                mlDetecting = false
+                showMLInpaintDialog = true
+            }
+        }
+    }
 
     fun flattenSelectedText() {
         val box = selectedTextBox ?: return
@@ -289,6 +401,32 @@ fun CanvasEditorScreen(
             }
         selectedTextBox = null
         showTextEditor = false
+        refreshComposite()
+    }
+
+    /** Taruh baris antrean multi-bubble berikutnya di titik ketuk. */
+    fun placeNextBubble(at: Offset) {
+        if (!isMultiBubbleActive()) return
+        val line = multiBubbleLines[multiBubbleIndex]
+        val box = TextBox(
+            text = line,
+            position = at,
+            color = brushEngine.color
+        )
+        multiBubbleTemplate?.let { box.applyStyleFrom(it) }
+        applyPrefixStyleTo(box)
+        // Bila ada seleksi bubble, langsung pas-kan ukurannya.
+        selectionEngine.selectionBounds()?.let { box.fitToRect(it) }
+        val created = layerManager.addTextLayer(box)
+        undoRedoManager.pushLayerAdd(created.id)
+        selectedTextBox = box
+        layerManager.activeLayerId = created.id
+        textHandleMode = TextHandle.BODY
+        multiBubbleIndex++
+        if (!isMultiBubbleActive()) {
+            // Antrean habis: buka editor untuk hasil terakhir.
+            showTextEditor = true
+        }
         refreshComposite()
     }
 
@@ -430,6 +568,7 @@ fun CanvasEditorScreen(
                                 brushEngine.endStroke()
                                 colorPickActive = false
                                 pressId++
+                                lassoPath = null
                                 lastCanvasPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
@@ -541,17 +680,21 @@ fun CanvasEditorScreen(
                                                     undoRedoManager.pushTextBox(hit.box.id, hit.box.copy())
                                                     refreshComposite()
                                                 } else {
-                                                    val box = TextBox(
-                                                        text = "Teks baru",
-                                                        position = touchCanvasPos,
-                                                        color = brushEngine.color
-                                                    )
-                                                    val created = layerManager.addTextLayer(box)
-                                                    undoRedoManager.pushLayerAdd(created.id)
-                                                    selectedTextBox = box
-                                                    textHandleMode = TextHandle.BODY
-                                                    showTextEditor = true
-                                                    refreshComposite()
+                                                    if (isMultiBubbleActive()) {
+                                                        placeNextBubble(touchCanvasPos)
+                                                    } else {
+                                                        val box = TextBox(
+                                                            text = "Teks baru",
+                                                            position = touchCanvasPos,
+                                                            color = brushEngine.color
+                                                        )
+                                                        val created = layerManager.addTextLayer(box)
+                                                        undoRedoManager.pushLayerAdd(created.id)
+                                                        selectedTextBox = box
+                                                        textHandleMode = TextHandle.BODY
+                                                        showTextEditor = true
+                                                        refreshComposite()
+                                                    }
                                                 }
                                             }
                                         } else {
@@ -588,6 +731,27 @@ fun CanvasEditorScreen(
                                     } else if (activeTool == ActiveTool.EYEDROPPER) {
                                         // Eyedropper tool: ketuk/seret untuk ambil warna kanvas.
                                         pickColorAt(change.position)
+                                    } else if (activeTool == ActiveTool.LASSO) {
+                                        if (lastCanvasPoint == null) {
+                                            // Ketuk bubble terdeteksi → jadikan seleksi oval;
+                                            // bila kosong mulai gambar lasso bebas.
+                                            val hit = detectedBubbles
+                                                .filter { it.boundingBox.contains(touchCanvasPos.x, touchCanvasPos.y) }
+                                                .minByOrNull { it.boundingBox.width() * it.boundingBox.height() }
+                                            if (hit != null) {
+                                                selectionEngine.selectOval(hit.boundingBox)
+                                                lassoPath = null
+                                                refreshComposite()
+                                            } else {
+                                                lassoPath = Path().apply {
+                                                    moveTo(touchCanvasPos.x, touchCanvasPos.y)
+                                                }
+                                                refreshComposite()
+                                            }
+                                        } else {
+                                            lassoPath?.lineTo(touchCanvasPos.x, touchCanvasPos.y)
+                                            refreshComposite()
+                                        }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
                                         if (colorPickActive) {
                                             // Mode tahan-jari: ambil warna, jangan melukis.
@@ -631,6 +795,8 @@ fun CanvasEditorScreen(
                                     colorPickActive = false
                                     pressId++
                                     twoFingerActive = false
+                                    // Kunci sketsa lasso bebas menjadi seleksi.
+                                    lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
@@ -641,6 +807,7 @@ fun CanvasEditorScreen(
                                 strokeLayer = null
                                 brushEngine.endStroke()
                                 twoFingerActive = false
+                                lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
                                 lastCanvasPoint = null
                                 lastScreenPoint = null
                                 cursorPosition = null
@@ -734,6 +901,41 @@ fun CanvasEditorScreen(
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
                     }
                     drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, marchPaint)
+                }
+
+                if (showBubbleOverlay && detectedBubbles.isNotEmpty()) {
+                    val bubblePaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                        color = android.graphics.Color.CYAN
+                    }
+                    val indexPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.WHITE
+                        textSize = 30f / viewState.scale
+                        isFakeBoldText = true
+                        setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK)
+                    }
+                    val native = drawContext.canvas.nativeCanvas
+                    detectedBubbles.forEachIndexed { i, b ->
+                        val r = b.boundingBox
+                        native.drawRoundRect(r.left, r.top, r.right, r.bottom, 24f, 24f, bubblePaint)
+                        native.drawText(
+                            "${i + 1}",
+                            r.left + 8f,
+                            r.top + 38f / viewState.scale,
+                            indexPaint
+                        )
+                    }
+                }
+
+                lassoPath?.let { sketch ->
+                    val previewPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                        color = android.graphics.Color.CYAN
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                    }
+                    drawContext.canvas.nativeCanvas.drawPath(sketch, previewPaint)
                 }
             }
 
@@ -950,6 +1152,33 @@ fun CanvasEditorScreen(
             }
         }
 
+        // Hint bar mode multi-bubble (di atas toolbar bawah).
+        if (isMultiBubbleActive()) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 72.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(PanelBg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Bubble ${multiBubbleIndex + 1}/${multiBubbleLines.size} — ketuk kanvas",
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(
+                    onClick = { multiBubbleLines = emptyList(); multiBubbleIndex = 0 }
+                ) { Text("Batal", color = Color.Red, fontSize = 12.sp) }
+            }
+        }
+
         // Bottom toolbar (ibisPaint style)
         // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
         Row(
@@ -1037,6 +1266,28 @@ fun CanvasEditorScreen(
             }
 
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Deteksi Bubble…") },
+                    onClick = {
+                        showLassoMenu = false
+                        showBubbleDialog = true
+                        if (detectedBubbles.isEmpty()) runBubbleDetection()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Fit Text to Selection") },
+                    enabled = selectedTextBox != null && selectionEngine.hasSelection,
+                    onClick = {
+                        val box = selectedTextBox
+                        val bounds = selectionEngine.selectionBounds()
+                        if (box != null && bounds != null) {
+                            undoRedoManager.pushTextBox(box.id, box.copy())
+                            box.fitToRect(bounds)
+                            refreshComposite()
+                        }
+                        showLassoMenu = false
+                    }
+                )
                 DropdownMenuItem(text = { Text("Clear Area") }, onClick = {
                     layerManager.getActiveLayer()?.let {
                         undoRedoManager.saveSnapshot(it)
@@ -1079,15 +1330,7 @@ fun CanvasEditorScreen(
 
             // ML Inpaint
             IconButton(
-                onClick = {
-                    scope.launch {
-                        val active = layerManager.getActiveLayer()
-                        if (active != null) {
-                            detectedTextRegions = mlTextDetector.detectTextRegions(active.getBitmap())
-                            showMLInpaintDialog = true
-                        }
-                    }
-                }
+                onClick = { runMLDetection() }
             ) {
                 Icon(Icons.Default.AutoFixHigh, contentDescription = "Inpaint", tint = Color.White)
             }
@@ -1177,6 +1420,11 @@ fun CanvasEditorScreen(
                         onPushTextHistory = { before ->
                             undoRedoManager.pushTextBox(box.id, before)
                         },
+                        onCheckPrefix = { applyPrefixStyleTo(it) },
+                        onOpenMultiBubble = {
+                            multiBubbleDraft = ""
+                            showMultiBubbleDialog = true
+                        },
                         onFlatten = { flattenSelectedText() },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }
@@ -1191,8 +1439,36 @@ fun CanvasEditorScreen(
                 title = { Text("ML Kit Text Detection", color = Color.White) },
                 text = {
                     Column {
-                        Text("Detected ${detectedTextRegions.size} text blocks.", color = Color.LightGray, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
+                            if (mlDetecting) "Mendeteksi teks…" else "Detected ${detectedTextRegions.size} text blocks.",
+                            color = Color.LightGray, fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            MLScript.values().forEach { script ->
+                                val on = script in mlScripts
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (on) Accent else PanelBg)
+                                        .clickable {
+                                            mlScripts = if (on) mlScripts - script else mlScripts + script
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(script.displayName, color = Color.White, fontSize = 11.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                                }
+                            }
+                        }
+                        TextButton(onClick = { runMLDetection() }) {
+                            Text("Deteksi ulang", color = Accent, fontSize = 12.sp)
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
@@ -1265,6 +1541,7 @@ fun CanvasEditorScreen(
                                             color = textColor,
                                             bold = true
                                         )
+                                        applyPrefixStyleTo(box)
                                         val created = layerManager.addTextLayer(box)
                                         undoRedoManager.pushLayerAdd(created.id)
                                         if (firstBox == null) firstBox = box
@@ -1299,6 +1576,141 @@ fun CanvasEditorScreen(
                     onRefresh = { refreshComposite() }
                 )
             }
+        }
+
+        if (showBubbleDialog) {
+            AlertDialog(
+                onDismissRequest = { showBubbleDialog = false },
+                title = { Text("Bubble Detector", color = Color.White) },
+                text = {
+                    Column {
+                        Text(
+                            if (bubbleDetecting) "Mendeteksi bubble…"
+                            else "Ditemukan ${detectedBubbles.size} bubble.",
+                            color = Color.LightGray, fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Model:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        BubbleModel.values().forEach { model ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { bubbleModel = model }
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = bubbleModel == model,
+                                    onClick = { bubbleModel = model }
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(model.displayName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                    Text(model.desc, color = Color.Gray, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { runBubbleDetection() },
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                                shape = RoundedCornerShape(10.dp)
+                            ) { Text("Deteksi", color = Color.White, fontSize = 12.sp) }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Overlay", color = Color.White, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = showBubbleOverlay,
+                                onCheckedChange = {
+                                    showBubbleOverlay = it
+                                    refreshComposite()
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Ketuk bubble di mode Lasso untuk jadikan seleksi.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        if (multiBubbleLines.isEmpty()) {
+                            Text(
+                                "Isi draft multi-bubble dulu untuk pakai Isi Otomatis.",
+                                color = Color.Gray, fontSize = 11.sp
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            autoFillBubbles()
+                            showBubbleDialog = false
+                        },
+                        enabled = multiBubbleLines.isNotEmpty() && detectedBubbles.isNotEmpty(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                    ) { Text("Isi Otomatis", color = Color.White) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showBubbleDialog = false }) {
+                        Text("Tutup", color = Color.Gray)
+                    }
+                },
+                containerColor = PanelBg
+            )
+        }
+
+        if (showMultiBubbleDialog) {
+            AlertDialog(
+                onDismissRequest = { showMultiBubbleDialog = false },
+                title = { Text("Multi-bubble", color = Color.White) },
+                text = {
+                    Column {
+                        Text(
+                            "Satu baris per bubble. Ketuk kanvas berurutan untuk menaruh teks.",
+                            color = Color.Gray, fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = multiBubbleDraft,
+                            onValueChange = { multiBubbleDraft = it },
+                            label = { Text("Script (satu baris per bubble)") },
+                            minLines = 4,
+                            maxLines = 10,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            val lines = multiBubbleDraft.lines()
+                                .map { it.trim() }
+                                .filter { it.isNotEmpty() }
+                                .take(60)
+                            if (lines.isNotEmpty()) {
+                                multiBubbleLines = lines
+                                multiBubbleIndex = 0
+                                multiBubbleTemplate = selectedTextBox?.copy()
+                                activeTool = ActiveTool.TEXT
+                                showTextEditor = false
+                                showMultiBubbleDialog = false
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                    ) { Text("Mulai", color = Color.White) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showMultiBubbleDialog = false }) {
+                        Text("Batal", color = Color.Gray)
+                    }
+                },
+                containerColor = PanelBg
+            )
         }
     }
 }

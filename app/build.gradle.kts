@@ -98,8 +98,11 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    // ML Kit Text Recognition
+    // ML Kit Text Recognition (multi-script: Latin/Inggris, China, Jepang, Korea)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.0")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

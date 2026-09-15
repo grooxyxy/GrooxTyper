@@ -8,27 +8,68 @@ import android.graphics.Path
 import android.graphics.Rect
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import kotlin.math.max
+import kotlin.math.min
 
 enum class MLMaskType {
     REFINED_TEXT, // Precise text stroke contour
     BOUNDING_BOX   // Rectangle bounding box
 }
 
+enum class MLScript(val displayName: String) {
+    LATIN("Latin"),
+    CHINESE("China"),
+    JAPANESE("Jepang"),
+    KOREAN("Korea")
+}
+
 data class DetectedTextRegion(
     val text: String,
     val boundingBox: Rect,
-    val cornerPoints: Array<android.graphics.Point>?
+    val cornerPoints: Array<android.graphics.Point>?,
+    val script: MLScript = MLScript.LATIN
 )
 
 class MLTextDetector {
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val clients: Map<MLScript, TextRecognizer> = mapOf(
+        MLScript.LATIN to TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS),
+        MLScript.CHINESE to TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()),
+        MLScript.JAPANESE to TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()),
+        MLScript.KOREAN to TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+    )
 
-    suspend fun detectTextRegions(bitmap: Bitmap): List<DetectedTextRegion> = suspendCancellableCoroutine { continuation ->
+    /** Deteksi teks dengan recognizer per script terpilih, lalu gabung + hapus duplikat. */
+    suspend fun detectTextRegions(
+        bitmap: Bitmap,
+        scripts: Set<MLScript> = setOf(MLScript.LATIN)
+    ): List<DetectedTextRegion> {
+        if (scripts.isEmpty()) return emptyList()
+        val all = mutableListOf<DetectedTextRegion>()
+        for (script in scripts) {
+            val client = clients[script] ?: continue
+            try {
+                all += detectWith(client, bitmap, script)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return dedupe(all)
+    }
+
+    private suspend fun detectWith(
+        client: TextRecognizer,
+        bitmap: Bitmap,
+        script: MLScript
+    ): List<DetectedTextRegion> = suspendCancellableCoroutine { continuation ->
         val image = InputImage.fromBitmap(bitmap, 0)
-        recognizer.process(image)
+        client.process(image)
             .addOnSuccessListener { visionText ->
                 val regions = mutableListOf<DetectedTextRegion>()
                 for (block in visionText.textBlocks) {
@@ -39,7 +80,8 @@ class MLTextDetector {
                                 DetectedTextRegion(
                                     text = line.text,
                                     boundingBox = box,
-                                    cornerPoints = line.cornerPoints
+                                    cornerPoints = line.cornerPoints,
+                                    script = script
                                 )
                             )
                         }
@@ -50,6 +92,24 @@ class MLTextDetector {
             .addOnFailureListener {
                 continuation.resume(emptyList())
             }
+    }
+
+    /** Buang prediksi ganda antar-script (IoU tinggi → simpan teks terpanjang). */
+    private fun dedupe(regions: List<DetectedTextRegion>): List<DetectedTextRegion> {
+        val out = mutableListOf<DetectedTextRegion>()
+        for (r in regions.sortedByDescending { it.text.length }) {
+            if (out.none { iou(it.boundingBox, r.boundingBox) > 0.6f }) out.add(r)
+        }
+        return out
+    }
+
+    private fun iou(a: Rect, b: Rect): Float {
+        val ix = max(0, min(a.right, b.right) - max(a.left, b.left))
+        val iy = max(0, min(a.bottom, b.bottom) - max(a.top, b.top))
+        val inter = ix * iy
+        if (inter <= 0) return 0f
+        val union = a.width() * a.height() + b.width() * b.height() - inter
+        return if (union <= 0) 0f else inter.toFloat() / union
     }
 
     /**

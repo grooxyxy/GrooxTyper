@@ -14,6 +14,9 @@ import java.util.UUID
 data class TextStylePreset(
     val id: String = UUID.randomUUID().toString(),
     var name: String = "Style",
+    // Prefix pemicu otomatis ala TypeR (mis. "[SFX]"): bila teks diawali
+    // prefix ini, style langsung diterapkan.
+    var prefix: String = "",
     var fontName: String = "Default Bold",
     var fontSize: Float = 64f,
     var color: Int = android.graphics.Color.WHITE,
@@ -66,6 +69,7 @@ data class TextStylePreset(
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("name", name)
+        put("prefix", prefix)
         put("fontName", fontName)
         put("fontSize", fontSize.toDouble())
         put("color", color)
@@ -116,8 +120,9 @@ data class TextStylePreset(
     }
 
     companion object {
-        fun fromBox(box: TextBox, name: String): TextStylePreset = TextStylePreset(
+        fun fromBox(box: TextBox, name: String, prefix: String = ""): TextStylePreset = TextStylePreset(
             name = name.ifBlank { "Style" },
+            prefix = prefix.trim(),
             fontName = box.fontName,
             fontSize = box.fontSize,
             color = box.color,
@@ -166,6 +171,7 @@ data class TextStylePreset(
             return TextStylePreset(
                 id = o.optString("id", UUID.randomUUID().toString()),
                 name = o.optString("name", "Style"),
+                prefix = o.optString("prefix", ""),
                 fontName = o.optString("fontName", "Default Bold"),
                 fontSize = o.optDouble("fontSize", 64.0).toFloat(),
                 color = o.optInt("color", android.graphics.Color.WHITE),

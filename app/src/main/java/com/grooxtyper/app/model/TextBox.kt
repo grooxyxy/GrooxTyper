@@ -101,6 +101,47 @@ class TextBox(
     /** Teks yang tampil (kapital bila opsi menyala; asli tetap tersimpan). */
     fun displayText(): String = if (uppercase) text.uppercase() else text
 
+    /**
+     * Pas-kan box ke dalam [rect] (gaya TypeR auto-fit): posisi ke tengah
+     * lalu ukuran font dikecilkan sampai muat. Satu arah (mengecil) saja.
+     */
+    fun fitToRect(rect: RectF, fill: Float = 0.92f, minFont: Float = 10f) {
+        position = Offset(rect.centerX(), rect.centerY())
+        var guard = 0
+        while (guard++ < 80) {
+            val (w, h) = contentSize()
+            if ((w <= rect.width() * fill && h <= rect.height() * fill) || fontSize <= minFont) break
+            fontSize = max(minFont, fontSize * 0.92f)
+        }
+    }
+
+    /** Tiru gaya visual [o] (kecuali id/teks/posisi/skala/rotasi). */
+    fun applyStyleFrom(o: TextBox) {
+        fontSize = o.fontSize
+        color = o.color
+        bold = o.bold
+        italic = o.italic
+        align = o.align
+        outlineWidth = o.outlineWidth
+        outlineColor = o.outlineColor
+        strokeOpacity = o.strokeOpacity
+        strokePosition = o.strokePosition
+        fillType = o.fillType
+        gradient = o.gradient.copy()
+        shadow = o.shadow?.copy()
+        letterSpacing = o.letterSpacing
+        wordSpacing = o.wordSpacing
+        lineSpacing = o.lineSpacing
+        textOpacity = o.textOpacity
+        uppercase = o.uppercase
+        underline = o.underline
+        strikethrough = o.strikethrough
+        glow = o.glow?.copy()
+        bevel = o.bevel?.copy()
+        fontName = o.fontName
+        typeface = o.typeface
+    }
+
     /** Tinggi satu baris dalam px kanvas (dijaga >= 4 agar bounds/hit-test valid saat spacing minus). */
     fun lineHeightPx(): Float {
         val fm = basePaint().fontMetrics

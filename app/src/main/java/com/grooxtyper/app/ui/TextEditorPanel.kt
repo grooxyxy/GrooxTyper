@@ -93,6 +93,8 @@ fun TextEditorPanel(
     onImportFont: () -> Unit,
     onChange: () -> Unit,
     onPushTextHistory: (TextBox) -> Unit,
+    onCheckPrefix: (TextBox) -> Boolean,
+    onOpenMultiBubble: () -> Unit,
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
     onClose: () -> Unit
@@ -157,6 +159,7 @@ fun TextEditorPanel(
     var bevelOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.bevel?.opacity ?: 0.8f) }
 
     var styleName by remember { mutableStateOf("") }
+    var stylePrefix by remember { mutableStateOf("") }
     var showColor by remember { mutableStateOf(false) }
     var colorTarget by remember { mutableIntStateOf(0) } // 0 teks, 1 stroke, 2 shadow, 3 grad awal, 4 grad akhir, 5 glow
 
@@ -332,7 +335,11 @@ fun TextEditorPanel(
                 when (tab) {
                     0 -> WriteTab(
                         text = text,
-                        onText = { text = it; box.text = it.ifEmpty { " " }; push() },
+                        onText = {
+                            text = it; box.text = it.ifEmpty { " " }; push()
+                            // Prefix ala TypeR: "[SFX]..." langsung pakai stylenya.
+                            if (onCheckPrefix(box)) { styleVersion++; fontTick++ }
+                        },
                         fontSize = fontSize,
                         onFontSize = { fontSize = it; box.fontSize = it; push() },
                         bold = bold, italic = italic, align = align,
@@ -348,7 +355,8 @@ fun TextEditorPanel(
                                 fontTick++; push()
                             }
                         },
-                        onImportFont = onImportFont
+                        onImportFont = onImportFont,
+                        onOpenMultiBubble = onOpenMultiBubble
                     )
                     1 -> ColorTab(
                         fillType = fillType,
@@ -449,12 +457,15 @@ fun TextEditorPanel(
                     3 -> StyleTab(
                         styleName = styleName,
                         onStyleName = { styleName = it },
+                        stylePrefix = stylePrefix,
+                        onStylePrefix = { stylePrefix = it },
                         onSave = {
                             val preset = TextStylePreset.fromBox(
-                                box, styleName.ifBlank { "Style ${presets.size + 1}" }
+                                box, styleName.ifBlank { "Style ${presets.size + 1}" }, stylePrefix
                             )
                             presets = styleManager.save(preset)
                             styleName = ""
+                            stylePrefix = ""
                         },
                         presets = presets,
                         fonts = fonts,
@@ -507,7 +518,8 @@ private fun WriteTab(
     fonts: List<Pair<String, Typeface>>,
     boxFontName: String,
     onPickFont: (String) -> Unit,
-    onImportFont: () -> Unit
+    onImportFont: () -> Unit,
+    onOpenMultiBubble: () -> Unit
 ) {
     OutlinedTextField(
         value = text,
@@ -592,6 +604,14 @@ private fun WriteTab(
                 }
             }
         }
+    }
+    Button(
+        onClick = onOpenMultiBubble,
+        modifier = Modifier.fillMaxWidth(),
+        colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text("Isi banyak bubble (multi-bubble)", color = Color.White, fontSize = 12.sp)
     }
 }
 
@@ -880,6 +900,8 @@ private fun EffectTab(
 private fun StyleTab(
     styleName: String,
     onStyleName: (String) -> Unit,
+    stylePrefix: String,
+    onStylePrefix: (String) -> Unit,
     onSave: () -> Unit,
     presets: List<TextStylePreset>,
     fonts: List<Pair<String, Typeface>>,
@@ -899,6 +921,13 @@ private fun StyleTab(
             singleLine = true,
             modifier = Modifier.weight(1f)
         )
+        OutlinedTextField(
+            value = stylePrefix,
+            onValueChange = onStylePrefix,
+            label = { Text("[SFX]") },
+            singleLine = true,
+            modifier = Modifier.weight(0.7f)
+        )
         Button(
             onClick = onSave,
             colors = ButtonDefaults.buttonColors(containerColor = Accent),
@@ -907,6 +936,7 @@ private fun StyleTab(
             Text("Simpan", color = Color.White, fontSize = 12.sp)
         }
     }
+    Text("Prefix otomatis: teks diawali [..] langsung pakai stylenya.", color = Color.Gray, fontSize = 11.sp)
     Text("Style tersimpan (${presets.size}) — ketuk untuk pakai", color = Color.Gray, fontSize = 12.sp)
     if (presets.isEmpty()) {
         Text(
@@ -978,7 +1008,8 @@ private fun StyleTab(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(preset.name, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
-                            "${preset.fontName} • ${preset.fontSize.toInt()}px",
+                            "${preset.fontName} • ${preset.fontSize.toInt()}px" +
+                                if (preset.prefix.isNotBlank()) " • ${preset.prefix}" else "",
                             color = Color.Gray, fontSize = 11.sp
                         )
                     }

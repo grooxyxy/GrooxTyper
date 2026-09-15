@@ -34,6 +34,22 @@ class SelectionEngine(val width: Int, val height: Int) {
         maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
     }
 
+    /** Batas seleksi aktif (untuk auto-fit teks ke bubble). Null bila tak ada seleksi. */
+    fun selectionBounds(): RectF? {
+        if (!hasSelection) return null
+        val r = RectF()
+        selectionPath.computeBounds(r, true)
+        return if (r.isEmpty) null else r
+    }
+
+    /** Jadikan oval sebagai seleksi aktif (mis. dari bubble terdeteksi). */
+    fun selectOval(rect: RectF) {
+        selectionPath.reset()
+        selectionPath.addOval(rect, Path.Direction.CW)
+        hasSelection = true
+        updateMaskFromPath()
+    }
+
     private fun updateMaskFromPath() {
         maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
