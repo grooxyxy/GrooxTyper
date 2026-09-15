@@ -293,6 +293,9 @@ fun CanvasEditorScreen(
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
     var strokeProgress by remember { mutableStateOf(0f) }
     var strokeLength by remember { mutableStateOf(0f) }
+    // Layer yang dipakai selama satu stroke (disimpan agar tidak lookup per-move
+    // dan tidak ganti layer di tengah goresan).
+    var strokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
 
     Box(
         modifier = Modifier
@@ -301,10 +304,13 @@ fun CanvasEditorScreen(
             .onSizeChanged { viewportSize = it }
     ) {
         // Canvas with gestures
+        // NOTE: kunci pointerInput disengaja minimal (activeTool, selectedTextBox,
+        // viewportSize) agar pinch-zoom tidak me-restart gesture di tengah jalan
+        // (viewState.scale/offset/rotation berubah kontinu saat pinch).
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextBox, viewState.scale, viewState.offsetX, viewState.offsetY, viewState.rotation, viewportSize) {
+                .pointerInput(activeTool, selectedTextBox, viewportSize) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -312,6 +318,10 @@ fun CanvasEditorScreen(
                             val pointerCount = changes.size
 
                             if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
+                                // Gesture berubah jadi pan/zoom: akhiri stroke yang tertunda.
+                                strokeLayer?.let { brushEngine.syncTiles(it) }
+                                strokeLayer = null
+                                brushEngine.endStroke()
                                 lastCanvasPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
@@ -432,23 +442,34 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        val activeLayer = layerManager.ensureDrawingLayer()
                                         if (lastCanvasPoint == null) {
+                                            val activeLayer = layerManager.ensureDrawingLayer()
+                                            strokeLayer = activeLayer
+                                            // Kunci tipe brush sekali saat stroke dimulai,
+                                            // bukan per-move (menghindari recompose tiap event).
+                                            if (activeTool == ActiveTool.ERASER) {
+                                                brushEngine.brushType = BrushType.ERASER
+                                            } else if (brushEngine.brushType == BrushType.ERASER) {
+                                                brushEngine.brushType = BrushType.PEN_HARD
+                                            }
                                             undoRedoManager.saveSnapshot(activeLayer)
                                             brushEngine.beginStroke()
                                             brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos, 0f)
                                         } else {
-                                            if (activeTool == ActiveTool.ERASER) brushEngine.brushType = BrushType.ERASER
+                                            val target = strokeLayer ?: layerManager.ensureDrawingLayer()
+                                            if (strokeLayer == null) strokeLayer = target
                                             val dist = (touchCanvasPos - lastCanvasPoint!!).getDistance()
                                             strokeLength += dist
                                             val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
-                                            brushEngine.strokeSegmentOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos, progress)
+                                            brushEngine.strokeSegmentOnLayer(target, lastCanvasPoint!!, touchCanvasPos, progress)
                                         }
                                         refreshComposite()
                                     }
                                     lastCanvasPoint = touchCanvasPos
                                     change.consume()
                                 } else {
+                                    strokeLayer?.let { brushEngine.syncTiles(it) }
+                                    strokeLayer = null
                                     brushEngine.endStroke()
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
@@ -456,6 +477,8 @@ fun CanvasEditorScreen(
                                     strokeLength = 0f
                                 }
                             } else {
+                                strokeLayer?.let { brushEngine.syncTiles(it) }
+                                strokeLayer = null
                                 brushEngine.endStroke()
                                 lastCanvasPoint = null
                                 lastScreenPoint = null
@@ -730,7 +753,7 @@ fun CanvasEditorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Pan tool
-            IconButton(onClick = { activeTool = ActiveTool.PAN }) {
+            IconButton(onClick = { activeTool = ActiveTool.PAN; showBrushSettings = false }) {
                 Icon(Icons.Default.PanTool, contentDescription = "Pan", tint = if (activeTool == ActiveTool.PAN) Accent else Color.White)
             }
 
@@ -746,10 +769,17 @@ fun CanvasEditorScreen(
                         .clip(RoundedCornerShape(16.dp))
                         .background(if (activeTool == ActiveTool.BRUSH) Accent else Color.Transparent)
                         .clickable {
-                            activeTool = ActiveTool.BRUSH
-                            brushEngine.brushType = BrushType.PEN_HARD
-                            layerManager.ensureDrawingLayer()
-                            showBrushSettings = true
+                            if (activeTool == ActiveTool.BRUSH) {
+                                // Toggle: tap ikon brush saat aktif untuk buka/tutup panel.
+                                showBrushSettings = !showBrushSettings
+                            } else {
+                                activeTool = ActiveTool.BRUSH
+                                if (brushEngine.brushType == BrushType.ERASER) {
+                                    brushEngine.brushType = BrushType.PEN_HARD
+                                }
+                                layerManager.ensureDrawingLayer()
+                                showBrushSettings = true
+                            }
                         }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
@@ -763,6 +793,7 @@ fun CanvasEditorScreen(
                             activeTool = ActiveTool.ERASER
                             brushEngine.brushType = BrushType.ERASER
                             layerManager.ensureDrawingLayer()
+                            showBrushSettings = false
                         }
                         .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
@@ -771,7 +802,7 @@ fun CanvasEditorScreen(
             }
 
             // Eyedropper
-            IconButton(onClick = { activeTool = ActiveTool.EYEDROPPER }) {
+            IconButton(onClick = { activeTool = ActiveTool.EYEDROPPER; showBrushSettings = false }) {
                 Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Accent else Color.White)
             }
 
@@ -786,7 +817,7 @@ fun CanvasEditorScreen(
             )
 
             // Lasso
-            IconButton(onClick = { activeTool = ActiveTool.LASSO; showLassoMenu = true }) {
+            IconButton(onClick = { activeTool = ActiveTool.LASSO; showBrushSettings = false; showLassoMenu = true }) {
                 Icon(Icons.Default.SelectAll, contentDescription = "Lasso", tint = if (activeTool == ActiveTool.LASSO) Accent else Color.White)
             }
 
@@ -814,6 +845,7 @@ fun CanvasEditorScreen(
             // Text
             IconButton(onClick = {
                 activeTool = ActiveTool.TEXT
+                showBrushSettings = false
                 if (selectedTextBox != null) showTextEditor = true
             }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)

@@ -31,8 +31,7 @@ class UndoRedoManager(private val maxHistory: Int = 20) {
         redoStack.add(LayerStateSnapshot(currentLayer.id, currentCopy))
 
         val snapshot = undoStack.removeAt(undoStack.size - 1)
-        currentLayer.tileMap.importFromBitmap(snapshot.bitmapSnapshot)
-        currentLayer.markDirty()
+        restoreSnapshot(currentLayer, snapshot)
     }
 
     fun redo(layerManager: LayerManager) {
@@ -43,7 +42,16 @@ class UndoRedoManager(private val maxHistory: Int = 20) {
         undoStack.add(LayerStateSnapshot(currentLayer.id, currentCopy))
 
         val snapshot = redoStack.removeAt(redoStack.size - 1)
-        currentLayer.tileMap.importFromBitmap(snapshot.bitmapSnapshot)
-        currentLayer.markDirty()
+        restoreSnapshot(currentLayer, snapshot)
+    }
+
+    private fun restoreSnapshot(layer: DrawingLayer, snapshot: LayerStateSnapshot) {
+        // compositeBitmap adalah sumber render, jadi harus dipulihkan langsung.
+        val target = layer.getPersistentBitmap()
+        val canvas = android.graphics.Canvas(target)
+        canvas.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        canvas.drawBitmap(snapshot.bitmapSnapshot, 0f, 0f, null)
+        layer.tileMap.importFromBitmap(target)
+        layer.markDirty()
     }
 }

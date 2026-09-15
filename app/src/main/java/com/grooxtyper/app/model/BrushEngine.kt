@@ -5,12 +5,17 @@ import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.ceil
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -40,23 +45,31 @@ enum class RulerType {
 }
 
 class ForceFadeConfig(
-    var isEnabled: Boolean = false,
-    var startFade: Float = 0.3f,
-    var endFade: Float = 0.3f
-)
+    isEnabled: Boolean = false,
+    startFade: Float = 0.3f,
+    endFade: Float = 0.3f
+) {
+    var isEnabled by mutableStateOf(isEnabled)
+    var startFade by mutableFloatStateOf(startFade)
+    var endFade by mutableFloatStateOf(endFade)
+}
 
 class StabilizerConfig(
-    var isEnabled: Boolean = true,
-    var strength: Float = 0.5f // 0.0 = raw, 1.0 = max smoothing
-)
+    isEnabled: Boolean = true,
+    strength: Float = 0.5f // 0.0 = raw, 1.0 = max smoothing
+) {
+    var isEnabled by mutableStateOf(isEnabled)
+    var strength by mutableFloatStateOf(strength)
+}
 
 class RulerGuide(
-    var type: RulerType = RulerType.OFF,
+    type: RulerType = RulerType.OFF,
     var startPos: Offset = Offset(100f, 100f),
     var endPos: Offset = Offset(500f, 500f),
     var circleCenter: Offset = Offset(300f, 300f),
     var circleRadius: Float = 200f
 ) {
+    var type by mutableStateOf(type)
     fun snapPoint(p: Offset): Offset {
         return when (type) {
             RulerType.STRAIGHT_LINE -> {
@@ -80,10 +93,10 @@ class RulerGuide(
 }
 
 class BrushEngine {
-    var brushType: BrushType = BrushType.PEN_HARD
-    var size: Float = 24f
-    var opacity: Float = 1.0f
-    var color: Int = Color.BLACK
+    var brushType by mutableStateOf(BrushType.PEN_HARD)
+    var size by mutableFloatStateOf(24f)
+    var opacity by mutableFloatStateOf(1.0f)
+    var color by mutableIntStateOf(Color.BLACK)
     var forceFade: ForceFadeConfig = ForceFadeConfig()
     var stabilizer: StabilizerConfig = StabilizerConfig()
     var rulerGuide: RulerGuide = RulerGuide()
@@ -187,16 +200,13 @@ class BrushEngine {
         val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1)
         lastSmoothedPoint = smoothedP2
 
-        val bmp = layer.getPersistentBitmap()
-        val canvas = Canvas(bmp)
-
         if (brushType == BrushType.BLUR) {
-            val path = Path()
-            path.moveTo(smoothedP1.x, smoothedP1.y)
-            path.lineTo(smoothedP2.x, smoothedP2.y)
-            applyBlurStroke(layer, path)
+            applyBlurStroke(layer, smoothedP1, smoothedP2)
             return
         }
+
+        val bmp = layer.getPersistentBitmap()
+        val canvas = Canvas(bmp)
 
         val paint = createBasePaint()
         if (layer.isAlphaLocked) {
@@ -204,6 +214,14 @@ class BrushEngine {
         }
 
         val distance = hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y)
+
+        // Titik tunggal (tap): pastikan jadi dot bulat, bukan hilang.
+        if (distance < 1f) {
+            val dotPaint = Paint(paint).apply { style = Paint.Style.FILL }
+            canvas.drawCircle(smoothedP2.x, smoothedP2.y, max(0.5f, paint.strokeWidth / 2f), dotPaint)
+            layer.markDirty()
+            return
+        }
 
         // Apply velocity-based width for Ink/Dip pen style
         if (brushType == BrushType.INK || brushType == BrushType.PEN_SOFT) {
@@ -225,47 +243,90 @@ class BrushEngine {
             paint.alpha = ((paint.alpha / 255f) * factor * 255).toInt().coerceIn(0, 255)
         }
 
+        // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.
+        // Spacing ~20% dari diameter brush menjamin overlap antar stamp.
+        val spacing = max(1.5f, paint.strokeWidth * 0.2f)
+        val steps = ceil((distance / spacing).toDouble()).toInt().coerceIn(1, 256)
+
+        var prevX = smoothedP1.x
+        var prevY = smoothedP1.y
+        for (i in 1..steps) {
+            val t = i / steps.toFloat()
+            val x = smoothedP1.x + (smoothedP2.x - smoothedP1.x) * t
+            val y = smoothedP1.y + (smoothedP2.y - smoothedP1.y) * t
+            drawDab(canvas, paint, prevX, prevY, x, y)
+            prevX = x
+            prevY = y
+        }
+
+        // TileMap bukan sumber render (renderComposite memakai compositeBitmap),
+        // jadi jangan sync per-segmen yang O(W*H). Sync dilakukan di syncTiles()
+        // saat stroke selesai / undo / flatten.
+        layer.markDirty()
+    }
+
+    /** Sinkronisasi tile cache dari bitmap persisten. Panggil saat stroke selesai. */
+    fun syncTiles(layer: DrawingLayer) {
+        layer.tileMap.importFromBitmap(layer.getPersistentBitmap())
+    }
+
+    private fun drawDab(canvas: Canvas, paint: Paint, x1: Float, y1: Float, x2: Float, y2: Float) {
         // Watercolor: draw multiple overlapping strokes for texture
         if (brushType == BrushType.WATERCOLOR) {
             val baseAlpha = paint.alpha
+            val baseWidth = paint.strokeWidth
             for (i in 1..3) {
                 paint.alpha = (baseAlpha * (0.3f + i * 0.2f)).toInt().coerceIn(0, 255)
-                paint.strokeWidth = size * (0.7f + i * 0.15f)
-                val jitterX = (i - 2) * size * 0.1f
-                val jitterY = (i - 2) * size * 0.08f
-                canvas.drawLine(
-                    smoothedP1.x + jitterX, smoothedP1.y + jitterY,
-                    smoothedP2.x + jitterX, smoothedP2.y + jitterY,
-                    paint
-                )
+                paint.strokeWidth = baseWidth * (0.7f + i * 0.15f)
+                val jitterX = (i - 2) * baseWidth * 0.1f
+                val jitterY = (i - 2) * baseWidth * 0.08f
+                canvas.drawLine(x1 + jitterX, y1 + jitterY, x2 + jitterX, y2 + jitterY, paint)
             }
+            paint.alpha = baseAlpha
+            paint.strokeWidth = baseWidth
         } else if (brushType == BrushType.OIL) {
             // Oil: draw core + edge highlight
-            canvas.drawLine(smoothedP1.x, smoothedP1.y, smoothedP2.x, smoothedP2.y, paint)
+            canvas.drawLine(x1, y1, x2, y2, paint)
             val highlight = Paint(paint).apply {
                 alpha = (paint.alpha * 0.4f).toInt()
                 strokeWidth = paint.strokeWidth * 0.6f
                 color = Color.WHITE
                 xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
             }
-            canvas.drawLine(smoothedP1.x, smoothedP1.y, smoothedP2.x, smoothedP2.y, highlight)
+            canvas.drawLine(x1, y1, x2, y2, highlight)
         } else {
-            canvas.drawLine(smoothedP1.x, smoothedP1.y, smoothedP2.x, smoothedP2.y, paint)
+            canvas.drawLine(x1, y1, x2, y2, paint)
         }
-
-        layer.tileMap.importFromBitmap(bmp)
     }
 
-    private fun applyBlurStroke(layer: DrawingLayer, path: Path) {
+    private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset) {
         val bmp = layer.getPersistentBitmap()
-        val blurred = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+        val radius = max(3f, size / 2f)
+        val pad = (size + radius * 2f + 4f)
+
+        val leftF = min(p1.x, p2.x) - pad
+        val topF = min(p1.y, p2.y) - pad
+        val rightF = max(p1.x, p2.x) + pad
+        val bottomF = max(p1.y, p2.y) + pad
+
+        val left = leftF.toInt().coerceIn(0, bmp.width - 1)
+        val top = topF.toInt().coerceIn(0, bmp.height - 1)
+        val right = rightF.toInt().coerceIn(1, bmp.width)
+        val bottom = bottomF.toInt().coerceIn(1, bmp.height)
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return
+
+        // Hanya proses dirty rect, bukan seluruh kanvas (hemat CPU/GC per segmen).
+        val region = Bitmap.createBitmap(bmp, left, top, w, h)
+        val blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val blurCanvas = Canvas(blurred)
         val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            maskFilter = BlurMaskFilter(max(3f, size / 2f), BlurMaskFilter.Blur.NORMAL)
+            maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
         }
-        blurCanvas.drawBitmap(bmp, 0f, 0f, blurPaint)
+        blurCanvas.drawBitmap(region, 0f, 0f, blurPaint)
 
-        val maskBmp = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+        val maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val maskCanvas = Canvas(maskBmp)
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -274,19 +335,20 @@ class BrushEngine {
             strokeWidth = size
             color = Color.BLACK
         }
-        maskCanvas.drawPath(path, strokePaint)
+        maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)
 
-        val layerCanvas = Canvas(bmp)
-        val tempLayer = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ARGB_8888)
+        val tempLayer = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val tempCanvas = Canvas(tempLayer)
         tempCanvas.drawBitmap(blurred, 0f, 0f, null)
         val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
         tempCanvas.drawBitmap(maskBmp, 0f, 0f, dstIn)
 
-        val clipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_OVER)
-        }
-        layerCanvas.drawBitmap(tempLayer, 0f, 0f, clipPaint)
-        layer.tileMap.importFromBitmap(bmp)
+        Canvas(bmp).drawBitmap(tempLayer, left.toFloat(), top.toFloat(), null)
+
+        region.recycle()
+        blurred.recycle()
+        maskBmp.recycle()
+        tempLayer.recycle()
+        layer.markDirty()
     }
 }

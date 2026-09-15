@@ -1,5 +1,6 @@
 package com.grooxtyper.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,12 +16,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flip
@@ -70,6 +73,9 @@ fun BrushPanel(
     brushEngine: BrushEngine,
     onClose: () -> Unit
 ) {
+    // Tombol back sistem harus menutup panel (sebelumnya onClose tidak pernah dipakai).
+    BackHandler(onBack = onClose)
+
     var selectedTab by remember { mutableIntStateOf(0) }
     val tabs = listOf("Brush", "Stabilizer", "Fade")
 
@@ -82,16 +88,26 @@ fun BrushPanel(
             .border(1.dp, Divider, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            // Handle bar
-            Box(
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .width(40.dp)
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color.Gray)
-            )
-            Spacer(modifier = Modifier.height(12.dp))
+            // Handle bar (tap untuk tutup) + tombol close eksplisit.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(modifier = Modifier.weight(1f))
+                Box(
+                    modifier = Modifier
+                        .width(40.dp)
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(Color.Gray)
+                        .clickable { onClose() }
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Close, contentDescription = "Tutup panel brush", tint = Color.White)
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Tabs
             Row(
@@ -124,10 +140,17 @@ fun BrushPanel(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            when (selectedTab) {
-                0 -> BrushListTab(brushEngine)
-                1 -> StabilizerTab(brushEngine)
-                2 -> FadeTab(brushEngine)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                when (selectedTab) {
+                    0 -> BrushListTab(brushEngine)
+                    1 -> StabilizerTab(brushEngine)
+                    2 -> FadeTab(brushEngine)
+                }
             }
         }
     }

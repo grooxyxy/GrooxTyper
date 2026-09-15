@@ -235,6 +235,7 @@ class LayerManager(val width: Int, val height: Int) {
                     }
                     tempCanvas.drawBitmap(baseMaskBitmap, 0f, 0f, clipPaint)
                     canvas.drawBitmap(tempLayer, 0f, 0f, paint)
+                    tempLayer.recycle()
                 } else {
                     canvas.drawBitmap(bmp, 0f, 0f, paint)
                     if (!layer.isClippingMask) {
@@ -242,10 +243,16 @@ class LayerManager(val width: Int, val height: Int) {
                     }
                 }
             } else if (layer is TextLayer) {
-                val textBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                val textCanvas = Canvas(textBmp)
-                TextRenderer.render(textCanvas, layer.box)
-                canvas.drawBitmap(textBmp, 0f, 0f, paint)
+                // Jalur cepat: tanpa bitmap intermediate saat opacity penuh & blend normal.
+                if (layer.opacity >= 1f && layer.blendMode == LayerBlendMode.NORMAL) {
+                    TextRenderer.render(canvas, layer.box)
+                } else {
+                    val textBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    val textCanvas = Canvas(textBmp)
+                    TextRenderer.render(textCanvas, layer.box)
+                    canvas.drawBitmap(textBmp, 0f, 0f, paint)
+                    textBmp.recycle()
+                }
             }
         }
     }
