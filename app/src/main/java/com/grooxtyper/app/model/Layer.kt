@@ -128,6 +128,21 @@ class LayerManager(val width: Int, val height: Int) {
         return null
     }
 
+    /** Cari drawing layer berdasarkan id (untuk undo/redo lintas layer). */
+    fun findDrawingLayerById(id: String): DrawingLayer? {
+        fun find(items: List<LayerItem>): DrawingLayer? {
+            for (item in items) {
+                if (item.id == id && item is DrawingLayer) return item
+                if (item.isFolder) {
+                    val found = find(item.children)
+                    if (found != null) return found
+                }
+            }
+            return null
+        }
+        return find(layers)
+    }
+
     fun ensureDrawingLayer(): DrawingLayer {
         val current = getActiveLayer()
         if (current != null) return current

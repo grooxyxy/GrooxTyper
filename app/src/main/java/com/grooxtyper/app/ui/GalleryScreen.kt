@@ -1,7 +1,6 @@
 package com.grooxtyper.app.ui
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -46,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -56,16 +56,22 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.model.ImageImport
 import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.SavedProject
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun GalleryScreen(
     onOpenCanvas: (id: String, width: Int, height: Int, initialBitmap: Bitmap?) -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val projectManager = remember { ProjectManager(context) }
     val savedProjects = remember { mutableStateListOf<SavedProject>() }
+    var isImporting by remember { mutableStateOf(false) }
 
     fun refreshProjects() {
         savedProjects.clear()
@@ -80,24 +86,34 @@ fun GalleryScreen(
     var inputWidth by remember { mutableStateOf("1280") }
     var inputHeight by remember { mutableStateOf("1280") }
 
-    // Import Image directly from Homepage
+    // Import Image directly from Homepage (decode di IO + batasi dimensi kanvas).
     val homepageImagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         uri?.let {
-            try {
-                val inputStream = context.contentResolver.openInputStream(it)
-                val bmp = BitmapFactory.decodeStream(inputStream)
-                bmp?.let { loaded ->
-                    val projW = loaded.width.coerceAtLeast(100)
-                    val projH = loaded.height.coerceAtLeast(100)
+            scope.launch {
+                isImporting = true
+                try {
+                    val decoded = withContext(Dispatchers.IO) {
+                        ImageImport.decodeContentUri(
+                            context.contentResolver, it, ImageImport.MAX_CANVAS_DIM
+                        )
+                    } ?: return@launch
+                    val (projW, projH) = ImageImport.fitDimensions(
+                        decoded.width, decoded.height, ImageImport.MAX_CANVAS_DIM
+                    )
+                    val fitted = ImageImport.scaleTo(decoded, projW, projH)
                     val projId = "${System.currentTimeMillis()}"
-                    projectManager.saveProject(projId, "Imported Artwork", projW, projH, loaded)
+                    withContext(Dispatchers.IO) {
+                        projectManager.saveProject(projId, "Imported Artwork", projW, projH, fitted)
+                    }
                     refreshProjects()
-                    onOpenCanvas(projId, projW, projH, loaded)
+                    onOpenCanvas(projId, projW, projH, fitted)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } finally {
+                    isImporting = false
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
         }
     }
@@ -177,7 +193,13 @@ fun GalleryScreen(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     items(savedProjects, key = { it.id }) { proj ->
-                        val thumbBmp = remember(proj.imagePath) { projectManager.loadProjectBitmap(proj.imagePath) }
+                        // Thumbnail di-decode sampled di IO agar daftar riwayat tetap ringan.
+                        var thumbBmp by remember(proj.imagePath) { mutableStateOf<Bitmap?>(null) }
+                        LaunchedEffect(proj.imagePath) {
+                            thumbBmp = withContext(Dispatchers.IO) {
+                                ImageImport.decodeFileSampled(proj.imagePath, ImageImport.MAX_THUMB_DIM)
+                            }
+                        }
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -286,6 +308,18 @@ fun GalleryScreen(
                 },
                 containerColor = Color(0xFF2A2A2A)
             )
+        }
+
+        // Overlay saat mengimpor gambar (decode + simpan di background).
+        if (isImporting) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xAA000000)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Mengimpor gambar…", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }

@@ -1,7 +1,6 @@
 package com.grooxtyper.app.ui
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color as AndroidColor
 import android.graphics.Path
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -98,6 +97,7 @@ import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintingManager
+import com.grooxtyper.app.model.ImageImport
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
@@ -113,6 +113,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
 
 enum class ActiveTool {
     PAN,
@@ -159,29 +160,59 @@ fun CanvasEditorScreen(
 
     var refreshCanvasState by remember { mutableIntStateOf(0) }
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
+    // Pelacakan perubahan kanvas untuk auto-save hemat (hanya simpan jika kotor).
+    var dirtyVersion by remember { mutableIntStateOf(0) }
+    var lastSavedVersion by remember { mutableIntStateOf(-1) }
+    // Dibaca agar tombol Undo/Redo ikut recompose saat history berubah.
+    val historyTick = undoRedoManager.historyVersion
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
         refreshCanvasState++
+        dirtyVersion++
     }
 
     LaunchedEffect(projectId) {
         while (true) {
             delay(15000L)
-            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+            if (dirtyVersion != lastSavedVersion) {
+                // Salin di Main (aman dari race dengan render), kompres di IO.
+                val snap = runCatching {
+                    compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                }.getOrNull()
+                if (snap != null) {
+                    val dv = dirtyVersion
+                    withContext(Dispatchers.IO) {
+                        runCatching { projectManager.saveArtwork(projectId, snap) }
+                        runCatching { snap.recycle() }
+                    }
+                    lastSavedVersion = dv
+                }
+            }
         }
     }
 
     DisposableEffect(Unit) {
         onDispose {
-            projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+            // Simpan terakhir tanpa memblokir navigasi.
+            val snap = runCatching {
+                compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+            }.getOrNull()
+            if (snap != null) {
+                scope.launch(Dispatchers.IO) {
+                    runCatching { projectManager.saveArtwork(projectId, snap) }
+                    runCatching { snap.recycle() }
+                }
+            }
         }
     }
 
     LaunchedEffect(initialBitmap) {
         initialBitmap?.let { bmp ->
             layerManager.getActiveLayer()?.let { active ->
-                active.tileMap.importFromBitmap(bmp)
+                // Gambar ke compositeBitmap (sumber render), bukan hanya tileMap.
+                ImageImport.drawBitmapCenterFit(active.getPersistentBitmap(), bmp)
+                active.tileMap.importFromBitmap(active.getPersistentBitmap())
                 active.markDirty()
                 refreshComposite()
             }
@@ -257,15 +288,25 @@ fun CanvasEditorScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         uri?.let {
-            val inputStream = context.contentResolver.openInputStream(it)
-            val bmp = BitmapFactory.decodeStream(inputStream)
-            bmp?.let { loaded ->
-                referenceBitmap = loaded
-                val active = layerManager.getActiveLayer()
-                if (active != null) {
-                    active.tileMap.importFromBitmap(loaded)
+            scope.launch {
+                // Decode di IO (downsample + koreksi EXIF), gambar di Main.
+                val loaded = withContext(Dispatchers.IO) {
+                    ImageImport.decodeContentUri(
+                        context.contentResolver, it,
+                        max(canvasWidth, canvasHeight).coerceAtLeast(512)
+                    )
+                } ?: return@launch
+                try {
+                    val active = layerManager.ensureDrawingLayer()
+                    undoRedoManager.saveSnapshot(active)
+                    // Gambar ke compositeBitmap (sumber render) dengan fit tengah.
+                    ImageImport.drawBitmapCenterFit(active.getPersistentBitmap(), loaded)
+                    active.tileMap.importFromBitmap(active.getPersistentBitmap())
                     active.markDirty()
+                    referenceBitmap = loaded
                     refreshComposite()
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
@@ -657,7 +698,16 @@ fun CanvasEditorScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = {
-                projectManager.saveProject(projectId, "GrooxTyper Artwork", canvasWidth, canvasHeight, compositeBitmap)
+                // Simpan di background agar tombol Back tidak macet; judul proyek dipertahankan.
+                val snap = runCatching {
+                    compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                }.getOrNull()
+                if (snap != null) {
+                    scope.launch(Dispatchers.IO) {
+                        runCatching { projectManager.saveArtwork(projectId, snap) }
+                        runCatching { snap.recycle() }
+                    }
+                }
                 onBackToGallery()
             }) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
@@ -667,19 +717,34 @@ fun CanvasEditorScreen(
 
             IconButton(
                 onClick = { undoRedoManager.undo(layerManager); refreshComposite() },
-                enabled = undoRedoManager.canUndo()
+                enabled = historyTick.let { undoRedoManager.canUndo() }
             ) {
                 Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo", tint = if (undoRedoManager.canUndo()) Color.White else Color.DarkGray)
             }
 
             IconButton(
                 onClick = { undoRedoManager.redo(layerManager); refreshComposite() },
-                enabled = undoRedoManager.canRedo()
+                enabled = historyTick.let { undoRedoManager.canRedo() }
             ) {
                 Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo", tint = if (undoRedoManager.canRedo()) Color.White else Color.DarkGray)
             }
 
             Spacer(modifier = Modifier.weight(1f))
+
+            // Fitur layer di top bar (cermin tombol layer bawah + jumlah layer).
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PanelBg)
+                    .clickable { showLayersPanel = true }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Layers, contentDescription = "Layers", tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("${layerManager.layers.size}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
 
             IconButton(onClick = { showRulerDialog = true }) {
                 Icon(Icons.AutoMirrored.Filled.Rule, contentDescription = "Ruler", tint = if (brushEngine.rulerGuide.type != RulerType.OFF) Accent else Color.White)

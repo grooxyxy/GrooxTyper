@@ -48,6 +48,33 @@ class ProjectManager(private val context: Context) {
         return list.sortedByDescending { it.lastModified }
     }
 
+    fun getProject(id: String): SavedProject? = loadProjects().find { it.id == id }
+
+    /**
+     * Simpan gambar tanpa mengubah judul/dimensi yang sudah ada
+     * (dipakai auto-save agar tidak menimpa judul proyek).
+     */
+    fun saveArtwork(id: String, bitmap: Bitmap) {
+        val existing = getProject(id)
+        if (existing == null) {
+            saveProject(id, "GrooxTyper Artwork", bitmap.width, bitmap.height, bitmap)
+            return
+        }
+        try {
+            java.io.File(existing.imagePath).outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val current = loadProjects().toMutableList()
+            val idx = current.indexOfFirst { it.id == id }
+            if (idx >= 0) {
+                current[idx] = current[idx].copy(lastModified = System.currentTimeMillis())
+                persistProjects(current)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     fun saveProject(id: String, title: String, width: Int, height: Int, bitmap: Bitmap) {
         try {
             val imageFile = File(projectsDir, "proj_$id.png")
@@ -59,19 +86,7 @@ class ProjectManager(private val context: Context) {
             currentProjects.removeAll { it.id == id }
             currentProjects.add(0, SavedProject(id, title, width, height, System.currentTimeMillis(), imageFile.absolutePath))
 
-            val array = JSONArray()
-            currentProjects.forEach { proj ->
-                val obj = JSONObject().apply {
-                    put("id", proj.id)
-                    put("title", proj.title)
-                    put("width", proj.width)
-                    put("height", proj.height)
-                    put("lastModified", proj.lastModified)
-                    put("imagePath", proj.imagePath)
-                }
-                array.put(obj)
-            }
-            metaFile.writeText(array.toString())
+            persistProjects(currentProjects)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -90,8 +105,14 @@ class ProjectManager(private val context: Context) {
             val f = File(target.imagePath)
             if (f.exists()) f.delete()
             current.remove(target)
+            persistProjects(current)
+        }
+    }
+
+    private fun persistProjects(projects: List<SavedProject>) {
+        try {
             val array = JSONArray()
-            current.forEach { proj ->
+            projects.forEach { proj ->
                 val obj = JSONObject().apply {
                     put("id", proj.id)
                     put("title", proj.title)
@@ -103,6 +124,8 @@ class ProjectManager(private val context: Context) {
                 array.put(obj)
             }
             metaFile.writeText(array.toString())
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }

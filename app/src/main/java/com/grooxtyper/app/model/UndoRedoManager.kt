@@ -1,48 +1,82 @@
 package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 
 class LayerStateSnapshot(
     val layerId: String,
     val bitmapSnapshot: Bitmap
 )
 
-class UndoRedoManager(private val maxHistory: Int = 20) {
+class UndoRedoManager(private val maxHistory: Int = 15) {
     private val undoStack = mutableListOf<LayerStateSnapshot>()
     private val redoStack = mutableListOf<LayerStateSnapshot>()
+
+    /**
+     * Dinaikkan setiap mutasi stack agar tombol Undo/Redo di Compose
+     * ikut recompose (canUndo()/canRedo() sendiri tidak observable).
+     */
+    var historyVersion by mutableIntStateOf(0)
+        private set
 
     fun saveSnapshot(layer: DrawingLayer) {
         val copy = layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
         undoStack.add(LayerStateSnapshot(layer.id, copy))
-        if (undoStack.size > maxHistory) {
-            undoStack.removeAt(0)
+        while (undoStack.size > maxHistory) {
+            undoStack.removeAt(0).bitmapSnapshot.recycle()
         }
-        redoStack.clear()
+        clearStack(redoStack)
+        historyVersion++
     }
 
     fun canUndo(): Boolean = undoStack.isNotEmpty()
     fun canRedo(): Boolean = redoStack.isNotEmpty()
 
-    fun undo(layerManager: LayerManager) {
-        if (undoStack.isEmpty()) return
-        val currentLayer = layerManager.getActiveLayer() ?: return
-
-        val currentCopy = currentLayer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
-        redoStack.add(LayerStateSnapshot(currentLayer.id, currentCopy))
-
-        val snapshot = undoStack.removeAt(undoStack.size - 1)
-        restoreSnapshot(currentLayer, snapshot)
+    /**
+     * Undo mengembalikan snapshot ke LAYER PEMILIKNYA (dicari via layerId),
+     * bukan ke layer yang sedang aktif. Return false jika layer sudah dihapus.
+     */
+    fun undo(layerManager: LayerManager): Boolean {
+        if (undoStack.isEmpty()) return false
+        val snapshot = undoStack.removeAt(undoStack.lastIndex)
+        val layer = layerManager.findDrawingLayerById(snapshot.layerId)
+        if (layer == null) {
+            snapshot.bitmapSnapshot.recycle()
+            historyVersion++
+            return false
+        }
+        redoStack.add(LayerStateSnapshot(layer.id, layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)))
+        restoreSnapshot(layer, snapshot)
+        historyVersion++
+        return true
     }
 
-    fun redo(layerManager: LayerManager) {
-        if (redoStack.isEmpty()) return
-        val currentLayer = layerManager.getActiveLayer() ?: return
+    fun redo(layerManager: LayerManager): Boolean {
+        if (redoStack.isEmpty()) return false
+        val snapshot = redoStack.removeAt(redoStack.lastIndex)
+        val layer = layerManager.findDrawingLayerById(snapshot.layerId)
+        if (layer == null) {
+            snapshot.bitmapSnapshot.recycle()
+            historyVersion++
+            return false
+        }
+        undoStack.add(LayerStateSnapshot(layer.id, layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)))
+        restoreSnapshot(layer, snapshot)
+        historyVersion++
+        return true
+    }
 
-        val currentCopy = currentLayer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
-        undoStack.add(LayerStateSnapshot(currentLayer.id, currentCopy))
+    fun clearAll() {
+        clearStack(undoStack)
+        clearStack(redoStack)
+        historyVersion++
+    }
 
-        val snapshot = redoStack.removeAt(redoStack.size - 1)
-        restoreSnapshot(currentLayer, snapshot)
+    private fun clearStack(stack: MutableList<LayerStateSnapshot>) {
+        stack.forEach { runCatching { it.bitmapSnapshot.recycle() } }
+        stack.clear()
     }
 
     private fun restoreSnapshot(layer: DrawingLayer, snapshot: LayerStateSnapshot) {
