@@ -746,9 +746,6 @@ fun CanvasEditorScreen(
         }
     }
 
-    /** Tambah bubble dari seleksi aktif (kotak/lasso/oval). */
-    fun addBubbleFromSelection(): Boolean = addBubblesFromSelection() > 0
-
     /**
      * Tambah SATU bubble per AREA seleksi: 3 area terpisah → 3 bubble
      * (bukan satu bubble gabungan dari bounds union). Kembalikan jumlah
@@ -771,6 +768,9 @@ fun CanvasEditorScreen(
         }
         return n
     }
+
+    /** Tambah bubble dari seleksi aktif (kotak/lasso/oval). */
+    fun addBubbleFromSelection(): Boolean = addBubblesFromSelection() > 0
 
     /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
     fun applyPrefixStyleTo(box: TextBox): Boolean {
