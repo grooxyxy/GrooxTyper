@@ -87,6 +87,8 @@ fun GalleryScreen(
     var inputHeight by remember { mutableStateOf("1280") }
 
     // Import Image directly from Homepage (full-res tanpa resize hingga 720x16000).
+    // Lanjaya: buka kanvas SEGERA setelah decode, simpan PNG di background
+    // (kompres PNG 11,5MP bisa 3-8 detik — jangan blokir navigasi).
     val homepageImagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -108,11 +110,22 @@ fun GalleryScreen(
                         ImageImport.scaleTo(decoded, projW, projH)
                     }
                     val projId = "${System.currentTimeMillis()}"
-                    withContext(Dispatchers.IO) {
-                        projectManager.saveProject(projId, "Imported Artwork", projW, projH, fitted)
-                    }
-                    refreshProjects()
+                    val startedAt = System.currentTimeMillis()
+                    // Buka dulu → terasa instan. Simpan menyusul di background.
                     onOpenCanvas(projId, projW, projH, fitted)
+                    scope.launch(Dispatchers.IO) {
+                        // Jangan timpa save editor yang lebih baru (stale-write):
+                        // bila editor sudah autosave duluan, lewati file+meta basi.
+                        val existing = runCatching { projectManager.getProject(projId) }.getOrNull()
+                        if (existing == null || existing.lastModified < startedAt) {
+                            runCatching {
+                                projectManager.saveProject(projId, "Imported Artwork", projW, projH, fitted)
+                            }
+                            withContext(Dispatchers.Main) {
+                                runCatching { refreshProjects() }
+                            }
+                        }
+                    }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 } finally {

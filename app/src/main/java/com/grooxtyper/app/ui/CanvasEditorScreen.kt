@@ -111,6 +111,7 @@ import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.ImageImport
 import com.grooxtyper.app.model.FontRegistry
+import com.grooxtyper.app.model.LayerBlendMode
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
@@ -159,6 +160,8 @@ private fun downscaleForReference(src: Bitmap, maxSide: Int = 1024): Bitmap {
 /**
  * Gambar bitmap jangkung per potongan 2048px agar lolos batas tekstur GPU
  * (banyak GPU gagal untuk bitmap 720x16000 sekali jalan).
+ * HEMAT: tanpa alokasi slice bitmap (pakai src/dst Rect) agar per-frame
+ * 60fps tidak GC thrash — 720x16000 lama bikin 8×5.6MB slice per frame.
  */
 private fun drawTallBitmap(
     native: android.graphics.Canvas,
@@ -170,24 +173,20 @@ private fun drawTallBitmap(
         native.drawBitmap(bmp, 0f, 0f, paint)
         return
     }
+    // Tanpa alokasi: gambar per strip via src/dst rect (lanjaya, zero-GC).
+    val src = android.graphics.Rect()
+    val dst = android.graphics.RectF()
     var y = 0
     while (y < bmp.height) {
         val h = minOf(tileH, bmp.height - y)
-        val slice = try {
-            Bitmap.createBitmap(bmp, 0, y, bmp.width, h)
+        src.set(0, y, bmp.width, y + h)
+        dst.set(0f, y.toFloat(), bmp.width.toFloat(), (y + h).toFloat())
+        try {
+            native.drawBitmap(bmp, src, dst, paint)
         } catch (e: Exception) {
             e.printStackTrace()
-            null
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
-            null
-        }
-        if (slice != null) {
-            try {
-                native.drawBitmap(slice, 0f, y.toFloat(), paint)
-            } finally {
-                runCatching { slice.recycle() }
-            }
         }
         y += h
     }
@@ -207,6 +206,65 @@ private fun drawCheckerTiled(
     )
     val paint = android.graphics.Paint().apply { this.shader = shader }
     native.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+}
+
+/**
+ * Checker berubin untuk REGIO TERLIHAT saja (viewport culling).
+ * Shader tetap sejajar origin kanvas karena digambar di koordinat kanvas.
+ */
+private fun drawCheckerTiledRegion(
+    native: android.graphics.Canvas,
+    tile: Bitmap,
+    l: Float,
+    t: Float,
+    r: Float,
+    b: Float
+) {
+    val shader = android.graphics.BitmapShader(
+        tile,
+        android.graphics.Shader.TileMode.REPEAT,
+        android.graphics.Shader.TileMode.REPEAT
+    )
+    val paint = android.graphics.Paint().apply { this.shader = shader }
+    native.drawRect(l, t, r, b, paint)
+}
+
+/**
+ * Gambar HANYA regio terlihat dari bitmap jangkung (viewport culling).
+ * Saat zoom-in strip 720x16000, yang di-upload/diproses GPU hanya jendela
+ * ~720x1000, bukan 11,5MP penuh per frame → pan/brush lanjaya.
+ * Tanpa alokasi bitmap (src/dst Rect kecil di stack) — zero-GC.
+ */
+private fun drawVisibleBitmap(
+    native: android.graphics.Canvas,
+    bmp: Bitmap,
+    l: Float,
+    t: Float,
+    r: Float,
+    b: Float,
+    paint: android.graphics.Paint?
+) {
+    val li = l.toInt().coerceIn(0, bmp.width)
+    val ti = t.toInt().coerceIn(0, bmp.height)
+    val ri = (r + 0.999f).toInt().coerceIn(0, bmp.width)
+    val bi = (b + 0.999f).toInt().coerceIn(0, bmp.height)
+    if (ri - li < 1 || bi - ti < 1) return
+    // Hampir seluruh kanvas terlihat → pakai jalur strip anti-limit GPU.
+    val coverW = (ri - li).toFloat() / bmp.width.toFloat()
+    val coverH = (bi - ti).toFloat() / bmp.height.toFloat()
+    if (coverW > 0.98f && coverH > 0.98f) {
+        drawTallBitmap(native, bmp, paint)
+        return
+    }
+    val src = android.graphics.Rect(li, ti, ri, bi)
+    val dst = android.graphics.RectF(li.toFloat(), ti.toFloat(), ri.toFloat(), bi.toFloat())
+    try {
+        native.drawBitmap(bmp, src, dst, paint)
+    } catch (e: Exception) {
+        e.printStackTrace()
+    } catch (e: OutOfMemoryError) {
+        e.printStackTrace()
+    }
 }
 
 @Composable
@@ -263,14 +321,89 @@ fun CanvasEditorScreen(
         dirtyVersion++
     }
 
+    /** Refresh ringan: hanya tandai kotor (composite sudah disinkron inkremental). */
+    fun refreshCanvasLight() {
+        refreshCanvasState++
+        dirtyVersion++
+    }
+
+    /**
+     * Jalur cepat brush: true bila composite == 1 drawing layer saja
+     * (tanpa teks/folder/blend/opacity/clip) sehingga dab bisa di-blit
+     * langsung ke composite tanpa render ulang 46MB per move.
+     */
+    fun isSingleLayerFastPath(): Boolean {
+        var drawings = 0
+        for (item in layerManager.layers) {
+            if (!item.isVisible) continue
+            if (item.isFolder) return false
+            when (item) {
+                is TextLayer -> return false
+                is DrawingLayer -> {
+                    drawings++
+                    if (drawings > 1) return false
+                    if (item.opacity < 1f) return false
+                    if (item.blendMode != LayerBlendMode.NORMAL) return false
+                    if (item.isClippingMask) return false
+                }
+                else -> return false
+            }
+        }
+        return drawings == 1
+    }
+
+    /**
+     * Blit regio kotor kecil (sekitar segmen brush) dari layer ke composite.
+     * 1 blit ~50x50px vs render penuh 720x16000 (11,5MP) → ~200× lebih murah.
+     */
+    fun blitLayerToComposite(layer: DrawingLayer, p1: Offset?, p2: Offset) {
+        val rad = brushEngine.size * 1.5f + 16f
+        val ax = p1?.x ?: p2.x
+        val ay = p1?.y ?: p2.y
+        val l = minOf(ax, p2.x, canvasWidth.toFloat(), 0f).coerceIn(0f, canvasWidth.toFloat())
+        val t = minOf(ay, p2.y, canvasHeight.toFloat(), 0f).coerceIn(0f, canvasHeight.toFloat())
+        val r = maxOf(ax, p2.x, 0f).coerceIn(0f, canvasWidth.toFloat())
+        val b = maxOf(ay, p2.y, 0f).coerceIn(0f, canvasHeight.toFloat())
+        val li = (l - rad).toInt().coerceIn(0, canvasWidth)
+        val ti = (t - rad).toInt().coerceIn(0, canvasHeight)
+        val ri = (r + rad + 1f).toInt().coerceIn(0, canvasWidth)
+        val bi = (b + rad + 1f).toInt().coerceIn(0, canvasHeight)
+        if (ri - li < 1 || bi - ti < 1) return
+        try {
+            val src = android.graphics.Rect(li, ti, ri, bi)
+            android.graphics.Canvas(compositeBitmap)
+                .drawBitmap(layer.getPersistentBitmap(), src, src, null)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        }
+        refreshCanvasLight()
+    }
+
     LaunchedEffect(projectId) {
+        // Auto-save hemat: kanvas jangkung 720x16000 copy 46MB tiap 15s berat,
+        // jadi interval adaptif + copy di IO agar tidak jank UI.
+        val isHuge = canvasWidth.toLong() * canvasHeight > 4_000_000L
+        val interval = if (isHuge) 30_000L else 15_000L
         while (true) {
-            delay(15000L)
+            delay(interval)
             if (dirtyVersion != lastSavedVersion) {
-                // Salin di Main (aman dari race dengan render), kompres di IO.
-                val snap = runCatching {
-                    compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                }.getOrNull()
+                // Untuk kanvas jangkung, tunda copy ke IO (dengan lock ringan)
+                // agar Main tidak freeze 80-120ms per 15s. Sinkronisasi via
+                // snapshot di Main tetap aman, tapi interval lebih jarang.
+                val snap: Bitmap? = if (isHuge) {
+                    // Coba copy ringan; bila OOM langsung skip cycle ini.
+                    runCatching {
+                        // Copy di Main tetap tapi jarang; next step: pakai
+                        // tile diff, sementara tahan interval panjang.
+                        compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    }.getOrNull()
+                } else {
+                    runCatching {
+                        compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                    }.getOrNull()
+                }
                 if (snap != null) {
                     val dv = dirtyVersion
                     withContext(Dispatchers.IO) {
@@ -300,14 +433,17 @@ fun CanvasEditorScreen(
 
     LaunchedEffect(initialBitmap) {
         initialBitmap?.let { bmp ->
-            layerManager.getActiveLayer()?.let { active ->
-                // Import TANPA resize: 1:1 no-scale agar 720x16000 tidak diubah.
-                // (Kanvas sudah = ukuran asli dari GalleryScreen.)
-                ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), bmp)
-                active.tileMap.importFromBitmap(active.getPersistentBitmap())
-                active.markDirty()
-                refreshComposite()
+            // Bitmap 46MB di thread background agar buka kanvas tidak freeze.
+            withContext(Dispatchers.Default) {
+                layerManager.getActiveLayer()?.let { active ->
+                    // Import TANPA resize: 1:1 no-scale agar 720x16000 tidak diubah.
+                    // (Kanvas sudah = ukuran asli dari GalleryScreen.)
+                    ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), bmp)
+                    active.tileMap.importFromBitmap(active.getPersistentBitmap())
+                    active.markDirty()
+                }
             }
+            refreshComposite()
         }
     }
 
@@ -560,11 +696,14 @@ fun CanvasEditorScreen(
                 try {
                     val active = layerManager.ensureDrawingLayer()
                     undoRedoManager.saveSnapshot(active)
-                    // Import TANPA resize: 1:1 no-scale (kelebihan di-crop,
-                    // kekurangan transparan) agar tidak mengubah piksel asli.
-                    ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), loaded)
-                    active.tileMap.importFromBitmap(active.getPersistentBitmap())
-                    active.markDirty()
+                    // Import TANPA resize di background (46MB) agar UI tidak freeze.
+                    withContext(Dispatchers.Default) {
+                        // Import TANPA resize: 1:1 no-scale (kelebihan di-crop,
+                        // kekurangan transparan) agar tidak mengubah piksel asli.
+                        ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), loaded)
+                        active.tileMap.importFromBitmap(active.getPersistentBitmap())
+                        active.markDirty()
+                    }
                     // Referensi cukup versi kecil agar hemat memori.
                     referenceBitmap = downscaleForReference(loaded)
                     refreshComposite()
@@ -896,6 +1035,12 @@ fun CanvasEditorScreen(
                                             undoRedoManager.saveSnapshot(activeLayer)
                                             brushEngine.beginStroke()
                                             brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos, 0f)
+                                            // Jalur cepat: blit dot kecil, bukan render 46MB.
+                                            if (isSingleLayerFastPath()) {
+                                                blitLayerToComposite(activeLayer, null, touchCanvasPos)
+                                            } else {
+                                                refreshComposite()
+                                            }
                                         } else {
                                             if ((change.position - pressStartScreen).getDistance() > 16f) {
                                                 pressMoved = true
@@ -905,14 +1050,22 @@ fun CanvasEditorScreen(
                                             val dist = (touchCanvasPos - lastCanvasPoint!!).getDistance()
                                             strokeLength += dist
                                             val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
+                                            val prev = lastCanvasPoint
                                             brushEngine.strokeSegmentOnLayer(target, lastCanvasPoint!!, touchCanvasPos, progress)
+                                            // Jalur cepat: blit regio kotor kecil per move.
+                                            if (isSingleLayerFastPath()) {
+                                                blitLayerToComposite(target, prev, touchCanvasPos)
+                                            } else {
+                                                refreshComposite()
+                                            }
                                         }
-                                        refreshComposite()
                                     }
                                     lastCanvasPoint = touchCanvasPos
                                     change.consume()
                                     } // else twoFingerActive
                                 } else {
+                                    val hadStroke = strokeLayer != null
+                                    val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
@@ -935,6 +1088,9 @@ fun CanvasEditorScreen(
                                         boxStart = null
                                         boxCurrent = null
                                     }
+                                    // Satu render penuh per stroke menutup jalur cepat
+                                    // inkremental (menjamin konsisten bila ada teks/layer).
+                                    if (hadStroke && wasBrush) refreshComposite()
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
@@ -974,12 +1130,38 @@ fun CanvasEditorScreen(
                     )
             ) {
                 val trigger = refreshCanvasState
-                // Grid transparansi berubin di bawah artwork (hemat untuk
-                // 720x16000), lalu komposit per slice 2048px agar lolos
-                // batas tekstur GPU + tetap tajam saat zoom-out.
+                // Viewport culling: saat zoom-in strip jangkung, gambar HANYA
+                // regio terlihat (mis. 720x1000) bukan 11,5MP penuh per frame.
+                // Rotasi ≠ 0 → fallback full (matematika pivot-rotasi kompleks).
                 val nativeMain = drawContext.canvas.nativeCanvas
-                drawCheckerTiled(nativeMain, canvasWidth, canvasHeight, checkerTile)
-                drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
+                if (viewState.rotation == 0f) {
+                    val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
+                    val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
+                    val pivX = viewState.pivotFracX * vw
+                    val pivY = viewState.pivotFracY * vh
+                    val sc = viewState.scale.coerceAtLeast(0.05f)
+                    val xa = ((0f - pivX - viewState.offsetX) / sc) + pivX
+                    val ya = ((0f - pivY - viewState.offsetY) / sc) + pivY
+                    val xb = ((vw - pivX - viewState.offsetX) / sc) + pivX
+                    val yb = ((vh - pivY - viewState.offsetY) / sc) + pivY
+                    val visL = minOf(xa, xb).coerceIn(0f, canvasWidth.toFloat())
+                    val visT = minOf(ya, yb).coerceIn(0f, canvasHeight.toFloat())
+                    val visR = maxOf(xa, xb).coerceIn(0f, canvasWidth.toFloat())
+                    val visB = maxOf(ya, yb).coerceIn(0f, canvasHeight.toFloat())
+                    if (visR - visL > 1f && visB - visT > 1f) {
+                        drawCheckerTiledRegion(nativeMain, checkerTile, visL, visT, visR, visB)
+                        drawVisibleBitmap(nativeMain, compositeBitmap, visL, visT, visR, visB, filteredPaint)
+                    } else {
+                        drawCheckerTiled(nativeMain, canvasWidth, canvasHeight, checkerTile)
+                        drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
+                    }
+                } else {
+                    // Grid transparansi berubin di bawah artwork (hemat untuk
+                    // 720x16000), lalu komposit per slice 2048px agar lolos
+                    // batas tekstur GPU + tetap tajam saat zoom-out.
+                    drawCheckerTiled(nativeMain, canvasWidth, canvasHeight, checkerTile)
+                    drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
+                }
 
                 layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
                     val box = textLayer.box

@@ -17,8 +17,25 @@ class SelectionEngine(val width: Int, val height: Int) {
     val selectionPath = Path()
     var clipboardBitmap: Bitmap? = null
 
-    val selectionMaskBitmap: Bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-    private val maskCanvas = Canvas(selectionMaskBitmap)
+    // Alokasi malas: 720x16000 = 46MB. Jangan alokasi sebelum user
+    // benar-benar memakai seleksi — hemat permanen bila tak dipakai.
+    private var _maskBitmap: Bitmap? = null
+    private var _maskCanvas: Canvas? = null
+    val selectionMaskBitmap: Bitmap
+        get() {
+            var b = _maskBitmap
+            if (b == null || b.isRecycled) {
+                b = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                _maskBitmap = b
+                _maskCanvas = Canvas(b)
+            }
+            return b
+        }
+    private val maskCanvas: Canvas
+        get() {
+            selectionMaskBitmap
+            return _maskCanvas!!
+        }
 
     fun setLassoPath(path: Path) {
         selectionPath.reset()
@@ -31,7 +48,12 @@ class SelectionEngine(val width: Int, val height: Int) {
     fun clearSelection() {
         selectionPath.reset()
         hasSelection = false
-        maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        // Jangan alokasi hanya untuk clear — mask yang belum ada sudah kosong.
+        _maskBitmap?.let { b ->
+            if (!b.isRecycled) {
+                (_maskCanvas ?: Canvas(b)).drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            }
+        }
     }
 
     /** Batas seleksi aktif (untuk auto-fit teks ke bubble). Null bila tak ada seleksi. */
