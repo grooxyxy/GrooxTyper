@@ -18,9 +18,15 @@ import kotlin.coroutines.resume
 import kotlin.math.max
 import kotlin.math.min
 
-enum class MLMaskType {
-    REFINED_TEXT, // Precise text stroke contour
-    BOUNDING_BOX   // Rectangle bounding box
+/**
+ * Dua variasi mask baru sesuai permintaan user:
+ * - MASK_KOTAK: persegi panjang solid (bounding box) dengan sedikit padding
+ * - MASK_BENTUK_TEKS: mengikuti bentuk huruf/glyph (tight text shape)
+ * Tidak ada download tambahan — semua proses lokal.
+ */
+enum class MLMaskType(val displayName: String) {
+    MASK_KOTAK("Mask Kotak"),
+    MASK_BENTUK_TEKS("Mask Bentuk Teks")
 }
 
 enum class MLScript(val displayName: String) {
@@ -243,13 +249,25 @@ class MLTextDetector {
 
         for (region in regions) {
             when (maskType) {
-                MLMaskType.BOUNDING_BOX -> {
+                MLMaskType.MASK_KOTAK -> {
+                    // Mask Kotak: persegi panjang solid dengan padding kecil agar
+                    // inpaint menutup tepi huruf sepenuhnya (variasi kotak).
                     val box = region.boundingBox
-                    canvas.drawRect(box, fillPaint)
+                    // Padding 2-4px tergantung ukuran box, dijepit ke kanvas.
+                    val padX = (box.width() * 0.04f).coerceIn(2f, 6f)
+                    val padY = (box.height() * 0.04f).coerceIn(2f, 6f)
+                    val l = (box.left - padX).coerceIn(0f, canvasWidth.toFloat())
+                    val t = (box.top - padY).coerceIn(0f, canvasHeight.toFloat())
+                    val r = (box.right + padX).coerceIn(0f, canvasWidth.toFloat())
+                    val b = (box.bottom + padY).coerceIn(0f, canvasHeight.toFloat())
+                    canvas.drawRect(l, t, r, b, fillPaint)
                 }
-                MLMaskType.REFINED_TEXT -> {
-                    // Refined mask hemat: tulis bulk via setPixels, bukan
-                    // jutaan drawRect (ANR untuk kanvas 720x16000).
+                MLMaskType.MASK_BENTUK_TEKS -> {
+                    // Mask Bentuk Teks: mengikuti bentuk huruf, bukan kotak penuh.
+                    // Strategi:
+                    // 1) Jika cornerPoints tersedia (4 titik dari ML Kit), buat Path polygon sebagai clip.
+                    // 2) Di dalam bounding box, gunakan luminance threshold untuk hanya menutupi stroke teks.
+                    // 3) Fallback tetap Otsu tight bila tidak ada cornerPoints.
                     val box = region.boundingBox
                     val left = maxOf(0, box.left)
                     val top = maxOf(0, box.top)
@@ -257,23 +275,30 @@ class MLTextDetector {
                     val bottom = minOf(sourceBitmap.height, box.bottom)
                     val boxW = right - left
                     val boxH = bottom - top
+                    if (boxW <= 0 || boxH <= 0) continue
 
-                    if (boxW > 0 && boxH > 0) {
+                    val hasPolygon = region.cornerPoints != null && region.cornerPoints.size >= 4
+                    if (hasPolygon) {
+                        // Gunakan polygon cornerPoints + threshold untuk tight shape.
+                        val pts = region.cornerPoints!!
+                        // Build path polygon di koordinat kanvas
+                        val polyPath = Path().apply {
+                            moveTo(pts[0].x.toFloat(), pts[0].y.toFloat())
+                            for (i in 1 until pts.size) lineTo(pts[i].x.toFloat(), pts[i].y.toFloat())
+                            close()
+                        }
+                        // Ambil pixel di dalam rect untuk threshold, lalu mask hanya di dalam polygon
                         val pixels = IntArray(boxW * boxH)
                         sourceBitmap.getPixels(pixels, 0, boxW, left, top, boxW, boxH)
-
-                        // Otsu / Luminance thresholding inside text block
                         var sumLum = 0L
                         for (p in pixels) {
                             val r = (p shr 16) and 0xFF
                             val g = (p shr 8) and 0xFF
                             val b = p and 0xFF
-                            val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                            sumLum += lum
+                            sumLum += (0.299 * r + 0.587 * g + 0.114 * b).toLong()
                         }
-                        val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128
-                        val thresh = (avgLum * 0.95).toInt()
-
+                        val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128L
+                        val thresh = (avgLum * 0.92).toInt() // sedikit lebih ketat untuk bentuk teks
                         val maskPixels = IntArray(boxW * boxH)
                         for (i in pixels.indices) {
                             val p = pixels[i]
@@ -281,7 +306,37 @@ class MLTextDetector {
                             val g = (p shr 8) and 0xFF
                             val b = p and 0xFF
                             val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                            // Piksel teks gelap relatif ke background → putih di mask.
+                            // Hanya piksel gelap = teks → putih di mask, lainnya transparan
+                            maskPixels[i] = if (lum < thresh) -1 else 0
+                        }
+                        val tmp = Bitmap.createBitmap(boxW, boxH, Bitmap.Config.ARGB_8888)
+                        tmp.setPixels(maskPixels, 0, boxW, 0, 0, boxW, boxH)
+                        // Clip ke polygon agar tepi mask mengikuti rotasi/bentuk teks
+                        val save = canvas.save()
+                        canvas.clipPath(polyPath)
+                        canvas.drawBitmap(tmp, left.toFloat(), top.toFloat(), null)
+                        canvas.restoreToCount(save)
+                        tmp.recycle()
+                    } else {
+                        // Fallback: Otsu tight tanpa polygon (tetap bentuk teks via threshold)
+                        val pixels = IntArray(boxW * boxH)
+                        sourceBitmap.getPixels(pixels, 0, boxW, left, top, boxW, boxH)
+                        var sumLum = 0L
+                        for (p in pixels) {
+                            val r = (p shr 16) and 0xFF
+                            val g = (p shr 8) and 0xFF
+                            val b = p and 0xFF
+                            sumLum += (0.299 * r + 0.587 * g + 0.114 * b).toLong()
+                        }
+                        val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128L
+                        val thresh = (avgLum * 0.95).toInt()
+                        val maskPixels = IntArray(boxW * boxH)
+                        for (i in pixels.indices) {
+                            val p = pixels[i]
+                            val r = (p shr 16) and 0xFF
+                            val g = (p shr 8) and 0xFF
+                            val b = p and 0xFF
+                            val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
                             maskPixels[i] = if (lum < thresh) -1 else 0
                         }
                         val tmp = Bitmap.createBitmap(boxW, boxH, Bitmap.Config.ARGB_8888)

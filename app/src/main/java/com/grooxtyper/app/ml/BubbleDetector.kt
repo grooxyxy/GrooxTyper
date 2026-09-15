@@ -11,8 +11,8 @@ import kotlin.math.min
 /**
  * Dua opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  * Masing-masing opsi memetakan 1:1 ke file di `assets/models/`:
- * - BEST_PT  -> `best.pt`  (YOLOv12n deteksi)
- * - BEST1_PT -> `best1.pt` (YOLOv11n-seg)
+ * - KOHARU_YOLO26S_SEG -> `koharu/koharu-yolo26s-seg.onnx` (YOLO26s-seg, ganti best.pt)
+ * - BEST1_PT            -> `best1.pt` (YOLOv11n-seg, tetap)
  *
  * Output dibiarkan MENTAH apa adanya per opsi (single-pass, tanpa refine
  * lintas-skala). Tiling strip + dedupe overlap hanya dipakai agar kanvas
@@ -23,10 +23,10 @@ enum class BubbleModel(
     val desc: String,
     val asset: String
 ) {
-    BEST_PT(
-        "best.pt • YOLOv12n",
-        "Deteksi — output mentah apa adanya",
-        "models/best.pt"
+    KOHARU_YOLO26S_SEG(
+        "koharu yolo26s-seg • ONNX",
+        "Koharu — output mentah apa adanya",
+        "models/koharu/koharu-yolo26s-seg.onnx"
     ),
     BEST1_PT(
         "best1.pt • YOLOv11n-seg",
@@ -46,11 +46,11 @@ data class DetectedBubble(
  * karakter modelnya). Mendukung kanvas jangkung (mis. 720x16000) via
  * deteksi strip ber-overlap agar sisi pendek tidak hancur saat downscale.
  *
- * CATATAN YOLO: dua file di `assets/models/` (`best.pt` deteksi YOLOv12n
- * dan `best1.pt` seg YOLOv11n, disalin dari folder `GrooxTyper/` lokal)
- * adalah checkpoint Python Ultralytics sehingga belum bisa dieksekusi
+ * CATATAN YOLO: opsi KOHARU menunjuk ke `assets/models/koharu/koharu-yolo26s-seg.onnx`
+ * (YOLO26s-seg) yang menggantikan `best.pt`; `best1.pt` tetap sebagai opsi kedua.
+ * Kedua file adalah checkpoint Python Ultralytics sehingga belum bisa dieksekusi
  * langsung di Android (butuh runtime + export mobile). Opsi di dialog
- * memetakan 1:1 ke kedua file tersebut; pipeline di bawah TIDAK di-refine
+ * memetakan 1:1 ke berkas assets; pipeline di bawah TIDAK di-refine
  * lagi — hanya menjalankan ciri mentah tiap opsi.
  */
 class BubbleDetector {
@@ -84,13 +84,12 @@ class BubbleDetector {
             }
         }
 
-    /** Parameter mentah per opsi model (1:1 ke file .pt, tanpa refine). */
+    /** Parameter mentah per opsi model (1:1 ke file, tanpa refine). */
     private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
         return when (model) {
-            // best.pt (YOLOv12n deteksi): kotak deteksi mentah.
-            BubbleModel.BEST_PT -> Triple(768, 200, 80)
-            // best1.pt (YOLOv11n-seg): ciri segmentasi mentah (sedikit
-            // lebih teliti, ambang lebih rendah).
+            // koharu yolo26s-seg (ONNX): seg presisi, sedikit lebih teliti.
+            BubbleModel.KOHARU_YOLO26S_SEG -> Triple(1024, 190, 90)
+            // best1.pt (YOLOv11n-seg): ciri segmentasi mentah (tetap).
             BubbleModel.BEST1_PT -> Triple(1024, 185, 80)
         }
     }
@@ -278,14 +277,13 @@ class BubbleDetector {
 
 /**
  * STUB engine YOLO masa depan. Opsi [BubbleModel] sudah memetakan 1:1 ke
- * `assets/models/best.pt` (deteksi) dan `best1.pt` (seg). Aktifkan fungsi
- * ini bila `assets/models/` sudah berisi hasil export mobile
- * (TorchScript/ONNX) + runtime-nya ditambahkan: load model → letterbox →
- * forward → NMS (decode DFL untuk v12, rakit mask untuk v11-seg) →
- * List<DetectedBubble>. Sampai saat itu pipeline di atas dibiarkan mentah.
+ * `assets/models/koharu/koharu-yolo26s-seg.onnx` (koharu yolo26s-seg) dan
+ * `best1.pt` (seg). Aktifkan fungsi ini bila runtime ONNX/TorchScript
+ * ditambahkan: load model → letterbox → forward → NMS → List<DetectedBubble>.
+ * Sampai saat itu pipeline di atas dibiarkan mentah.
  */
 object YoloBubbleModel {
-    const val DETECT_ASSET = "models/best.pt"
+    const val DETECT_ASSET = "models/koharu/koharu-yolo26s-seg.onnx"
     const val SEG_ASSET = "models/best1.pt"
 
     fun isAvailable(): Boolean = false // TODO: true bila runtime + export mobile tersedia
