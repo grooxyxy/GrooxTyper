@@ -94,6 +94,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.ExperimentalPointerInput
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -292,6 +293,7 @@ private fun drawVisibleBitmap(
     }
 }
 
+@OptIn(ExperimentalPointerInput::class)
 @Composable
 fun CanvasEditorScreen(
     projectId: String,
