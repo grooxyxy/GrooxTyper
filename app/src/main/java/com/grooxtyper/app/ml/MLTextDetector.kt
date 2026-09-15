@@ -97,7 +97,7 @@ class MLTextDetector {
                     sc++
                 }
             }
-            if (sc == 0) return fallback
+            if (sc == 0L) return fallback
             Color.rgb((sr / sc).toInt(), (sg / sc).toInt(), (sb / sc).toInt())
         } catch (e: Exception) {
             e.printStackTrace()
