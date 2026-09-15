@@ -531,12 +531,12 @@ fun CanvasEditorScreen(
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
     fun resetScriptUsage() { scriptEntries = scriptEntries.map { it.copy(used = false) } }
 
-    // Bubble detector: dua opsi model (.pt) yang bisa dipilih user.
+    // Bubble detector: model (.pt) yang bisa dipilih user.
     // Output dibiarkan mentah apa adanya per opsi (tanpa refine).
     val bubbleDetector = remember { BubbleDetector() }
     var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
     var showBubbleDialog by remember { mutableStateOf(false) }
-    var bubbleModel by remember { mutableStateOf(BubbleModel.KOHARU_YOLO26S_SEG) }
+    var bubbleModel by remember { mutableStateOf(BubbleModel.BEST1_PT) }
     var bubbleDetecting by remember { mutableStateOf(false) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
@@ -552,8 +552,7 @@ fun CanvasEditorScreen(
                 compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
             }.getOrNull() ?: return@launch
             bubbleDetecting = true
-            // Teruskan applicationContext agar opsi koharu menjalankan inferensi
-            // ONNX Runtime nyata (fallback heuristik otomatis bila gagal).
+            // Jalankan deteksi bubble heuristik on-device.
             val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
             runCatching { snap.recycle() }
             detectedBubbles = found
