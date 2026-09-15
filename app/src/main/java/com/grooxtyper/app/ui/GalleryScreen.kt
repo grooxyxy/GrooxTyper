@@ -86,7 +86,7 @@ fun GalleryScreen(
     var inputWidth by remember { mutableStateOf("1280") }
     var inputHeight by remember { mutableStateOf("1280") }
 
-    // Import Image directly from Homepage (decode di IO + batasi dimensi kanvas).
+    // Import Image directly from Homepage (full-res tanpa resize hingga 720x16000).
     val homepageImagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -97,10 +97,16 @@ fun GalleryScreen(
                     val decoded = withContext(Dispatchers.IO) {
                         ImageImport.decodeContentUri(context.contentResolver, it)
                     } ?: return@launch
+                    // TANPA resize: kanvas = ukuran asli (didukung 720x16000).
+                    // Downscale hanya bila melebihi budget absolut.
                     val (projW, projH) = ImageImport.fitImportDimensions(
                         decoded.width, decoded.height
                     )
-                    val fitted = ImageImport.scaleTo(decoded, projW, projH)
+                    val fitted = if (projW == decoded.width && projH == decoded.height) {
+                        decoded
+                    } else {
+                        ImageImport.scaleTo(decoded, projW, projH)
+                    }
                     val projId = "${System.currentTimeMillis()}"
                     withContext(Dispatchers.IO) {
                         projectManager.saveProject(projId, "Imported Artwork", projW, projH, fitted)
@@ -202,7 +208,14 @@ fun GalleryScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
-                                    onOpenCanvas(proj.id, proj.width, proj.height, thumbBmp)
+                                    // Buka full-res TANPA resize (thumbnail hanya untuk grid).
+                                    // 720x16000 dimuat penuh agar tidak pecah/buram.
+                                    scope.launch {
+                                        val full = withContext(Dispatchers.IO) {
+                                            projectManager.loadProjectBitmap(proj.imagePath)
+                                        } ?: thumbBmp
+                                        onOpenCanvas(proj.id, proj.width, proj.height, full)
+                                    }
                                 },
                             colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A2A)),
                             shape = RoundedCornerShape(12.dp)
@@ -287,8 +300,9 @@ fun GalleryScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            val w = inputWidth.toIntOrNull() ?: 1280
-                            val h = inputHeight.toIntOrNull() ?: 1280
+                            // Dukung kanvas jangkung 720x16000, clamp 1..16000.
+                            val w = (inputWidth.toIntOrNull() ?: 1280).coerceIn(1, 16000)
+                            val h = (inputHeight.toIntOrNull() ?: 1280).coerceIn(1, 16000)
                             val newId = "${System.currentTimeMillis()}"
                             val blankBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                             projectManager.saveProject(newId, "New Project", w, h, blankBmp)

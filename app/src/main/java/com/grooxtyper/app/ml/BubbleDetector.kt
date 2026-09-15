@@ -25,18 +25,30 @@ data class DetectedBubble(
  * Detektor balon teks manga yang berjalan murni on-device tanpa AI:
  * region putih tertutup (bukan latar) yang bentuknya oval/membulat
  * dianggap bubble. Cukup akurat untuk halaman manga tipikal.
+ * Mendukung kanvas jangkung (mis. 720x16000) via deteksi strip
+ * ber-overlap agar sisi pendek tidak hancur saat downscale.
  *
- * CATATAN YOLO: dua file `.pt` di `assets/models/` (YOLOv12n-deteksi dan
- * YOLOv11n-seg, lihat `Model/README.md`) adalah checkpoint Python
- * Ultralytics sehingga belum bisa dieksekusi di Android. Bila nanti sudah
- * di-export ke TorchScript/ONNX, implementasikan [YoloBubbleModel] dan
- * daftarkan sebagai opsi ketiga di dialog.
+ * CATATAN YOLO: dua file di `assets/models/` (`best.pt` deteksi YOLOv12n
+ * dan `best1.pt` seg YOLOv11n, disalin dari folder `GrooxTyper/` lokal)
+ * adalah checkpoint Python Ultralytics sehingga belum bisa dieksekusi
+ * di Android. Bila nanti sudah di-export ke TorchScript/ONNX,
+ * implementasikan [YoloBubbleModel] dan daftarkan sebagai opsi ketiga
+ * di dialog.
  */
 class BubbleDetector {
 
     suspend fun detect(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> =
         withContext(Dispatchers.Default) {
             try {
+                // Kanvas jangkung (aspek >= 4 atau sisi panjang > 3000):
+                // deteksi per strip persegi ber-overlap agar sisi pendek
+                // (mis. 720px) tidak hancur jadi ~34px saat downscale global.
+                val longSide = max(bitmap.width, bitmap.height)
+                val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
+                val aspect = longSide / shortSide.toFloat()
+                if (aspect >= 4f || longSide > 3000) {
+                    return@withContext detectTall(bitmap, model)
+                }
                 val out = mutableListOf<DetectedBubble>()
                 val scales = when (model) {
                     BubbleModel.FAST -> listOf(768)
@@ -52,6 +64,65 @@ class BubbleDetector {
                 emptyList()
             }
         }
+
+    /**
+     * Deteksi strip untuk gambar jangkung/lebar ekstrem (mis. 720x16000):
+     * potong sepanjang sumbu panjang jadi jendela persegi (sisi = sisi
+     * pendek) dengan overlap 15%, deteksi tiap jendela, offset ke koordinat
+     * global, lalu merge. Bubble di sambungan tetap ketemu via overlap.
+     */
+    private fun detectTall(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
+        val w = bitmap.width
+        val h = bitmap.height
+        if (w <= 0 || h <= 0) return emptyList()
+        val vertical = h >= w
+        val shortSide = min(w, h)
+        val longSide = max(w, h)
+        // Jendela persegi sebesar sisi pendek (min 512 agar detail cukup).
+        val win = shortSide.coerceAtLeast(256)
+        val step = max(64, (win * 0.85f).toInt())
+        val thresh = if (model == BubbleModel.FAST) 200 else 190
+        val maxDim = if (model == BubbleModel.FAST) 768 else 1152
+        val out = mutableListOf<DetectedBubble>()
+        var offset = 0
+        while (offset < longSide) {
+            val end = min(offset + win, longSide)
+            val start = max(0, end - win)
+            val crop = try {
+                if (vertical) Bitmap.createBitmap(bitmap, 0, start, w, end - start)
+                else Bitmap.createBitmap(bitmap, start, 0, end - start, h)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+            if (crop != null) {
+                try {
+                    // Skala deteksi dihitung dari jendela (persegi), bukan
+                    // gambar utuh, sehingga sisi pendek tidak hancur.
+                    val found = detectAtScale(crop, maxDim, thresh)
+                    for (b in found) {
+                        val r = b.boundingBox
+                        val shifted = if (vertical) {
+                            RectF(r.left, r.top + start, r.right, r.bottom + start)
+                        } else {
+                            RectF(r.left + start, r.top, r.right + start, r.bottom)
+                        }
+                        out.add(DetectedBubble(shifted, b.score))
+                    }
+                } finally {
+                    runCatching { crop.recycle() }
+                }
+            }
+            if (end >= longSide) break
+            offset += step
+            if (offset >= longSide) break
+        }
+        // Cap lebih longgar untuk halaman jangkung (banyak panel).
+        val cap = if (model == BubbleModel.FAST) 120 else 200
+        return merge(out, iouThresh = 0.45f)
+            .sortedByDescending { it.score }
+            .take(cap)
+    }
 
     private fun detectAtScale(src: Bitmap, maxDim: Int, whiteThresh: Int): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
@@ -180,8 +251,8 @@ class BubbleDetector {
  * rakit mask untuk v11-seg) → List<DetectedBubble>.
  */
 object YoloBubbleModel {
-    const val DETECT_ASSET = "models/yolo12n_balloon.pt"
-    const val SEG_ASSET = "models/yolo11n_seg_balloon.pt"
+    const val DETECT_ASSET = "models/best.pt"
+    const val SEG_ASSET = "models/best1.pt"
 
     fun isAvailable(): Boolean = false // TODO: true bila runtime + export mobile tersedia
 }

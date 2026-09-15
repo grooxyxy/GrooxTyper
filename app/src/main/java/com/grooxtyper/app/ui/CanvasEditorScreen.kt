@@ -153,6 +153,59 @@ private fun downscaleForReference(src: Bitmap, maxSide: Int = 1024): Bitmap {
     )
 }
 
+/**
+ * Gambar bitmap jangkung per potongan 2048px agar lolos batas tekstur GPU
+ * (banyak GPU gagal untuk bitmap 720x16000 sekali jalan).
+ */
+private fun drawTallBitmap(
+    native: android.graphics.Canvas,
+    bmp: Bitmap,
+    paint: android.graphics.Paint?,
+    tileH: Int = 2048
+) {
+    if (bmp.height <= tileH) {
+        native.drawBitmap(bmp, 0f, 0f, paint)
+        return
+    }
+    var y = 0
+    while (y < bmp.height) {
+        val h = minOf(tileH, bmp.height - y)
+        val slice = try {
+            Bitmap.createBitmap(bmp, 0, y, bmp.width, h)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
+        }
+        if (slice != null) {
+            try {
+                native.drawBitmap(slice, 0f, y.toFloat(), paint)
+            } finally {
+                runCatching { slice.recycle() }
+            }
+        }
+        y += h
+    }
+}
+
+/** Gambar papan catur berubin via BitmapShader (hemat: tile 64px, bukan 46MB). */
+private fun drawCheckerTiled(
+    native: android.graphics.Canvas,
+    w: Int,
+    h: Int,
+    tile: Bitmap
+) {
+    val shader = android.graphics.BitmapShader(
+        tile,
+        android.graphics.Shader.TileMode.REPEAT,
+        android.graphics.Shader.TileMode.REPEAT
+    )
+    val paint = android.graphics.Paint().apply { this.shader = shader }
+    native.drawRect(0f, 0f, w.toFloat(), h.toFloat(), paint)
+}
+
 @Composable
 fun CanvasEditorScreen(
     projectId: String,
@@ -181,9 +234,13 @@ fun CanvasEditorScreen(
         mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
     }
 
-    // Papan catur transparansi + paint berfilter (tampilan tajam saat zoom-out).
-    val checkerBitmap = remember(canvasWidth, canvasHeight) {
-        ImageImport.makeCheckerBitmap(canvasWidth, canvasHeight)
+    // Papan catur transparansi berubin + paint berfilter (tajam saat zoom-out,
+    // hemat memori untuk 720x16000: tile 64px, bukan full-bitmap 46MB).
+    val checkerTile = remember {
+        ImageImport.makeCheckerTile()
+    }
+    DisposableEffect(checkerTile) {
+        onDispose { runCatching { checkerTile.recycle() } }
     }
     val filteredPaint = remember {
         android.graphics.Paint().apply { isFilterBitmap = true }
@@ -241,8 +298,9 @@ fun CanvasEditorScreen(
     LaunchedEffect(initialBitmap) {
         initialBitmap?.let { bmp ->
             layerManager.getActiveLayer()?.let { active ->
-                // Gambar ke compositeBitmap (sumber render), bukan hanya tileMap.
-                ImageImport.drawBitmapCenterFit(active.getPersistentBitmap(), bmp)
+                // Import TANPA resize: 1:1 no-scale agar 720x16000 tidak diubah.
+                // (Kanvas sudah = ukuran asli dari GalleryScreen.)
+                ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), bmp)
                 active.tileMap.importFromBitmap(active.getPersistentBitmap())
                 active.markDirty()
                 refreshComposite()
@@ -466,8 +524,9 @@ fun CanvasEditorScreen(
                 try {
                     val active = layerManager.ensureDrawingLayer()
                     undoRedoManager.saveSnapshot(active)
-                    // Gambar ke compositeBitmap (sumber render) dengan fit tengah HQ.
-                    ImageImport.drawBitmapCenterFitHQ(active.getPersistentBitmap(), loaded)
+                    // Import TANPA resize: 1:1 no-scale (kelebihan di-crop,
+                    // kekurangan transparan) agar tidak mengubah piksel asli.
+                    ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), loaded)
                     active.tileMap.importFromBitmap(active.getPersistentBitmap())
                     active.markDirty()
                     // Referensi cukup versi kecil agar hemat memori.
@@ -835,10 +894,12 @@ fun CanvasEditorScreen(
                     )
             ) {
                 val trigger = refreshCanvasState
-                // Grid transparansi di bawah artwork, lalu komposit berfilter
-                // agar tajam saat zoom-out (tanpa filter jadi shimmer/buram).
-                drawContext.canvas.nativeCanvas.drawBitmap(checkerBitmap, 0f, 0f, null)
-                drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, filteredPaint)
+                // Grid transparansi berubin di bawah artwork (hemat untuk
+                // 720x16000), lalu komposit per slice 2048px agar lolos
+                // batas tekstur GPU + tetap tajam saat zoom-out.
+                val nativeMain = drawContext.canvas.nativeCanvas
+                drawCheckerTiled(nativeMain, canvasWidth, canvasHeight, checkerTile)
+                drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
 
                 layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
                     val box = textLayer.box

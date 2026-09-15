@@ -61,22 +61,27 @@ class SelectionEngine(val width: Int, val height: Int) {
 
     fun invertSelection() {
         if (!hasSelection) return
+        // Alokasi 720x16000 = 46MB sementara, langsung recycle setelah salin.
         val invertedBmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val invCanvas = Canvas(invertedBmp)
-        invCanvas.drawColor(Color.WHITE)
+        try {
+            val invCanvas = Canvas(invertedBmp)
+            invCanvas.drawColor(Color.WHITE)
 
-        val erasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+            val erasePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+            }
+            invCanvas.drawPath(selectionPath, erasePaint)
+
+            maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            maskCanvas.drawBitmap(invertedBmp, 0f, 0f, null)
+
+            val rectPath = Path()
+            rectPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+            rectPath.op(selectionPath, Path.Op.DIFFERENCE)
+            selectionPath.set(rectPath)
+        } finally {
+            runCatching { invertedBmp.recycle() }
         }
-        invCanvas.drawPath(selectionPath, erasePaint)
-
-        maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
-        maskCanvas.drawBitmap(invertedBmp, 0f, 0f, null)
-
-        val rectPath = Path()
-        rectPath.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
-        rectPath.op(selectionPath, Path.Op.DIFFERENCE)
-        selectionPath.set(rectPath)
     }
 
     fun clearSelectedArea(layer: DrawingLayer) {

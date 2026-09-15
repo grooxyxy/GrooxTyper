@@ -11,7 +11,9 @@
         android:label="GrooxTyper"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.GrooxTyper">
+        android:theme="@style/Theme.GrooxTyper"
+        android:largeHeap="true"
+        android:hardwareAccelerated="true">
 
         <activity
             android:name=".MainActivity"

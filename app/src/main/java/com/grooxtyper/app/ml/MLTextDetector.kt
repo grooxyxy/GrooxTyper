@@ -51,6 +51,11 @@ class MLTextDetector {
         scripts: Set<MLScript> = setOf(MLScript.LATIN)
     ): List<DetectedTextRegion> {
         if (scripts.isEmpty()) return emptyList()
+        // Kanvas jangkung (mis. 720x16000): ML Kit dibatasi ukuran input,
+        // jadi potong jadi strip horizontal ber-overlap lalu gabung.
+        if (bitmap.height > 2048 && bitmap.height > bitmap.width * 2) {
+            return detectTiled(bitmap, scripts)
+        }
         val all = mutableListOf<DetectedTextRegion>()
         for (script in scripts) {
             val client = clients[script] ?: continue
@@ -59,6 +64,63 @@ class MLTextDetector {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+        return dedupe(all)
+    }
+
+    /**
+     * Deteksi per strip untuk gambar jangkung (mis. 720x16000):
+     * strip 1800px dengan overlap 200px agar baris di sambungan tidak
+     * terpotong, koordinat di-offset ke global lalu dedupe.
+     */
+    private suspend fun detectTiled(
+        bitmap: Bitmap,
+        scripts: Set<MLScript>
+    ): List<DetectedTextRegion> {
+        val w = bitmap.width
+        val h = bitmap.height
+        val stripH = 1800
+        val overlap = 200
+        val step = stripH - overlap
+        val all = mutableListOf<DetectedTextRegion>()
+        var top = 0
+        while (top < h) {
+            val bottom = min(h, top + stripH)
+            val curTop = max(0, bottom - stripH).let { if (bottom >= h) it else top }
+            val curH = bottom - curTop
+            if (curH <= 0) break
+            val crop = try {
+                Bitmap.createBitmap(bitmap, 0, curTop, w, curH)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+            if (crop != null) {
+                try {
+                    for (script in scripts) {
+                        val client = clients[script] ?: continue
+                        try {
+                            val found = detectWith(client, crop, script)
+                            for (r in found) {
+                                val b = r.boundingBox
+                                val shifted = Rect(
+                                    b.left, b.top + curTop, b.right, b.bottom + curTop
+                                )
+                                val shiftedCorners = r.cornerPoints?.map { p ->
+                                    android.graphics.Point(p.x, p.y + curTop)
+                                }?.toTypedArray()
+                                all.add(r.copy(boundingBox = shifted, cornerPoints = shiftedCorners))
+                            }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                } finally {
+                    runCatching { crop.recycle() }
+                }
+            }
+            if (bottom >= h) break
+            top += step
         }
         return dedupe(all)
     }
@@ -186,7 +248,8 @@ class MLTextDetector {
                     canvas.drawRect(box, fillPaint)
                 }
                 MLMaskType.REFINED_TEXT -> {
-                    // Refined mask: extract text threshold binary mask inside bounding box
+                    // Refined mask hemat: tulis bulk via setPixels, bukan
+                    // jutaan drawRect (ANR untuk kanvas 720x16000).
                     val box = region.boundingBox
                     val left = maxOf(0, box.left)
                     val top = maxOf(0, box.top)
@@ -209,27 +272,22 @@ class MLTextDetector {
                             sumLum += lum
                         }
                         val avgLum = if (pixels.isNotEmpty()) sumLum / pixels.size else 128
+                        val thresh = (avgLum * 0.95).toInt()
 
-                        for (y in 0 until boxH) {
-                            for (x in 0 until boxW) {
-                                val p = pixels[y * boxW + x]
-                                val r = (p shr 16) and 0xFF
-                                val g = (p shr 8) and 0xFF
-                                val b = p and 0xFF
-                                val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-
-                                // If pixel is dark text relative to background
-                                if (lum < avgLum * 0.95) {
-                                    canvas.drawRect(
-                                        (left + x).toFloat(),
-                                        (top + y).toFloat(),
-                                        (left + x + 1).toFloat(),
-                                        (top + y + 1).toFloat(),
-                                        fillPaint
-                                    )
-                                }
-                            }
+                        val maskPixels = IntArray(boxW * boxH)
+                        for (i in pixels.indices) {
+                            val p = pixels[i]
+                            val r = (p shr 16) and 0xFF
+                            val g = (p shr 8) and 0xFF
+                            val b = p and 0xFF
+                            val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+                            // Piksel teks gelap relatif ke background → putih di mask.
+                            maskPixels[i] = if (lum < thresh) -1 else 0
                         }
+                        val tmp = Bitmap.createBitmap(boxW, boxH, Bitmap.Config.ARGB_8888)
+                        tmp.setPixels(maskPixels, 0, boxW, 0, 0, boxW, boxH)
+                        canvas.drawBitmap(tmp, left.toFloat(), top.toFloat(), null)
+                        tmp.recycle()
                     }
                 }
             }

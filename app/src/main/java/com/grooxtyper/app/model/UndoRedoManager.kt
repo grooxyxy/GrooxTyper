@@ -61,6 +61,30 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
     private val redoStack = mutableListOf<HistoryEntry>()
 
     /**
+     * Budget memori undo: kanvas jangkung 720x16000 = ~46MB/snapshot,
+     * 15 snapshot = ~690MB → OOM. Batasi adaptif berdasar ukuran bitmap.
+     */
+    private fun maxBitmapEntriesFor(pixels: Long): Int {
+        return when {
+            pixels > 12_000_000L -> 3
+            pixels > 8_000_000L -> 5
+            pixels > 4_000_000L -> 8
+            else -> maxHistory
+        }
+    }
+
+    private fun trimBitmapHistory(pixels: Long) {
+        val cap = maxBitmapEntriesFor(pixels)
+        var count = undoStack.count { it is HistoryEntry.BitmapEntry }
+        while (count > cap) {
+            val idx = undoStack.indexOfFirst { it is HistoryEntry.BitmapEntry }
+            if (idx < 0) break
+            (undoStack.removeAt(idx) as? HistoryEntry.BitmapEntry)?.bitmap?.recycle()
+            count--
+        }
+    }
+
+    /**
      * Dinaikkan setiap mutasi stack agar tombol Undo/Redo di Compose
      * ikut recompose (isi stack sendiri tidak observable).
      */
@@ -71,7 +95,11 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
 
     /** Snapshot bitmap sebelum action cat. */
     fun saveSnapshot(layer: DrawingLayer) {
-        val copy = layer.getBitmap().copy(Bitmap.Config.ARGB_8888, true)
+        val bmp = layer.getBitmap()
+        val pixels = bmp.width.toLong() * bmp.height.toLong()
+        // Batasi adaptif dulu agar snapshot 46MB tidak menumpuk hingga OOM.
+        trimBitmapHistory(pixels)
+        val copy = bmp.copy(Bitmap.Config.ARGB_8888, true)
         push(HistoryEntry.BitmapEntry(layer.id, copy))
     }
 

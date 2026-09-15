@@ -15,22 +15,26 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Decode gambar dari galeri/kamera secara aman:
- * - Sampling berbasis BUDGET PIKSEL (bukan sisi terpanjang) agar gambar
- *   sangat jangkung (mis. 720x16000) tidak hancur di sisi pendeknya.
- * - Downscale bertahap (stepped halving) agar hasil tajam, bukan buram.
+ * Decode gambar dari galeri/kamera secara aman TANPA resize untuk kanvas
+ * jangkung (mis. 720x16000 didukung full-res):
+ * - Sampling hanya bila melebihi BUDGET PIKSEL / batas absolut (bukan
+ *   sisi terpanjang) sehingga 720x16000 (11,5MP) lolos sample=1.
  * - Koreksi orientasi EXIF (foto portrait tidak miring).
  * - Stream selalu ditutup.
  */
 object ImageImport {
-    /** Batas dimensi kanvas baru dari gambar import (mencegah OOM). */
-    const val MAX_CANVAS_DIM = 2048
+    /** Batas dimensi kanvas baru dari gambar import (mendukung 720x16000). */
+    const val MAX_CANVAS_DIM = 16384
+    /** Sisi panjang maksimum kanvas jangkung (mis. 720x16000). */
+    const val MAX_CANVAS_LONG = 16000
+    /** Budget piksel kanvas/import: 720x16000 = 11,5MP lolos full-res. */
+    const val MAX_CANVAS_PIXELS = 32_000_000L
     /** Batas dimensi thumbnail galeri. */
     const val MAX_THUMB_DIM = 512
-    /** Budget decode: detail dipertahankan sampai 16MP. */
-    const val MAX_IMPORT_PIXELS = 16_000_000L
+    /** Budget decode: full-res sampai 32MP (mencakup 720x16000). */
+    const val MAX_IMPORT_PIXELS = 32_000_000L
     /** Batas absolut sisi decode (mencegah alokasi absurd). */
-    const val MAX_IMPORT_DIM = 8192
+    const val MAX_IMPORT_DIM = 16384
 
     fun decodeContentUri(
         resolver: ContentResolver,
@@ -146,30 +150,39 @@ object ImageImport {
         }
     }
 
-    /** Dimensi kanvas yang muat dalam [maxDim] dengan aspek tetap (min 100px). */
+    /** Dimensi kanvas yang muat dalam [maxDim] dengan aspek tetap (min 1px). */
     fun fitDimensions(w: Int, h: Int, maxDim: Int): Pair<Int, Int> {
         if (w <= 0 || h <= 0) return 512 to 512
-        val s = min(1f, maxDim / max(w, h).toFloat())
-        return max(100, (w * s).toInt()) to max(100, (h * s).toInt())
+        val cap = max(1, maxDim).coerceAtMost(MAX_CANVAS_DIM)
+        val s = min(1f, cap / max(w, h).toFloat())
+        return max(1, (w * s).toInt()) to max(1, (h * s).toInt())
     }
 
     /**
-     * Dimensi kanvas untuk gambar import: gambar biasa dibatasi MAX_CANVAS_DIM,
-     * gambar dengan aspek ekstrem (>= 4:1, mis. tangkapan layar jangkung)
-     * boleh memakai sisi panjang sampai 4096 agar tidak jadi strip buram.
-     * Konsumsi memori tetap kecil karena sisi pendeknya mungil.
+     * Dimensi kanvas untuk gambar import TANPA resize bila muat:
+     * kembalikan ukuran asli (w,h) selama total piksel <= [MAX_CANVAS_PIXELS]
+     * dan sisi panjang <= [MAX_CANVAS_LONG]. Hanya bila melebihi budget
+     * dilakukan downscale proporsional minimal (aspek tetap).
+     * Dijamin mendukung 720x16000 full-res (11,5MP).
      */
     fun fitImportDimensions(w: Int, h: Int): Pair<Int, Int> {
         if (w <= 0 || h <= 0) return 512 to 512
-        val ratio = max(w, h) / min(w, h).toFloat()
-        val longCap = if (ratio >= 4f) 4096 else MAX_CANVAS_DIM
-        val s = min(1f, longCap / max(w, h).toFloat())
-        return max(100, (w * s).toInt()) to max(100, (h * s).toInt())
+        val pixels = w.toLong() * h.toLong()
+        val longSide = max(w, h)
+        if (pixels <= MAX_CANVAS_PIXELS && longSide <= MAX_CANVAS_LONG) {
+            return w to h
+        }
+        val scaleByPixels = kotlin.math.sqrt(MAX_CANVAS_PIXELS / pixels.toDouble()).toFloat()
+        val scaleByLong = MAX_CANVAS_LONG / longSide.toFloat()
+        val s = min(1f, min(scaleByPixels, scaleByLong))
+        return max(1, (w * s).toInt()) to max(1, (h * s).toInt())
     }
 
     /**
      * Bitmap papan catur untuk latar transparansi (di-render sekali per
-     * ukuran kanvas, lalu digambar di bawah artwork).
+     * ukuran kanvas, lalu digambar di bawah artwork). Untuk kanvas jangkung
+     * (mis. 720x16000 = 46MB bila full) gunakan [makeCheckerTile] +
+     * gambar berubin agar hemat memori.
      */
     fun makeCheckerBitmap(w: Int, h: Int, cell: Int = 16): Bitmap {
         val bw = max(1, w)
@@ -194,6 +207,43 @@ object ImageImport {
             row++
         }
         return bmp
+    }
+
+    /**
+     * Tile kecil papan catur (hemat memori untuk kanvas jangkung).
+     * Gambar berubin dengan BitmapShader REPEAT, bukan full-bitmap 46MB.
+     */
+    fun makeCheckerTile(cells: Int = 4, cell: Int = 16): Bitmap {
+        val s = max(1, cells * cell)
+        val bmp = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val p1 = Paint().apply { color = Color.rgb(176, 176, 176) }
+        val p2 = Paint().apply { color = Color.rgb(136, 136, 136) }
+        for (row in 0 until cells) {
+            for (col in 0 until cells) {
+                val paint = if ((row + col) % 2 == 0) p1 else p2
+                canvas.drawRect(
+                    (col * cell).toFloat(), (row * cell).toFloat(),
+                    ((col + 1) * cell).toFloat(), ((row + 1) * cell).toFloat(),
+                    paint
+                )
+            }
+        }
+        return bmp
+    }
+
+    /**
+     * Gambar [src] ke tengah [target] 1:1 TANPA scaling (no-resize).
+     * Kelebihan di-crop, kekurangan dibiarkan transparan di tepi.
+     * Dipakai untuk import agar 720x16000 tidak diubah.
+     */
+    fun drawBitmapCenterNoScale(target: Bitmap, src: Bitmap) {
+        if (src.isRecycled || target.isRecycled) return
+        if (src.width <= 0 || src.height <= 0) return
+        val left = (target.width - src.width) / 2f
+        val top = (target.height - src.height) / 2f
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        Canvas(target).drawBitmap(src, left, top, paint)
     }
 
     fun scaleTo(src: Bitmap, dstW: Int, dstH: Int): Bitmap {

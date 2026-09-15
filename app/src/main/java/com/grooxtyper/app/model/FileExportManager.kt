@@ -23,33 +23,41 @@ class FileExportManager(private val context: Context) {
         format: ExportFormat,
         filename: String = "artwork_${System.currentTimeMillis()}"
     ): File? {
+        // 720x16000 = ~46MB sementara; recycle segera setelah kompres.
         val composite = Bitmap.createBitmap(layerManager.width, layerManager.height, Bitmap.Config.ARGB_8888)
-        layerManager.renderComposite(composite)
+        try {
+            layerManager.renderComposite(composite)
 
-        val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
-        val file = File(picturesDir, "$filename${format.extension}")
+            val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
+            val file = File(picturesDir, "$filename${format.extension}")
 
-        return try {
-            val os: OutputStream = FileOutputStream(file)
-            when (format) {
-                ExportFormat.PNG -> composite.compress(Bitmap.CompressFormat.PNG, 100, os)
-                ExportFormat.JPG -> composite.compress(Bitmap.CompressFormat.JPEG, 95, os)
-                ExportFormat.WEBP -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        composite.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, os)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        composite.compress(Bitmap.CompressFormat.WEBP, 100, os)
+            return try {
+                val os: OutputStream = FileOutputStream(file)
+                when (format) {
+                    ExportFormat.PNG -> composite.compress(Bitmap.CompressFormat.PNG, 100, os)
+                    ExportFormat.JPG -> composite.compress(Bitmap.CompressFormat.JPEG, 95, os)
+                    ExportFormat.WEBP -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            composite.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, os)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            composite.compress(Bitmap.CompressFormat.WEBP, 100, os)
+                        }
                     }
+                    ExportFormat.PSD -> writeMockPsd(os, composite, layerManager)
                 }
-                ExportFormat.PSD -> writeMockPsd(os, composite, layerManager)
+                os.flush()
+                os.close()
+                file
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                null
             }
-            os.flush()
-            os.close()
-            file
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
+        } finally {
+            runCatching { composite.recycle() }
         }
     }
 
