@@ -725,6 +725,19 @@ fun CanvasEditorScreen(
         refreshComposite()
     }
 
+    /** Inti tambah bubble dari [rect] (dijepit ke kanvas). True bila jadi. */
+    fun addBubbleRect(rect: RectF): Boolean {
+        val left = minOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
+        val top = minOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
+        val right = maxOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
+        val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
+        if (right - left < 4f || bottom - top < 4f) return false
+        detectedBubbles = detectedBubbles + com.grooxtyper.app.ml.DetectedBubble(
+            RectF(left, top, right, bottom), 1f
+        )
+        return true
+    }
+
     /** Tambah bubble manual dari kotak [rect] (dijepit ke kanvas). */
     fun addBubbleFromRect(rect: RectF) {
         if (addBubbleRect(rect)) {
@@ -757,19 +770,6 @@ fun CanvasEditorScreen(
             refreshComposite()
         }
         return n
-    }
-
-    /** Inti tambah bubble dari [rect] (dijepit ke kanvas). True bila jadi. */
-    private fun addBubbleRect(rect: RectF): Boolean {
-        val left = minOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
-        val top = minOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
-        val right = maxOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
-        val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
-        if (right - left < 4f || bottom - top < 4f) return false
-        detectedBubbles = detectedBubbles + com.grooxtyper.app.ml.DetectedBubble(
-            RectF(left, top, right, bottom), 1f
-        )
-        return true
     }
 
     /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
