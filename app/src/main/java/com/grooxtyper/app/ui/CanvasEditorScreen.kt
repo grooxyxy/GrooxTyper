@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.Delete
@@ -905,6 +906,26 @@ fun CanvasEditorScreen(
         return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 
+    /**
+     * "To Canvas": kembalikan view agar seluruh kanvas pas & terpusat di
+     * layar (dipakai saat user tak sengaja terlempar / kanvas hilang).
+     * Dengan pivot 0.5/0.5 & rotasi 0: layar = pivot + offset +
+     * scale*(kanvas - pivot) → offset = scale*(viewport - kanvas)/2.
+     */
+    fun canvasToScreen() {
+        val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
+        val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
+        val fit = (minOf(vw / canvasWidth.toFloat(), vh / canvasHeight.toFloat()) * 0.92f)
+            .coerceIn(0.05f, 10f)
+        viewState.pivotFracX = 0.5f
+        viewState.pivotFracY = 0.5f
+        viewState.rotation = 0f
+        viewState.rawRotation = 0f
+        viewState.scale = fit
+        viewState.offsetX = fit * (vw - canvasWidth) / 2f
+        viewState.offsetY = fit * (vh - canvasHeight) / 2f
+    }
+
     /** Ambil warna dari kanvas pada posisi layar (untuk eyedropper). */
     fun pickColorAt(screenPos: Offset) {
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
@@ -956,6 +977,23 @@ fun CanvasEditorScreen(
             .background(BgDark)
             .onSizeChanged { viewportSize = it }
     ) {
+        // Grid pada area void (latar di luar kanvas, sebelumnya hitam polos):
+        // membantu orientasi spasial sehingga posisi kanvas selalu terbaca.
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val gridStep = 32.dp.toPx()
+            val gridColor = Color(0xFF26262A)
+            var gx = 0f
+            while (gx <= size.width) {
+                drawLine(gridColor, Offset(gx, 0f), Offset(gx, size.height), 1f)
+                gx += gridStep
+            }
+            var gy = 0f
+            while (gy <= size.height) {
+                drawLine(gridColor, Offset(0f, gy), Offset(size.width, gy), 1f)
+                gy += gridStep
+            }
+        }
+
         // Canvas with gestures
         // NOTE: kunci pointerInput disengaja minimal agar pinch-zoom tidak
         // me-restart gesture di tengah jalan (viewState.scale/offset/rotation
@@ -1216,22 +1254,36 @@ fun CanvasEditorScreen(
                                                 refreshComposite()
                                             }
                                         } else {
-                                            if ((change.position - pressStartScreen).getDistance() > 16f) {
-                                                pressMoved = true
-                                            }
+                                            // Proses SEMUA titik historis antar frame, bukan
+                                            // hanya posisi terakhir: di kanvas 720x16000 event
+                                            // move bisa terjeda puluhan ms (frame berat) sehingga
+                                            // lompatan besar antar titik = goresan patah-patah.
+                                            val movePts = ArrayList<Offset>(change.historical.size + 1)
+                                            for (h in change.historical) movePts.add(h.position)
+                                            movePts.add(change.position)
                                             val target = strokeLayer ?: layerManager.ensureDrawingLayer()
                                             if (strokeLayer == null) strokeLayer = target
-                                            val dist = (touchCanvasPos - lastCanvasPoint!!).getDistance()
-                                            strokeLength += dist
-                                            val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
-                                            val prev = lastCanvasPoint
-                                            brushEngine.strokeSegmentOnLayer(target, lastCanvasPoint!!, touchCanvasPos, progress)
-                                            // Jalur cepat: blit regio kotor kecil per move.
-                                            if (isSingleLayerFastPath()) {
-                                                blitLayerToComposite(target, prev, touchCanvasPos)
-                                            } else {
-                                                refreshComposite()
+                                            val fastPath = isSingleLayerFastPath()
+                                            var needFullRefresh = false
+                                            for (pt in movePts) {
+                                                if ((pt - pressStartScreen).getDistance() > 16f) {
+                                                    pressMoved = true
+                                                }
+                                                val cpt = screenToCanvasCoordinates(pt.x, pt.y)
+                                                val prev = lastCanvasPoint ?: continue
+                                                val dist = (cpt - prev).getDistance()
+                                                strokeLength += dist
+                                                val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
+                                                brushEngine.strokeSegmentOnLayer(target, prev, cpt, progress)
+                                                // Jalur cepat: blit regio kotor kecil per titik.
+                                                if (fastPath) {
+                                                    blitLayerToComposite(target, prev, cpt)
+                                                } else {
+                                                    needFullRefresh = true
+                                                }
+                                                lastCanvasPoint = cpt
                                             }
+                                            if (needFullRefresh) refreshComposite()
                                         }
                                     }
                                     lastCanvasPoint = touchCanvasPos
@@ -1587,6 +1639,22 @@ fun CanvasEditorScreen(
                 enabled = historyTick.let { undoRedoManager.canRedo() }
             ) {
                 Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo", tint = if (undoRedoManager.canRedo()) Color.White else Color.DarkGray)
+            }
+
+            // "To Canvas": kembalikan kanvas ke tengah layar bila user
+            // tak sengaja terlempar / kanvas hilang dari pandangan.
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PanelBg)
+                    .clickable { canvasToScreen() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CenterFocusStrong, contentDescription = "To Canvas", tint = Accent, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("To Canvas", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
             }
 
             Spacer(modifier = Modifier.weight(1f))

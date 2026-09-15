@@ -105,13 +105,27 @@ class BrushEngine {
     private var lastSmoothedPoint: Offset? = null
     private var velocityHistory = mutableListOf<Float>()
 
+    // Titik hasil smoothing segmen sebelumnya — untuk interpolasi kuadratik
+    // antar segmen (menghilangkan sudut "patah" saat jari bergerak cepat
+    // di kanvas jangkung 720x16000 di mana event touch jarang).
+    private var prevCurvePoint: Offset? = null
+
+    // Cache paint: alokasi BlurMaskFilter BARU tiap segmen sangat mahal
+    // (native blur mask) dan memicu GC churn — penyebab utama brush
+    // tersendat/patah di kanvas 46MB. Master disimpan sekali per konfigurasi,
+    // tiap segmen cukup clone dangkal (berbagi referensi maskFilter immutable).
+    private var cachedPaint: Paint? = null
+    private var cachedPaintKey: Int = 0
+
     fun beginStroke() {
         lastSmoothedPoint = null
+        prevCurvePoint = null
         velocityHistory.clear()
     }
 
     fun endStroke() {
         lastSmoothedPoint = null
+        prevCurvePoint = null
         velocityHistory.clear()
     }
 
@@ -125,6 +139,8 @@ class BrushEngine {
     }
 
     private fun createBasePaint(): Paint {
+        val key = 31 * (31 * (31 * brushType.ordinal + size.toBits()) + color) + opacity.toBits()
+        cachedPaint?.let { if (cachedPaintKey == key) return Paint(it) }
         val paint = Paint().apply {
             isAntiAlias = true
             isDither = true
@@ -179,6 +195,8 @@ class BrushEngine {
                 // Handled separately
             }
         }
+        cachedPaint = Paint(paint)
+        cachedPaintKey = key
         return paint
     }
 
@@ -202,8 +220,28 @@ class BrushEngine {
 
         if (brushType == BrushType.BLUR) {
             applyBlurStroke(layer, smoothedP1, smoothedP2)
+            prevCurvePoint = smoothedP2
             return
         }
+
+        // Interpolasi kuadratik antar segmen (midpoint quadratic Bezier):
+        // kurva dari titik tengah segmen sebelumnya ke titik tengah segmen
+        // ini dengan kontrol di smoothedP1 — menghaluskan sambungan antar
+        // segmen lurus sehingga goresan tidak terlihat "patah-patah".
+        val curveStart: Offset
+        val curveControl: Offset?
+        val curveEnd: Offset
+        val prevCurve = prevCurvePoint
+        if (prevCurve != null && rulerGuide.type == RulerType.OFF) {
+            curveControl = smoothedP1
+            curveStart = Offset((prevCurve.x + smoothedP1.x) / 2f, (prevCurve.y + smoothedP1.y) / 2f)
+            curveEnd = Offset((smoothedP1.x + smoothedP2.x) / 2f, (smoothedP1.y + smoothedP2.y) / 2f)
+        } else {
+            curveControl = null
+            curveStart = smoothedP1
+            curveEnd = smoothedP2
+        }
+        prevCurvePoint = smoothedP2
 
         val bmp = layer.getPersistentBitmap()
         val canvas = Canvas(bmp)
@@ -246,18 +284,47 @@ class BrushEngine {
         // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.
         // Spacing ~20% dari diameter brush menjamin overlap antar stamp.
         val spacing = max(1.5f, paint.strokeWidth * 0.2f)
-        val steps = ceil((distance / spacing).toDouble()).toInt().coerceIn(1, 256)
+        // Panjang jalur: chord + deviasi kurva bila smoothing kuadratik aktif.
+        val pathLen = if (curveControl != null) {
+            distance + hypot(curveControl.x - curveStart.x, curveControl.y - curveStart.y) * 0.5f
+        } else distance
+        val steps = ceil((pathLen / spacing).toDouble()).toInt().coerceIn(1, 512)
 
-        var prevX = smoothedP1.x
-        var prevY = smoothedP1.y
+        // Batasi rasterisasi ke dirty rect segmen. Tanpa clip, pada kanvas
+        // 720x16000 mask-filter blur meraster area jauh lebih besar dari
+        // yang terlihat → segmen lambat & goresan terasa patah.
+        val clipPad = paint.strokeWidth * 1.5f + 12f
+        val ctrl = curveControl
+        val cl = (min(min(curveStart.x, curveEnd.x), ctrl?.x ?: curveStart.x) - clipPad)
+            .coerceIn(0f, bmp.width.toFloat())
+        val ct = (min(min(curveStart.y, curveEnd.y), ctrl?.y ?: curveStart.y) - clipPad)
+            .coerceIn(0f, bmp.height.toFloat())
+        val cr = (max(max(curveStart.x, curveEnd.x), ctrl?.x ?: curveEnd.x) + clipPad)
+            .coerceIn(0f, bmp.width.toFloat())
+        val cb = (max(max(curveStart.y, curveEnd.y), ctrl?.y ?: curveEnd.y) + clipPad)
+            .coerceIn(0f, bmp.height.toFloat())
+        canvas.save()
+        canvas.clipRect(cl, ct, cr, cb)
+
+        var prevX = curveStart.x
+        var prevY = curveStart.y
         for (i in 1..steps) {
             val t = i / steps.toFloat()
-            val x = smoothedP1.x + (smoothedP2.x - smoothedP1.x) * t
-            val y = smoothedP1.y + (smoothedP2.y - smoothedP1.y) * t
+            val x: Float
+            val y: Float
+            if (ctrl != null) {
+                val u = 1f - t
+                x = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
+                y = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
+            } else {
+                x = curveStart.x + (curveEnd.x - curveStart.x) * t
+                y = curveStart.y + (curveEnd.y - curveStart.y) * t
+            }
             drawDab(canvas, paint, prevX, prevY, x, y)
             prevX = x
             prevY = y
         }
+        canvas.restore()
 
         // TileMap bukan sumber render (renderComposite memakai compositeBitmap),
         // jadi jangan sync per-segmen yang O(W*H). Sync dilakukan di syncTiles()

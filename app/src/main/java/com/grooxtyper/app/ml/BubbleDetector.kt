@@ -87,10 +87,13 @@ class BubbleDetector {
     /** Parameter mentah per opsi model (1:1 ke file, tanpa refine). */
     private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
         return when (model) {
-            // koharu yolo26s-seg (ONNX): seg presisi, sedikit lebih teliti.
-            BubbleModel.KOHARU_YOLO26S_SEG -> Triple(1024, 190, 90)
+            // koharu yolo26s-seg (ONNX): mengacu panduan model asli
+            // (HF: Liiesl/bubble-segment-onnx — koharu-yolo26s, input 1024),
+            // kelas 'balloon' = area PUTIH BERSIH; ambang luma dinaikkan
+            // 190→225 agar area abu/krem tidak ikut terdeteksi.
+            BubbleModel.KOHARU_YOLO26S_SEG -> Triple(1024, 225, 90)
             // best1.pt (YOLOv11n-seg): ciri segmentasi mentah (tetap).
-            BubbleModel.BEST1_PT -> Triple(1024, 185, 80)
+            BubbleModel.BEST1_PT -> Triple(1024, 220, 80)
         }
     }
 
@@ -171,7 +174,10 @@ class BubbleDetector {
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                white[i] = (0.299 * r + 0.587 * g + 0.114 * b) >= whiteThresh
+                // Bubble manga hampir selalu putih JENUH-RENDAH; area warna
+                // terang (langit, kulit, ilustrasi) bukan bubble → ditolak.
+                val sat = max(max(r, g), b) - min(min(r, g), b)
+                white[i] = (0.299 * r + 0.587 * g + 0.114 * b) >= whiteThresh && sat <= 40
             }
 
             val label = IntArray(w * h) { -1 }
@@ -239,14 +245,47 @@ class BubbleDetector {
                         fill in 0.45f..0.97f &&
                         min(bw, bh) >= 20
                     ) {
-                        // Skor: makin dekat ke isi ellipse ideal (π/4) makin tinggi.
-                        val score = (1f - abs(fill - 0.785f) * 1.5f).coerceIn(0.05f, 1f)
-                        out.add(
+                        // Filter ala kelas 'balloon' pada model koharu-yolo26s
+                        // (HF: Liiesl/bubble-segment-onnx): bubble asli =
+                        // area putih dengan OUTLINE GELAP mengelilingi DAN
+                        // berisi teks gelap. Area putih polos (margin, panel
+                        // kosong, highlight gambar) → bukan bubble, ditolak.
+                        val ring = max(2, min(bw, bh) / 12)
+                        var ringTotal = 0
+                        var ringDark = 0
+                        var innerTotal = 0
+                        var innerDark = 0
+                        for (yy in minY..maxY) {
+                            val rowOff = yy * w
+                            val nearY = yy - minY < ring || maxY - yy < ring
+                            for (xx in minX..maxX) {
+                                val p = px[rowOff + xx]
+                                val r = (p shr 16) and 0xFF
+                                val g = (p shr 8) and 0xFF
+                                val b = p and 0xFF
+                                val luma = 0.299 * r + 0.587 * g + 0.114 * b
+                                if (nearY || xx - minX < ring || maxX - xx < ring) {
+                                    ringTotal++
+                                    if (luma < 110) ringDark++
+                                } else {
+                                    innerTotal++
+                                    if (luma < 120) innerDark++
+                                }
+                            }
+                        }
+                        val borderDarkFrac = ringDark / max(1, ringTotal).toFloat()
+                        val innerDarkFrac = innerDark / max(1, innerTotal).toFloat()
+                        if (borderDarkFrac >= 0.22f && innerDarkFrac in 0.003f..0.45f) {
+                            // Skor: isi mendekati ellipse ideal (π/4) + outline kuat.
+                            val fillScore = (1f - abs(fill - 0.785f) * 1.5f).coerceIn(0.05f, 1f)
+                            val score = (fillScore * 0.6f + borderDarkFrac * 0.4f).coerceIn(0.05f, 1f)
+                            out.add(
                             DetectedBubble(
                                 RectF(minX / s, minY / s, (maxX + 1) / s, (maxY + 1) / s),
-                                score
+                                    score
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 cur++
