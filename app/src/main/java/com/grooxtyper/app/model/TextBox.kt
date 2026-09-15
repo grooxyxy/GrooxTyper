@@ -9,17 +9,32 @@ import java.io.File
 import java.io.InputStream
 import java.util.UUID
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.sin
 
 enum class TextAlignMode { LEFT, CENTER, RIGHT }
 
 enum class TextHandle { NONE, BODY, SCALE, ROTATE }
 
+enum class TextFillType { SOLID, GRADIENT }
+
+enum class StrokePosition { OUTSIDE, CENTER, INSIDE }
+
 data class TextShadowSpec(
     var dx: Float = 4f,
     var dy: Float = 4f,
     var blur: Float = 8f,
-    var color: Int = 0x80000000.toInt()
+    var color: Int = 0x80000000.toInt(),
+    // Photoshop-like: opacity 0..1, spread/choke 0..100
+    var opacity: Float = 0.75f,
+    var spread: Float = 0f
+)
+
+data class TextGradientSpec(
+    var colorStart: Int = android.graphics.Color.WHITE,
+    var colorEnd: Int = android.graphics.Color.parseColor("#FF5722"),
+    // 0° = kiri→kanan, 90° = atas→bawah
+    var angle: Float = 90f
 )
 
 /**
@@ -38,8 +53,13 @@ class TextBox(
     var align: TextAlignMode = TextAlignMode.CENTER,
     var outlineWidth: Float = 0f,
     var outlineColor: Int = android.graphics.Color.BLACK,
+    var strokeOpacity: Float = 1f,
+    var strokePosition: StrokePosition = StrokePosition.OUTSIDE,
+    var fillType: TextFillType = TextFillType.SOLID,
+    var gradient: TextGradientSpec = TextGradientSpec(),
     var shadow: TextShadowSpec? = TextShadowSpec(),
     var letterSpacing: Float = 0f,
+    var wordSpacing: Float = 0f,
     var lineSpacing: Float = 12f,
     var scale: Float = 1f,
     var rotation: Float = 0f,
@@ -60,24 +80,29 @@ class TextBox(
         typeface = effectiveTypeface()
     }
 
+    /** Tinggi satu baris dalam px kanvas (dijaga >= 4 agar bounds/hit-test valid saat spacing minus). */
+    fun lineHeightPx(): Float {
+        val fm = basePaint().fontMetrics
+        return max(4f, (fm.descent - fm.ascent) + lineSpacing * scale)
+    }
+
     /** Ukuran konten (tanpa padding outline/shadow), dalam px kanvas. */
     fun contentSize(): Pair<Float, Float> {
         val paint = basePaint()
-        val fm = paint.fontMetrics
         val lines = text.split("\n").ifEmpty { listOf("") }
         var maxW = 0f
         for (line in lines) {
-            val w = spacedWidth(paint, line, letterSpacing * scale)
+            val w = spacedWidth(paint, line, letterSpacing * scale, wordSpacing * scale)
             if (w > maxW) maxW = w
         }
-        val lineH = (fm.descent - fm.ascent) + lineSpacing * scale
-        return maxW to lineH * lines.size
+        return maxW to lineHeightPx() * lines.size
     }
 
     /** Bounds lengkap termasuk padding outline/shadow, dalam px kanvas. */
     fun getBounds(): RectF {
         val (w, h) = contentSize()
-        val pad = outlineWidth * scale + (shadow?.blur ?: 0f) * scale + 16f * scale
+        val pad = outlineWidth * scale + (shadow?.blur ?: 0f) * scale +
+            (shadow?.spread ?: 0f) * scale + 16f * scale
         return RectF(
             position.x - w / 2f - pad,
             position.y - h / 2f - pad,
@@ -127,11 +152,14 @@ class TextBox(
     }
 
     companion object {
-        fun spacedWidth(paint: Paint, line: String, extraPerChar: Float): Float {
+        fun spacedWidth(paint: Paint, line: String, extraPerChar: Float, wordExtra: Float = 0f): Float {
             if (line.isEmpty()) return 0f
-            if (extraPerChar == 0f) return paint.measureText(line)
+            if (extraPerChar == 0f && wordExtra == 0f) return paint.measureText(line)
             var w = 0f
-            for (ch in line) w += paint.measureText(ch.toString()) + extraPerChar
+            for (ch in line) {
+                w += paint.measureText(ch.toString()) + extraPerChar
+                if (ch == ' ') w += wordExtra
+            }
             return w - extraPerChar
         }
     }
