@@ -363,8 +363,8 @@ fun CanvasEditorScreen(
     val fontRegistry = remember { FontRegistry(context) }
     val inpaintingManager = remember { InpaintingManager() }
     val mlTextDetector = remember { MLTextDetector() }
-    // PP-OCR v6 small (ORT, model dari folder privat filesDir/ppocr bila ada).
-    val ppocrDetector = remember { PpocrDetector(context.filesDir) }
+    // PP-OCR v6 small (ORT, model .onnx diunduh saat build ke assets).
+    val ppocrDetector = remember { PpocrDetector(context) }
     val undoRedoManager = remember { UndoRedoManager() }
     val exportManager = remember { FileExportManager(context) }
     val viewState = remember { CanvasViewState(canvasWidth, canvasHeight) }
@@ -2671,7 +2671,7 @@ fun CanvasEditorScreen(
                             if (textEngine == TextEngine.PPOCR_V6) {
                                 val st = ppocrDetector.modelStatus()
                                 if (ppocrDetector.isAvailable()) "PP-OCR siap ($st). Korea⊃Inggris • China⊃Inggris."
-                                else "Model belum ada ($st). Taruh det.onnx + rec_{en,ko,zh}.onnx + dict di folder ppocr, atau jalankan (otomatis fallback ML Kit)."
+                                else "Model belum ikut ter-build ($st). Jalankan (otomatis fallback ML Kit)."
                             } else {
                                 "ML Kit bawaan, tanpa file tambahan."
                             },

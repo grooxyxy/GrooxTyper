@@ -30,6 +30,41 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
 
+      - name: Cache PP-OCR models
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/models/ppocr/*.onnx
+          key: ppocr-v6-mobile-v1
+
+      - name: Download PP-OCR v6 small models (build-time only)
+        # Model .onnx TIDAK di-commit (gitignore) agar repo ramping.
+        # Bila unduhan gagal, build tetap lanjut: aplikasi fallback ke ML Kit.
+        run: |
+          mkdir -p app/src/main/assets/models/ppocr
+          cd app/src/main/assets/models/ppocr
+          BASE="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx"
+          dl() {
+            # $1=url $2=file $3=sha256
+            if [ -f "$2" ] && echo "$3  $2" | sha256sum -c --status -; then
+              echo "cached OK: $2"
+              return 0
+            fi
+            echo "downloading $2 ..."
+            curl -sSL --retry 3 --retry-all-errors --retry-delay 5 "$1" -o "$2" || true
+            if [ -f "$2" ] && echo "$3  $2" | sha256sum -c --status -; then
+              echo "OK: $2"
+            else
+              echo "WARN: $2 gagal/tak valid — PP-OCR nonaktif di build ini"
+              rm -f "$2"
+            fi
+          }
+          dl "$BASE/PP-OCRv5/det/ch_PP-OCRv5_det_mobile.onnx" det.onnx 4d97c44a20d30a81aad087d6a396b08f786c4635742afc391f6621f5c6ae78ae
+          dl "$BASE/PP-OCRv5/rec/ch_PP-OCRv5_rec_mobile.onnx" rec_zh.onnx 5825fc7ebf84ae7a412be049820b4d86d77620f204a041697b0494669b1742c5
+          dl "$BASE/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx" rec_ko.onnx cd6e2ea50f6943ca7271eb8c56a877a5a90720b7047fe9c41a2e541a25773c9b
+          dl "$BASE/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile.onnx" rec_en.onnx c3461add59bb4323ecba96a492ab75e06dda42467c9e3d0c18db5d1d21924be8
+          ls -la
+        continue-on-error: true
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 

@@ -236,10 +236,11 @@ class MLTextDetector {
     /**
      * Buat bitmap mask kanvas penuh untuk daftar region teks.
      *
-     * MASK_BENTUK_TEKS ditulis ulang dari nol: alih-alih ambang rata-rata
-     * (yang rapuh pada latar gelap/teks terang), kini memakai Otsu biner
-     * sesungguhnya per region + deteksi polaritas otomatis (teks gelap ATAU
-     * terang) + dilatasi 1px agar anti-alias tepi stroke ikut tertutup.
+     * MASK_BENTUK_TEKS: Otsu di atas JARAK WARNA dari latar (bukan luminance
+     * mentah) sehingga menutup: outline/shadow gelap, teks berwarna,
+     * teks terang di atas gelap, maupun teks gradasi — selama berbeda dari
+     * latar. Bila bentuk gagal dihitung, fallback ke kotak berpadding agar
+     * region tak pernah lolos tanpa mask.
      * Bila cornerPoints ML Kit tersedia, hasil di-clip ke polygon teks miring.
      */
     fun generateMaskBitmap(
@@ -257,32 +258,39 @@ class MLTextDetector {
         }
 
         for (region in regions) {
+            // Kotak berpadding (dipakai MASK_KOTAK & fallback bentuk-teks).
+            val box = region.boundingBox
+            val padX = (box.width() * 0.04f).coerceIn(2f, 6f)
+            val padY = (box.height() * 0.04f).coerceIn(2f, 6f)
+            val rl = (box.left - padX).coerceIn(0f, canvasWidth.toFloat())
+            val rt = (box.top - padY).coerceIn(0f, canvasHeight.toFloat())
+            val rr = (box.right + padX).coerceIn(0f, canvasWidth.toFloat())
+            val rb = (box.bottom + padY).coerceIn(0f, canvasHeight.toFloat())
             when (maskType) {
                 MLMaskType.MASK_KOTAK -> {
                     // Mask Kotak: persegi panjang solid dengan padding kecil agar
                     // inpaint menutup tepi huruf sepenuhnya (variasi kotak).
-                    val box = region.boundingBox
-                    val padX = (box.width() * 0.04f).coerceIn(2f, 6f)
-                    val padY = (box.height() * 0.04f).coerceIn(2f, 6f)
-                    val l = (box.left - padX).coerceIn(0f, canvasWidth.toFloat())
-                    val t = (box.top - padY).coerceIn(0f, canvasHeight.toFloat())
-                    val r = (box.right + padX).coerceIn(0f, canvasWidth.toFloat())
-                    val b = (box.bottom + padY).coerceIn(0f, canvasHeight.toFloat())
-                    canvas.drawRect(l, t, r, b, fillPaint)
+                    canvas.drawRect(rl, rt, rr, rb, fillPaint)
                 }
                 MLMaskType.MASK_BENTUK_TEKS -> {
-                    val box = region.boundingBox
-                    // Perluas box sedikit agar tepi stroke (anti-alias) ikut.
-                    val grow = maxOf(2, box.height() / 12)
+                    // Perluas box sedikit agar stroke/shadow (anti-alias) ikut.
+                    val grow = maxOf(4, box.height() / 10)
                     val left = maxOf(0, box.left - grow)
                     val top = maxOf(0, box.top - grow)
                     val right = minOf(sourceBitmap.width, box.right + grow)
                     val bottom = minOf(sourceBitmap.height, box.bottom + grow)
                     val boxW = right - left
                     val boxH = bottom - top
-                    if (boxW <= 2 || boxH <= 2) continue
+                    if (boxW <= 2 || boxH <= 2) {
+                        canvas.drawRect(rl, rt, rr, rb, fillPaint)
+                        continue
+                    }
 
-                    val shape = buildTextShapeMask(sourceBitmap, left, top, boxW, boxH) ?: continue
+                    val shape = buildTextShapeMask(sourceBitmap, left, top, boxW, boxH)
+                    if (shape == null) {
+                        canvas.drawRect(rl, rt, rr, rb, fillPaint)
+                        continue
+                    }
 
                     val hasPolygon = region.cornerPoints != null && region.cornerPoints.size >= 4
                     if (hasPolygon) {
@@ -309,8 +317,12 @@ class MLTextDetector {
     }
 
     /**
-     * Mask bentuk teks untuk satu region: Otsu pada luminance, polaritas
-     * otomatis, dilatasi 1px, dan pembersihan komponen kecil (noise).
+     * Mask bentuk teks untuk satu region: estimasi warna latar dari bingkai
+     * tepi box, Otsu di atas histogram JARAK WARNA (Chebyshev) dari latar,
+     * dilatasi 3 iterasi, dan pembersihan komponen kecil (noise).
+     * Jarak bersifat tak-bertanda sehingga satu ambang menutup teks gelap,
+     * teks berwarna/terang, gradasi, outline, sekaligus fringe shadow yang
+     * masih cukup beda dari latar. Null bila box praktis datar.
      * Mengembalikan bitmap ARGB sebesar [w x h] (putih = teks).
      */
     private fun buildTextShapeMask(
@@ -320,36 +332,70 @@ class MLTextDetector {
             val pixels = IntArray(w * h)
             source.getPixels(pixels, 0, w, left, top, w, h)
 
-            // 1) Histogram luminance untuk Otsu.
-            val hist = IntArray(256)
-            val lum = IntArray(w * h)
-            var opaque = 0
+            // 1) Latar = median tiap kanal dari bingkai tepi box (tahan outlier).
+            val histR = IntArray(256)
+            val histG = IntArray(256)
+            val histB = IntArray(256)
+            var border = 0
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val edge = y == 0 || y == h - 1 || x == 0 || x == w - 1
+                    if (!edge) continue
+                    val p = pixels[y * w + x]
+                    if ((p ushr 24) < 16) continue
+                    histR[(p shr 16) and 0xFF]++
+                    histG[(p shr 8) and 0xFF]++
+                    histB[p and 0xFF]++
+                    border++
+                }
+            }
+            if (border < 8) return null
+            fun medianOf(hist: IntArray, total: Int): Int {
+                var acc = 0
+                val half = total / 2
+                for (v in 0 until 256) {
+                    acc += hist[v]
+                    if (acc > half) return v
+                }
+                return 128
+            }
+            val br = medianOf(histR, border)
+            val bg = medianOf(histG, border)
+            val bb = medianOf(histB, border)
+
+            // 2) Histogram jarak Chebyshev dari latar + hitung piksel valid.
+            val histD = IntArray(256)
+            val dist = IntArray(w * h)
+            var valid = 0
             for (i in pixels.indices) {
                 val p = pixels[i]
-                if ((p ushr 24) < 16) { lum[i] = -1; continue }
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val l = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                lum[i] = l
-                hist[l]++
-                opaque++
+                if ((p ushr 24) < 16) {
+                    dist[i] = -1
+                    continue
+                }
+                val dr = kotlin.math.abs(((p shr 16) and 0xFF) - br)
+                val dg = kotlin.math.abs(((p shr 8) and 0xFF) - bg)
+                val db = kotlin.math.abs((p and 0xFF) - bb)
+                val d = maxOf(dr, dg, db)
+                dist[i] = d
+                histD[d]++
+                valid++
             }
-            if (opaque < 16) return null
+            if (valid < 16) return null
 
-            // 2) Ambang Otsu (maksimalkan varians antar-kelas).
+            // 3) Ambang Otsu di atas histogram jarak (floor anti-noise).
             var sum = 0L
-            for (t in 0 until 256) sum += t.toLong() * hist[t]
+            for (t in 0 until 256) sum += t.toLong() * histD[t]
             var sumB = 0L
             var wB = 0L
             var maxVar = -1.0
-            var thresh = 127
+            var thresh = 24
             for (t in 0 until 256) {
-                wB += hist[t]
+                wB += histD[t]
                 if (wB == 0L) continue
-                val wF = opaque - wB
+                val wF = valid - wB
                 if (wF == 0L) break
-                sumB += t.toLong() * hist[t]
+                sumB += t.toLong() * histD[t]
                 val mB = sumB / wB.toDouble()
                 val mF = (sum - sumB) / wF.toDouble()
                 val between = wB.toDouble() * wF.toDouble() * (mB - mF) * (mB - mF)
@@ -358,58 +404,46 @@ class MLTextDetector {
                     thresh = t
                 }
             }
+            thresh = maxOf(16, thresh)
 
-            // 3) Polaritas: coba dua arah, pilih yang rasio tintanya masuk
-            //    akal untuk teks (2%..60% area box).
-            fun inkCount(dark: Boolean): Int {
-                var c = 0
-                for (l in lum) {
-                    if (l < 0) continue
-                    if (if (dark) l <= thresh else l > thresh) c++
+            // 4) Fraksi tinta harus masuk akal; bila tidak, box datar → null.
+            var ink = 0
+            for (d in dist) if (d > thresh) ink++
+            val frac = ink / valid.toFloat()
+            if (frac < 0.005f || frac > 0.75f) return null
+
+            // 5) Biner + dilatasi 3 iterasi (tutup fringe shadow/outline).
+            var cur = BooleanArray(w * h) { dist[it] > thresh }
+            repeat(3) {
+                val nxt = BooleanArray(w * h)
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        if (cur[y * w + x]) {
+                            for (dy in -1..1) {
+                                val yy = y + dy
+                                if (yy < 0 || yy >= h) continue
+                                for (dx in -1..1) {
+                                    val xx = x + dx
+                                    if (xx < 0 || xx >= w) continue
+                                    nxt[yy * w + xx] = true
+                                }
+                            }
+                        }
+                    }
                 }
-                return c
+                cur = nxt
             }
-            val darkCount = inkCount(true)
-            val lightCount = opaque - darkCount
-            val darkFrac = darkCount / opaque.toFloat()
-            val lightFrac = lightCount / opaque.toFloat()
-            // Default teks gelap; pakai teks terang bila gelap tak masuk akal
-            // tapi terang masuk (mis. bubble hitam dengan teks putih).
-            val inkIsDark = when {
-                darkFrac in 0.02f..0.60f -> true
-                lightFrac in 0.02f..0.60f -> false
-                else -> darkFrac >= lightFrac // fallback pilih minoritas
-            }
+            val dil = cur
 
-            // 4) Biner + dilatasi 1px (menutup anti-alias tepi stroke).
-            val bin = BooleanArray(w * h)
-            for (i in lum.indices) {
-                val l = lum[i]
-                bin[i] = l >= 0 && (if (inkIsDark) l <= thresh else l > thresh)
-            }
-            val dil = BooleanArray(w * h)
-            for (y in 0 until h) {
-                val rowOff = y * w
-                for (x in 0 until w) {
-                    val i = rowOff + x
-                    if (!bin[i]) continue
-                    dil[i] = true
-                    if (x > 0) dil[i - 1] = true
-                    if (x < w - 1) dil[i + 1] = true
-                    if (y > 0) dil[i - w] = true
-                    if (y < h - 1) dil[i + w] = true
-                }
-            }
-
-            // 5) Buang komponen sangat kecil (< 4 piksel) sisa noise threshold.
+            // 6) Buang komponen sangat kecil (< 8 piksel) sisa noise threshold.
             val label = IntArray(w * h) { -1 }
             val stack = IntArray(w * h)
-            var cur = 0
+            var comp = 0
             for (i in dil.indices) {
                 if (!dil[i] || label[i] != -1) continue
                 var sp = 0
                 stack[sp++] = i
-                label[i] = cur
+                label[i] = comp
                 var area = 0
                 var minX = w; var minY = h; var maxX = -1; var maxY = -1
                 while (sp > 0) {
@@ -421,24 +455,23 @@ class MLTextDetector {
                     if (y < minY) minY = y
                     if (x > maxX) maxX = x
                     if (y > maxY) maxY = y
-                    if (x > 0) { val n = p - 1; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
-                    if (x < w - 1) { val n = p + 1; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
-                    if (y > 0) { val n = p - w; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
-                    if (y < h - 1) { val n = p + w; if (dil[n] && label[n] == -1) { label[n] = cur; stack[sp++] = n } }
+                    if (x > 0) { val n = p - 1; if (dil[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (x < w - 1) { val n = p + 1; if (dil[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (y > 0) { val n = p - w; if (dil[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (y < h - 1) { val n = p + w; if (dil[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
                 }
-                if (area < 4) {
-                    // Hapus komponen noise ini.
+                if (area < 8) {
                     for (yy in minY..maxY) {
                         val ro = yy * w
                         for (xx in minX..maxX) {
-                            if (label[ro + xx] == cur) dil[ro + xx] = false
+                            if (label[ro + xx] == comp) dil[ro + xx] = false
                         }
                     }
                 }
-                cur++
+                comp++
             }
 
-            // 6) Render ke bitmap mask (putih solid = area inpaint).
+            // 7) Render ke bitmap mask (putih solid = area inpaint).
             val maskPixels = IntArray(w * h)
             for (i in dil.indices) if (dil[i]) maskPixels[i] = -1
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)

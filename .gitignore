@@ -18,3 +18,7 @@ local.properties
 *.o
 *.so
 obj/
+
+# Model PP-OCR (.onnx puluhan MB) diunduh saat build di GitHub Action,
+# bukan di-commit. Dict teks (.txt, KB) ikut ter-commit di bawahnya.
+app/src/main/assets/models/ppocr/*.onnx

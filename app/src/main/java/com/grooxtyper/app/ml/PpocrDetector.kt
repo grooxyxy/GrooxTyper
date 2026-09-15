@@ -9,7 +9,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.nio.FloatBuffer
 import kotlin.math.exp
 import kotlin.math.max
@@ -18,15 +17,16 @@ import kotlin.math.min
 /**
  * Pilihan mesin deteksi teks di dialog deteksi.
  * - ML_KIT: bawaan GMS, tanpa file tambahan.
- * - PPOCR_V6: PP-OCR v6 small via ONNX Runtime (dependensi sudah ada untuk
- *   bubble detector). TIDAK mengunduh apa pun: model dibaca dari folder
- *   privat `filesDir/ppocr/` bila user menaruhnya sendiri:
- *   det.onnx + rec_en/ko/zh.onnx + dict_en/ko/zh.txt.
- *   Inggris+Korea+China: Korea mencakup Inggris, China mencakup Inggris.
+ * - PPOCR_V6: PP-OCR v6 small (deteksi + rec Inggris/Korea/China) via ONNX
+ *   Runtime (dependensi sudah ada untuk bubble detector). Model .onnx
+ *   DIUNDUH SAAT BUILD di GitHub Action ke assets (repo tetap ramping);
+ *   dict teks ikut ter-commit. Bila model tak ikut ter-build, opsi ini
+ *   otomatis fallback ke ML Kit. Korea mencakup Inggris, China mencakup
+ *   Inggris; Jepang tetap pakai ML Kit.
  */
 enum class TextEngine(val displayName: String, val desc: String) {
     ML_KIT("ML Kit", "Bawaan, tanpa file tambahan"),
-    PPOCR_V6("PP-OCR v6 small", "Butuh file model di folder ppocr")
+    PPOCR_V6("PP-OCR v6 small", "Det+rec EN/KO/ZH, unduh saat build")
 }
 
 enum class PpocrLang(val code: String, val displayName: String) {
@@ -36,10 +36,11 @@ enum class PpocrLang(val code: String, val displayName: String) {
 }
 
 object PpocrFiles {
-    const val DIR = "ppocr"
+    const val ASSET_DIR = "models/ppocr"
     const val DET = "det.onnx"
     fun recFor(lang: PpocrLang) = "rec_${lang.code}.onnx"
     fun dictFor(lang: PpocrLang) = "dict_${lang.code}.txt"
+    fun asset(name: String) = "$ASSET_DIR/$name"
 }
 
 private data class ScoredBox(
@@ -47,29 +48,44 @@ private data class ScoredBox(
     val score: Float
 )
 
-class PpocrDetector(filesDir: File) {
-    private val dir = File(filesDir, PpocrFiles.DIR)
-    private val detFile = File(dir, PpocrFiles.DET)
-    private fun recFile(lang: PpocrLang) = File(dir, PpocrFiles.recFor(lang))
-    private fun dictFile(lang: PpocrLang) = File(dir, PpocrFiles.dictFor(lang))
+class PpocrDetector(context: android.content.Context) {
+    private val appContext = context.applicationContext
+
+    private fun assetNames(): Set<String> = runCatching {
+        appContext.assets.list(PpocrFiles.ASSET_DIR)?.toSet() ?: emptySet()
+    }.getOrElse { emptySet() }
+
+    private fun hasAsset(name: String): Boolean = runCatching {
+        appContext.assets.open(PpocrFiles.asset(name)).use { it.read() != -1 }
+    }.getOrElse { false }
 
     private val inferMutex = Mutex()
     private var detSession: OrtSession? = null
     private val recSessions = mutableMapOf<PpocrLang, OrtSession?>()
     private val dictCache = mutableMapOf<PpocrLang, List<String>>()
 
-    /** Bahasa rec yang SIAP (file onnx + dict sama-sama ada). */
-    fun availableLangs(): List<PpocrLang> =
-        PpocrLang.values().filter { recFile(it).exists() && dictFile(it).exists() }
+    /** Bahasa rec yang SIAP (onnx + dict sama-sama ikut ter-build). */
+    fun availableLangs(): List<PpocrLang> {
+        val names = assetNames()
+        return PpocrLang.values().filter {
+            names.contains(PpocrFiles.recFor(it)) && names.contains(PpocrFiles.dictFor(it))
+        }
+    }
 
-    fun isAvailable(): Boolean = detFile.exists() && availableLangs().isNotEmpty()
+    fun isAvailable(): Boolean {
+        val names = assetNames()
+        return names.contains(PpocrFiles.DET) && availableLangs().isNotEmpty()
+    }
 
     /** Ringkasan status file untuk ditampilkan di dialog (tanpa download). */
     fun modelStatus(): String {
+        val names = assetNames()
+        if (names.isEmpty()) return "model belum ikut ter-build"
         val parts = mutableListOf<String>()
-        parts.add(if (detFile.exists()) "det ✓" else "det ✗")
+        parts.add(if (names.contains(PpocrFiles.DET)) "det ✓" else "det ✗")
         for (lang in PpocrLang.values()) {
-            val ok = recFile(lang).exists() && dictFile(lang).exists()
+            val ok = names.contains(PpocrFiles.recFor(lang)) &&
+                names.contains(PpocrFiles.dictFor(lang))
             parts.add("${lang.code} ${if (ok) "✓" else "✗"}")
         }
         return parts.joinToString(" • ")
@@ -80,12 +96,13 @@ class PpocrDetector(filesDir: File) {
         return inferMutex.withLock {
             detSession?.let { return@withLock it }
             try {
+                val bytes = appContext.assets.open(PpocrFiles.asset(PpocrFiles.DET)).use { it.readBytes() }
                 val env = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(2)
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 }
-                env.createSession(detFile.absolutePath, opts).also { detSession = it }
+                env.createSession(bytes, opts).also { detSession = it }
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -98,12 +115,13 @@ class PpocrDetector(filesDir: File) {
         return inferMutex.withLock {
             if (recSessions.containsKey(lang)) return@withLock recSessions[lang]
             try {
+                val bytes = appContext.assets.open(PpocrFiles.asset(PpocrFiles.recFor(lang))).use { it.readBytes() }
                 val env = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(2)
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 }
-                env.createSession(recFile(lang).absolutePath, opts).also { recSessions[lang] = it }
+                env.createSession(bytes, opts).also { recSessions[lang] = it }
             } catch (e: Exception) {
                 e.printStackTrace()
                 recSessions[lang] = null
@@ -115,7 +133,8 @@ class PpocrDetector(filesDir: File) {
     private fun loadDict(lang: PpocrLang): List<String>? {
         dictCache[lang]?.let { return it }
         return try {
-            val lines = dictFile(lang).readLines()
+            val lines = appContext.assets.open(PpocrFiles.asset(PpocrFiles.dictFor(lang)))
+                .bufferedReader().readLines()
             if (lines.isEmpty()) return null
             dictCache[lang] = lines
             lines
