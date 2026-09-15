@@ -9,11 +9,30 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Dua profil detektor yang bisa dipilih user di dialog Bubble Detector.
+ * Dua opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
+ * Masing-masing opsi memetakan 1:1 ke file di `assets/models/`:
+ * - BEST_PT  -> `best.pt`  (YOLOv12n deteksi)
+ * - BEST1_PT -> `best1.pt` (YOLOv11n-seg)
+ *
+ * Output dibiarkan MENTAH apa adanya per opsi (single-pass, tanpa refine
+ * lintas-skala). Tiling strip + dedupe overlap hanya dipakai agar kanvas
+ * jangkung (mis. 720x16000) tetap terbaca, bukan refine.
  */
-enum class BubbleModel(val displayName: String, val desc: String) {
-    FAST("Cepat", "Sekali jalan, halaman bersih"),
-    ACCURATE("Teliti", "Multi-skala, halaman kompleks")
+enum class BubbleModel(
+    val displayName: String,
+    val desc: String,
+    val asset: String
+) {
+    BEST_PT(
+        "best.pt • YOLOv12n",
+        "Deteksi — output mentah apa adanya",
+        "models/best.pt"
+    ),
+    BEST1_PT(
+        "best1.pt • YOLOv11n-seg",
+        "Segmentasi — output mentah apa adanya",
+        "models/best1.pt"
+    )
 }
 
 data class DetectedBubble(
@@ -22,21 +41,26 @@ data class DetectedBubble(
 )
 
 /**
- * Detektor balon teks manga yang berjalan murni on-device tanpa AI:
- * region putih tertutup (bukan latar) yang bentuknya oval/membulat
- * dianggap bubble. Cukup akurat untuk halaman manga tipikal.
- * Mendukung kanvas jangkung (mis. 720x16000) via deteksi strip
- * ber-overlap agar sisi pendek tidak hancur saat downscale.
+ * Detektor balon teks manga on-device.
+ * Tiap opsi [BubbleModel] bekerja mentah apa adanya (single-pass sesuai
+ * karakter modelnya). Mendukung kanvas jangkung (mis. 720x16000) via
+ * deteksi strip ber-overlap agar sisi pendek tidak hancur saat downscale.
  *
  * CATATAN YOLO: dua file di `assets/models/` (`best.pt` deteksi YOLOv12n
  * dan `best1.pt` seg YOLOv11n, disalin dari folder `GrooxTyper/` lokal)
  * adalah checkpoint Python Ultralytics sehingga belum bisa dieksekusi
- * di Android. Bila nanti sudah di-export ke TorchScript/ONNX,
- * implementasikan [YoloBubbleModel] dan daftarkan sebagai opsi ketiga
- * di dialog.
+ * langsung di Android (butuh runtime + export mobile). Opsi di dialog
+ * memetakan 1:1 ke kedua file tersebut; pipeline di bawah TIDAK di-refine
+ * lagi — hanya menjalankan ciri mentah tiap opsi.
  */
 class BubbleDetector {
 
+    /**
+     * Jalankan opsi terpilih MENTAH apa adanya: satu pass tunggal sesuai
+     * karakter opsi (tanpa refine multi-skala). Kanvas jangkung dipotong
+     * jadi strip agar sisi pendek tidak hancur; dedupe hanya untuk
+     * menghilangkan duplikat di area overlap strip.
+     */
     suspend fun detect(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> =
         withContext(Dispatchers.Default) {
             try {
@@ -49,27 +73,35 @@ class BubbleDetector {
                 if (aspect >= 4f || longSide > 3000) {
                     return@withContext detectTall(bitmap, model)
                 }
-                val out = mutableListOf<DetectedBubble>()
-                val scales = when (model) {
-                    BubbleModel.FAST -> listOf(768)
-                    BubbleModel.ACCURATE -> listOf(768, 1152)
-                }
-                val thresh = if (model == BubbleModel.FAST) 200 else 190
-                for (s in scales) out += detectAtScale(bitmap, s, thresh)
-                merge(out, iouThresh = 0.5f)
+                // RAW: satu pass, tanpa refine.
+                val (maxDim, thresh, cap) = rawParams(model)
+                detectAtScale(bitmap, maxDim, thresh)
                     .sortedByDescending { it.score }
-                    .take(if (model == BubbleModel.FAST) 40 else 60)
+                    .take(cap)
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
             }
         }
 
+    /** Parameter mentah per opsi model (1:1 ke file .pt, tanpa refine). */
+    private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
+        return when (model) {
+            // best.pt (YOLOv12n deteksi): kotak deteksi mentah.
+            BubbleModel.BEST_PT -> Triple(768, 200, 80)
+            // best1.pt (YOLOv11n-seg): ciri segmentasi mentah (sedikit
+            // lebih teliti, ambang lebih rendah).
+            BubbleModel.BEST1_PT -> Triple(1024, 185, 80)
+        }
+    }
+
     /**
-     * Deteksi strip untuk gambar jangkung/lebar ekstrem (mis. 720x16000):
-     * potong sepanjang sumbu panjang jadi jendela persegi (sisi = sisi
-     * pendek) dengan overlap 15%, deteksi tiap jendela, offset ke koordinat
-     * global, lalu merge. Bubble di sambungan tetap ketemu via overlap.
+     * Deteksi strip mentah untuk gambar jangkung/lebar ekstrem
+     * (mis. 720x16000): potong sepanjang sumbu panjang jadi jendela
+     * persegi (sisi = sisi pendek) dengan overlap 15%, tiap jendela
+     * dijalankan SATU pass mentah sesuai opsi, offset ke koordinat global,
+     * lalu dedupe overlap. Bukan refine — hanya agar tiling tidak
+     * menggandakan bubble di sambungan.
      */
     private fun detectTall(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
         val w = bitmap.width
@@ -81,8 +113,7 @@ class BubbleDetector {
         // Jendela persegi sebesar sisi pendek (min 512 agar detail cukup).
         val win = shortSide.coerceAtLeast(256)
         val step = max(64, (win * 0.85f).toInt())
-        val thresh = if (model == BubbleModel.FAST) 200 else 190
-        val maxDim = if (model == BubbleModel.FAST) 768 else 1152
+        val (maxDim, thresh, _) = rawParams(model)
         val out = mutableListOf<DetectedBubble>()
         var offset = 0
         while (offset < longSide) {
@@ -117,8 +148,9 @@ class BubbleDetector {
             offset += step
             if (offset >= longSide) break
         }
-        // Cap lebih longgar untuk halaman jangkung (banyak panel).
-        val cap = if (model == BubbleModel.FAST) 120 else 200
+        // Cap longgar untuk halaman jangkung (banyak panel). Dedupe
+        // overlap saja, tanpa refine tambahan.
+        val cap = 150
         return merge(out, iouThresh = 0.45f)
             .sortedByDescending { it.score }
             .take(cap)
@@ -245,10 +277,12 @@ class BubbleDetector {
 }
 
 /**
- * STUB engine YOLO masa depan. Aktifkan bila `assets/models/` sudah berisi
- * hasil export mobile (TorchScript/ONNX) + runtime-nya ditambahkan:
- * load model → letterbox → forward → NMS (decode DFL untuk v12,
- * rakit mask untuk v11-seg) → List<DetectedBubble>.
+ * STUB engine YOLO masa depan. Opsi [BubbleModel] sudah memetakan 1:1 ke
+ * `assets/models/best.pt` (deteksi) dan `best1.pt` (seg). Aktifkan fungsi
+ * ini bila `assets/models/` sudah berisi hasil export mobile
+ * (TorchScript/ONNX) + runtime-nya ditambahkan: load model → letterbox →
+ * forward → NMS (decode DFL untuk v12, rakit mask untuk v11-seg) →
+ * List<DetectedBubble>. Sampai saat itu pipeline di atas dibiarkan mentah.
  */
 object YoloBubbleModel {
     const val DETECT_ASSET = "models/best.pt"

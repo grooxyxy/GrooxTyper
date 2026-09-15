@@ -50,6 +50,23 @@ class SelectionEngine(val width: Int, val height: Int) {
         updateMaskFromPath()
     }
 
+    /**
+     * Kotak seleksi: jadikan persegi [rect] sebagai seleksi aktif.
+     * Koordinat dinormalisasi + dijepit ke kanvas. Dipakai untuk tambah
+     * bubble manual dan seleksi area cepat via drag.
+     */
+    fun selectRect(rect: RectF) {
+        val left = minOf(rect.left, rect.right).coerceIn(0f, width.toFloat())
+        val top = minOf(rect.top, rect.bottom).coerceIn(0f, height.toFloat())
+        val right = maxOf(rect.left, rect.right).coerceIn(0f, width.toFloat())
+        val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, height.toFloat())
+        if (right - left < 2f || bottom - top < 2f) return
+        selectionPath.reset()
+        selectionPath.addRect(left, top, right, bottom, Path.Direction.CW)
+        hasSelection = true
+        updateMaskFromPath()
+    }
+
     private fun updateMaskFromPath() {
         maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

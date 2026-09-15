@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -131,6 +133,7 @@ enum class ActiveTool {
     BRUSH,
     ERASER,
     LASSO,
+    SELECT_BOX,
     TEXT,
     EYEDROPPER
 }
@@ -342,14 +345,20 @@ fun CanvasEditorScreen(
     var multiBubbleTemplate by remember { mutableStateOf<TextBox?>(null) }
     fun isMultiBubbleActive() = multiBubbleLines.isNotEmpty() && multiBubbleIndex < multiBubbleLines.size
 
-    // Bubble detector: dua profil model yang bisa dipilih user.
+    // Bubble detector: dua opsi model (.pt) yang bisa dipilih user.
+    // Output dibiarkan mentah apa adanya per opsi (tanpa refine).
     val bubbleDetector = remember { BubbleDetector() }
     var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
     var showBubbleDialog by remember { mutableStateOf(false) }
-    var bubbleModel by remember { mutableStateOf(BubbleModel.FAST) }
+    var bubbleModel by remember { mutableStateOf(BubbleModel.BEST_PT) }
     var bubbleDetecting by remember { mutableStateOf(false) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
+    // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
+    var bubbleEraseMode by remember { mutableStateOf(false) }
     var lassoPath by remember { mutableStateOf<Path?>(null) }
+    // Drag kotak seleksi (tool SELECT_BOX): titik awal/akhir kanvas.
+    var boxStart by remember { mutableStateOf<Offset?>(null) }
+    var boxCurrent by remember { mutableStateOf<Offset?>(null) }
 
     fun runBubbleDetection() {
         scope.launch {
@@ -364,6 +373,33 @@ fun CanvasEditorScreen(
             showBubbleOverlay = true
             refreshComposite()
         }
+    }
+
+    /** Hapus bubble hasil deteksi berdasar indeks (edit manual). */
+    fun removeBubbleAt(index: Int) {
+        if (index < 0 || index >= detectedBubbles.size) return
+        detectedBubbles = detectedBubbles.toMutableList().also { it.removeAt(index) }
+        refreshComposite()
+    }
+
+    /** Tambah bubble manual dari kotak [rect] (dijepit ke kanvas). */
+    fun addBubbleFromRect(rect: RectF) {
+        val left = minOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
+        val top = minOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
+        val right = maxOf(rect.left, rect.right).coerceIn(0f, canvasWidth.toFloat())
+        val bottom = maxOf(rect.top, rect.bottom).coerceIn(0f, canvasHeight.toFloat())
+        if (right - left < 4f || bottom - top < 4f) return
+        val box = RectF(left, top, right, bottom)
+        detectedBubbles = detectedBubbles + com.grooxtyper.app.ml.DetectedBubble(box, 1f)
+        showBubbleOverlay = true
+        refreshComposite()
+    }
+
+    /** Tambah bubble dari seleksi aktif (kotak/lasso/oval). */
+    fun addBubbleFromSelection(): Boolean {
+        val bounds = selectionEngine.selectionBounds() ?: return false
+        addBubbleFromRect(bounds)
+        return true
     }
 
     /** Terapkan style preset berdasar prefix teks ("[SFX]..."). True bila diterapkan. */
@@ -608,13 +644,13 @@ fun CanvasEditorScreen(
             .onSizeChanged { viewportSize = it }
     ) {
         // Canvas with gestures
-        // NOTE: kunci pointerInput disengaja minimal (activeTool, selectedTextBox,
-        // viewportSize) agar pinch-zoom tidak me-restart gesture di tengah jalan
-        // (viewState.scale/offset/rotation berubah kontinu saat pinch).
+        // NOTE: kunci pointerInput disengaja minimal agar pinch-zoom tidak
+        // me-restart gesture di tengah jalan (viewState.scale/offset/rotation
+        // berubah kontinu saat pinch).
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextBox, viewportSize) {
+                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -629,6 +665,8 @@ fun CanvasEditorScreen(
                                 colorPickActive = false
                                 pressId++
                                 lassoPath = null
+                                boxStart = null
+                                boxCurrent = null
                                 lastCanvasPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
@@ -793,15 +831,22 @@ fun CanvasEditorScreen(
                                         pickColorAt(change.position)
                                     } else if (activeTool == ActiveTool.LASSO) {
                                         if (lastCanvasPoint == null) {
-                                            // Ketuk bubble terdeteksi → jadikan seleksi oval;
-                                            // bila kosong mulai gambar lasso bebas.
-                                            val hit = detectedBubbles
-                                                .filter { it.boundingBox.contains(touchCanvasPos.x, touchCanvasPos.y) }
-                                                .minByOrNull { it.boundingBox.width() * it.boundingBox.height() }
-                                            if (hit != null) {
-                                                selectionEngine.selectOval(hit.boundingBox)
-                                                lassoPath = null
-                                                refreshComposite()
+                                            // Ketuk bubble terdeteksi: mode hapus → buang bubble,
+                                            // mode normal → jadikan seleksi oval. Bila kosong
+                                            // mulai gambar lasso bebas.
+                                            val hitIdx = detectedBubbles
+                                                .mapIndexedNotNull { idx, b ->
+                                                    if (b.boundingBox.contains(touchCanvasPos.x, touchCanvasPos.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
+                                                }
+                                                .minByOrNull { it.second }?.first
+                                            if (hitIdx != null) {
+                                                if (bubbleEraseMode) {
+                                                    removeBubbleAt(hitIdx)
+                                                } else {
+                                                    selectionEngine.selectOval(detectedBubbles[hitIdx].boundingBox)
+                                                    lassoPath = null
+                                                    refreshComposite()
+                                                }
                                             } else {
                                                 lassoPath = Path().apply {
                                                     moveTo(touchCanvasPos.x, touchCanvasPos.y)
@@ -812,6 +857,25 @@ fun CanvasEditorScreen(
                                             lassoPath?.lineTo(touchCanvasPos.x, touchCanvasPos.y)
                                             refreshComposite()
                                         }
+                                    } else if (activeTool == ActiveTool.SELECT_BOX) {
+                                        // Kotak seleksi: drag untuk bentuk persegi.
+                                        // Ketuk bubble saat mode hapus → hapus bubble itu.
+                                        if (boxStart == null) {
+                                            val hitIdx = detectedBubbles
+                                                .mapIndexedNotNull { idx, b ->
+                                                    if (b.boundingBox.contains(touchCanvasPos.x, touchCanvasPos.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
+                                                }
+                                                .minByOrNull { it.second }?.first
+                                            if (bubbleEraseMode && hitIdx != null) {
+                                                removeBubbleAt(hitIdx)
+                                            } else {
+                                                boxStart = touchCanvasPos
+                                                boxCurrent = touchCanvasPos
+                                            }
+                                        } else {
+                                            boxCurrent = touchCanvasPos
+                                        }
+                                        refreshComposite()
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
                                         if (colorPickActive) {
                                             // Mode tahan-jari: ambil warna, jangan melukis.
@@ -857,6 +921,20 @@ fun CanvasEditorScreen(
                                     twoFingerActive = false
                                     // Kunci sketsa lasso bebas menjadi seleksi.
                                     lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
+                                    // Kunci drag kotak menjadi seleksi persegi.
+                                    val s = boxStart
+                                    val e = boxCurrent
+                                    if (s != null && e != null) {
+                                        val rect = RectF(
+                                            minOf(s.x, e.x), minOf(s.y, e.y),
+                                            maxOf(s.x, e.x), maxOf(s.y, e.y)
+                                        )
+                                        if (rect.width() >= 8f && rect.height() >= 8f) {
+                                            selectionEngine.selectRect(rect)
+                                        }
+                                        boxStart = null
+                                        boxCurrent = null
+                                    }
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
@@ -868,6 +946,8 @@ fun CanvasEditorScreen(
                                 brushEngine.endStroke()
                                 twoFingerActive = false
                                 lassoPath?.let { selectionEngine.setLassoPath(it); lassoPath = null }
+                                boxStart = null
+                                boxCurrent = null
                                 lastCanvasPoint = null
                                 lastScreenPoint = null
                                 cursorPosition = null
@@ -998,6 +1078,28 @@ fun CanvasEditorScreen(
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
                     }
                     drawContext.canvas.nativeCanvas.drawPath(sketch, previewPaint)
+                }
+
+                // Pratinjau drag kotak seleksi (tool Kotak Seleksi).
+                val bs = boxStart
+                val bc = boxCurrent
+                if (bs != null && bc != null) {
+                    val boxPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                        color = android.graphics.Color.GREEN
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                    }
+                    val fillPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.FILL
+                        color = 0x3344FF44
+                    }
+                    val l = minOf(bs.x, bc.x)
+                    val t = minOf(bs.y, bc.y)
+                    val r = maxOf(bs.x, bc.x)
+                    val b = maxOf(bs.y, bc.y)
+                    drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, fillPaint)
+                    drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, boxPaint)
                 }
             }
 
@@ -1327,6 +1429,11 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.SelectAll, contentDescription = "Lasso", tint = if (activeTool == ActiveTool.LASSO) Accent else Color.White)
             }
 
+            // Kotak Seleksi: drag persegi untuk seleksi cepat / tambah bubble.
+            IconButton(onClick = { activeTool = ActiveTool.SELECT_BOX; showBrushSettings = false }) {
+                Icon(Icons.Default.OpenInFull, contentDescription = "Kotak Seleksi", tint = if (activeTool == ActiveTool.SELECT_BOX) Accent else Color.White)
+            }
+
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
                 DropdownMenuItem(
                     text = { Text("Deteksi Bubble…") },
@@ -1334,6 +1441,22 @@ fun CanvasEditorScreen(
                         showLassoMenu = false
                         showBubbleDialog = true
                         if (detectedBubbles.isEmpty()) runBubbleDetection()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Kotak Seleksi") },
+                    onClick = {
+                        activeTool = ActiveTool.SELECT_BOX
+                        showBrushSettings = false
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Jadikan Bubble dari Seleksi") },
+                    enabled = selectionEngine.hasSelection,
+                    onClick = {
+                        addBubbleFromSelection()
+                        showLassoMenu = false
                     }
                 )
                 DropdownMenuItem(
@@ -1648,11 +1771,11 @@ fun CanvasEditorScreen(
                     Column {
                         Text(
                             if (bubbleDetecting) "Mendeteksi bubble…"
-                            else "Ditemukan ${detectedBubbles.size} bubble.",
+                            else "Ditemukan ${detectedBubbles.size} bubble (mentah, tanpa refine).",
                             color = Color.LightGray, fontSize = 13.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Model:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Model (pilih satu):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         BubbleModel.values().forEach { model ->
                             Row(
                                 modifier = Modifier
@@ -1669,6 +1792,7 @@ fun CanvasEditorScreen(
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(model.displayName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                                     Text(model.desc, color = Color.Gray, fontSize = 11.sp)
+                                    Text(model.asset, color = Color.Gray, fontSize = 10.sp)
                                 }
                             }
                         }
@@ -1694,9 +1818,81 @@ fun CanvasEditorScreen(
                                 colors = SwitchDefaults.colors(checkedThumbColor = Accent)
                             )
                         }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Mode hapus (ketuk bubble)", color = Color.White, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = bubbleEraseMode,
+                                onCheckedChange = { bubbleEraseMode = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { addBubbleFromSelection() },
+                                enabled = selectionEngine.hasSelection,
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("+ Dari Seleksi", color = Color.White, fontSize = 11.sp) }
+                            Button(
+                                onClick = {
+                                    activeTool = ActiveTool.SELECT_BOX
+                                    showBubbleDialog = false
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Kotak Seleksi", color = Color.White, fontSize = 11.sp) }
+                            Button(
+                                onClick = {
+                                    detectedBubbles = emptyList()
+                                    refreshComposite()
+                                },
+                                enabled = detectedBubbles.isNotEmpty(),
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                                shape = RoundedCornerShape(10.dp)
+                            ) { Text("Hapus Semua", color = Color.White, fontSize = 11.sp) }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Daftar bubble (ketuk ikon hapus untuk buang):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        if (detectedBubbles.isEmpty()) {
+                            Text("Belum ada bubble. Jalankan Deteksi atau tambah via Kotak Seleksi.", color = Color.Gray, fontSize = 11.sp)
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(180.dp)
+                            ) {
+                                itemsIndexed(detectedBubbles) { idx, b ->
+                                    val r = b.boundingBox
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("#${idx + 1} (${r.left.toInt()},${r.top.toInt()} ${r.width().toInt()}x${r.height().toInt()})", color = Color.White, fontSize = 12.sp)
+                                        }
+                                        IconButton(
+                                            onClick = { removeBubbleAt(idx) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Hapus bubble ${idx + 1}", tint = Color.Red, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            "Ketuk bubble di mode Lasso untuk jadikan seleksi.",
+                            "Ketuk bubble di mode Lasso/Kotak untuk jadikan seleksi (atau hapus bila Mode hapus aktif). Drag di tool Kotak Seleksi untuk seleksi persegi.",
                             color = Color.Gray, fontSize = 11.sp
                         )
                         if (multiBubbleLines.isEmpty()) {
