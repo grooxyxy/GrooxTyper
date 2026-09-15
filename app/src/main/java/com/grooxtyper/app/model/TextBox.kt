@@ -9,6 +9,7 @@ import java.io.File
 import java.io.InputStream
 import java.util.UUID
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.sin
 
@@ -140,6 +141,9 @@ class TextBox(
      * [textScaleX] (tanpa mematahkan kata/baris). Satu arah (mengecil) saja.
      * Bila paragraph: lebar box mengikuti rect dulu agar wrap,
      * lalu hanya tinggi yang di-fit via font/condense.
+     * Dijamin (best-effort): hasil akhir di dalam [rect], termasuk efek
+     * outline/shadow/glow (tanpa margin sentuh). Rotasi di-reset ke 0 agar
+     * sudut tidak menyembul keluar bubble/seleksi.
      */
     fun fitToRect(
         rect: RectF,
@@ -147,17 +151,34 @@ class TextBox(
         minFont: Float = 10f,
         minCondense: Float = 0.6f
     ) {
+        if (rect.width() <= 4f || rect.height() <= 4f) return
         position = Offset(rect.centerX(), rect.centerY())
+        rotation = 0f
         // Selalu hitung ulang dari keadaan normal agar hasil-fit konsisten.
         textScaleX = 1f
+        val safeScale = scale.coerceAtLeast(0.2f)
+        // Ruang usable = rect*fill dikurangi pad visual (efek) di tiap sisi,
+        // sehingga glif + outline/shadow/glow tetap di dalam rect.
+        val pad = visualPad()
+        val usableW = (rect.width() * fill - 2f * pad).coerceAtLeast(20f)
+        val usableH = (rect.height() * fill - 2f * pad).coerceAtLeast(20f)
+        // Teks panjang multi-kata langsung jadi paragraph agar wrap terbaca
+        // (bukan menyusut hingga tak terbaca sebagai satu baris point).
+        if (!isParagraph()) {
+            val (pw, _) = contentSizePoint()
+            if (pw > usableW && (text.contains(' ') || text.contains('　') || text.length > 12)) {
+                val target = (usableW / safeScale).coerceIn(40f, 4000f)
+                if (target.isFinite()) boxWidth = target
+            }
+        }
         if (isParagraph()) {
-            val targetW = (rect.width() * fill / scale.coerceAtLeast(0.2f)).coerceIn(40f, 4000f)
+            val targetW = (usableW / safeScale).coerceIn(40f, 4000f)
             if (targetW.isFinite()) boxWidth = targetW
         }
         var guard = 0
-        while (guard++ < 120) {
+        while (guard++ < 160) {
             val (w, h) = contentSize()
-            if (w <= rect.width() * fill && h <= rect.height() * fill) break
+            if (w <= usableW && h <= usableH) break
             if (fontSize > minFont) {
                 // 1) Kecilkan font dulu.
                 fontSize = max(minFont, fontSize * 0.92f)
@@ -165,7 +186,28 @@ class TextBox(
                 // 2) Font mentok: sempitkan glif agar tetap muat (baris utuh).
                 textScaleX = max(minCondense, textScaleX * 0.92f)
             } else {
-                // 3) Sudah paling sempit; berhenti.
+                // 3) Sudah paling sempit pada batas normal; lanjut ke fallback.
+                break
+            }
+        }
+        // Fallback terakhir agar teks tidak keluar bubble/seleksi:
+        // bila point satu kata sangat panjang, jadikan paragraph; bila masih
+        // berlebih (skrip sangat panjang), kecilkan font hingga batas absolut.
+        val (w, h) = contentSize()
+        if (w <= usableW && h <= usableH) return
+        if (!isParagraph()) {
+            val target = (usableW / safeScale).coerceIn(40f, 4000f)
+            if (target.isFinite()) boxWidth = target
+        }
+        var guard2 = 0
+        while (guard2++ < 80) {
+            val (w2, h2) = contentSize()
+            if (w2 <= usableW && h2 <= usableH) break
+            if (fontSize > 4f) {
+                fontSize = max(4f, fontSize * 0.92f)
+            } else if (textScaleX > 0.3f) {
+                textScaleX = max(0.3f, textScaleX * 0.94f)
+            } else {
                 break
             }
         }
@@ -318,10 +360,19 @@ class TextBox(
     }
 
     /** Padding bounds (outline/shadow/glow + margin sentuh), dalam px kanvas. */
-    fun boundsPad(): Float {
+    fun boundsPad(): Float = visualPad() + 16f * scale
+
+    /**
+     * Pad visual efek saja (tanpa margin sentuh 16px): outline + blur/shadow
+     * + spread + glow + jarak offset bayangan. Dipakai auto-fit agar hasil
+     * render (glif + efek) tetap di dalam bubble/seleksi.
+     */
+    fun visualPad(): Float {
         val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
-        return outlineWidth * scale + (shadow?.blur ?: 0f) * scale +
-            (shadow?.spread ?: 0f) * scale + glowPad + 16f * scale
+        val s = shadow
+        val shadowOffset = if (s != null) hypot(s.dx, s.dy) * scale else 0f
+        return outlineWidth * scale + (s?.blur ?: 0f) * scale +
+            (s?.spread ?: 0f) * scale + glowPad + shadowOffset
     }
 
     /** Bounds lengkap termasuk padding outline/shadow, dalam px kanvas. */
@@ -334,6 +385,42 @@ class TextBox(
             position.x + w / 2f + pad,
             position.y + h / 2f + pad
         )
+    }
+
+    /** Bounds visual (glif + efek, tanpa margin sentuh) untuk verifikasi muat. */
+    fun getVisualBounds(): RectF {
+        val (w, h) = contentSize()
+        val pad = visualPad()
+        // Rotasi sudah 0 setelah fitToRect; bila user memutar manual, hitung
+        // AABB agar pemeriksaan tetap konservatif (tidak under-estimate).
+        if (rotation == 0f) {
+            return RectF(
+                position.x - w / 2f - pad,
+                position.y - h / 2f - pad,
+                position.x + w / 2f + pad,
+                position.y + h / 2f + pad
+            )
+        }
+        val hw = w / 2f + pad
+        val hh = h / 2f + pad
+        val rad = Math.toRadians(rotation.toDouble())
+        val c = kotlin.math.abs(cos(rad))
+        val s = kotlin.math.abs(sin(rad))
+        val ew = hw * c + hh * s
+        val eh = hw * s + hh * c
+        return RectF(
+            position.x - ew,
+            position.y - eh,
+            position.x + ew,
+            position.y + eh
+        )
+    }
+
+    /** True bila seluruh visual (glif + efek) berada di dalam [rect]. */
+    fun visualFitsIn(rect: RectF, eps: Float = 1f): Boolean {
+        val b = getVisualBounds()
+        return b.left >= rect.left - eps && b.top >= rect.top - eps &&
+            b.right <= rect.right + eps && b.bottom <= rect.bottom + eps
     }
 
     /** Inverse-rotasi titik uji mengelilingi [position]. */
