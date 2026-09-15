@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.RectF
@@ -150,6 +151,49 @@ object ImageImport {
         if (w <= 0 || h <= 0) return 512 to 512
         val s = min(1f, maxDim / max(w, h).toFloat())
         return max(100, (w * s).toInt()) to max(100, (h * s).toInt())
+    }
+
+    /**
+     * Dimensi kanvas untuk gambar import: gambar biasa dibatasi MAX_CANVAS_DIM,
+     * gambar dengan aspek ekstrem (>= 4:1, mis. tangkapan layar jangkung)
+     * boleh memakai sisi panjang sampai 4096 agar tidak jadi strip buram.
+     * Konsumsi memori tetap kecil karena sisi pendeknya mungil.
+     */
+    fun fitImportDimensions(w: Int, h: Int): Pair<Int, Int> {
+        if (w <= 0 || h <= 0) return 512 to 512
+        val ratio = max(w, h) / min(w, h).toFloat()
+        val longCap = if (ratio >= 4f) 4096 else MAX_CANVAS_DIM
+        val s = min(1f, longCap / max(w, h).toFloat())
+        return max(100, (w * s).toInt()) to max(100, (h * s).toInt())
+    }
+
+    /**
+     * Bitmap papan catur untuk latar transparansi (di-render sekali per
+     * ukuran kanvas, lalu digambar di bawah artwork).
+     */
+    fun makeCheckerBitmap(w: Int, h: Int, cell: Int = 16): Bitmap {
+        val bw = max(1, w)
+        val bh = max(1, h)
+        val bmp = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val p1 = Paint().apply { color = Color.rgb(176, 176, 176) }
+        val p2 = Paint().apply { color = Color.rgb(136, 136, 136) }
+        var y = 0
+        var row = 0
+        while (y < bh) {
+            var x = 0
+            var col = 0
+            val bottom = min(y + cell, bh)
+            while (x < bw) {
+                val right = min(x + cell, bw)
+                canvas.drawRect(x.toFloat(), y.toFloat(), right.toFloat(), bottom.toFloat(), if ((row + col) % 2 == 0) p1 else p2)
+                x += cell
+                col++
+            }
+            y += cell
+            row++
+        }
+        return bmp
     }
 
     fun scaleTo(src: Bitmap, dstW: Int, dstH: Int): Bitmap {

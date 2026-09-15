@@ -67,6 +67,8 @@ import com.grooxtyper.app.model.TextAlignMode
 import com.grooxtyper.app.model.TextBox
 import com.grooxtyper.app.model.TextFillType
 import com.grooxtyper.app.model.TextGradientSpec
+import com.grooxtyper.app.model.TextGlowSpec
+import com.grooxtyper.app.model.TextBevelSpec
 import com.grooxtyper.app.model.TextRenderer
 import com.grooxtyper.app.model.TextShadowSpec
 import com.grooxtyper.app.model.TextStyleManager
@@ -139,9 +141,24 @@ fun TextEditorPanel(
     var wordSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.wordSpacing) }
     var lineSp by remember(box.id, styleVersion) { mutableFloatStateOf(box.lineSpacing) }
 
+    var textOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.textOpacity) }
+    var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
+    var underline by remember(box.id, styleVersion) { mutableStateOf(box.underline) }
+    var strike by remember(box.id, styleVersion) { mutableStateOf(box.strikethrough) }
+
+    var glowOn by remember(box.id, styleVersion) { mutableStateOf(box.glow != null) }
+    var glowColor by remember(box.id, styleVersion) { mutableIntStateOf(box.glow?.color ?: 0xFFFFEE58.toInt()) }
+    var glowOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.glow?.opacity ?: 0.75f) }
+    var glowSize by remember(box.id, styleVersion) { mutableFloatStateOf(box.glow?.blur ?: 14f) }
+    var glowSpread by remember(box.id, styleVersion) { mutableFloatStateOf(box.glow?.spread ?: 0f) }
+
+    var bevelOn by remember(box.id, styleVersion) { mutableStateOf(box.bevel != null) }
+    var bevelSize by remember(box.id, styleVersion) { mutableFloatStateOf(box.bevel?.size ?: 2f) }
+    var bevelOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.bevel?.opacity ?: 0.8f) }
+
     var styleName by remember { mutableStateOf("") }
     var showColor by remember { mutableStateOf(false) }
-    var colorTarget by remember { mutableIntStateOf(0) } // 0 teks, 1 stroke, 2 shadow, 3 gradasi awal, 4 gradasi akhir
+    var colorTarget by remember { mutableIntStateOf(0) } // 0 teks, 1 stroke, 2 shadow, 3 grad awal, 4 grad akhir, 5 glow
 
     // Baseline sesi edit: perubahan pertama mendorong satu langkah undo,
     // seluruh utak-atik sampai ganti teks menyatu dalam langkah itu.
@@ -178,7 +195,10 @@ fun TextEditorPanel(
         fillType, gradStart, gradEnd, gradAngle,
         outlineW, outlineColor, strokeOpacity, strokePos,
         shadowOn, shadowColor, shadowOpacity, shadowDist, shadowAngle, shadowSize, shadowSpread,
-        letterSp, wordSp, lineSp, styleVersion
+        letterSp, wordSp, lineSp, styleVersion,
+        textOpacity, uppercase, underline, strike,
+        glowOn, glowColor, glowOpacity, glowSize, glowSpread,
+        bevelOn, bevelSize, bevelOpacity
     ) {
         try {
             val tmp = TextBox(
@@ -202,6 +222,12 @@ fun TextEditorPanel(
                 letterSpacing = letterSp,
                 wordSpacing = wordSp,
                 lineSpacing = lineSp,
+                textOpacity = textOpacity,
+                uppercase = uppercase,
+                underline = underline,
+                strikethrough = strike,
+                glow = if (glowOn) TextGlowSpec(glowColor, glowSize, glowSpread, glowOpacity) else null,
+                bevel = if (bevelOn) TextBevelSpec(bevelSize, bevelOpacity) else null,
                 fontName = box.fontName,
                 typeface = box.typeface
             )
@@ -386,7 +412,39 @@ fun TextEditorPanel(
                         wordSp = wordSp,
                         onWordSp = { wordSp = it; box.wordSpacing = it; push() },
                         lineSp = lineSp,
-                        onLineSp = { lineSp = it; box.lineSpacing = it; push() }
+                        onLineSp = { lineSp = it; box.lineSpacing = it; push() },
+                        textOpacity = textOpacity,
+                        onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
+                        uppercase = uppercase,
+                        onUppercase = { uppercase = it; box.uppercase = it; push() },
+                        underline = underline,
+                        onUnderline = { underline = it; box.underline = it; push() },
+                        strike = strike,
+                        onStrike = { strike = it; box.strikethrough = it; push() },
+                        glowOn = glowOn,
+                        onGlowOn = {
+                            glowOn = it
+                            box.glow = if (it) TextGlowSpec(glowColor, glowSize, glowSpread, glowOpacity) else null
+                            push()
+                        },
+                        glowColor = glowColor,
+                        onPickGlowColor = { colorTarget = 5; showColor = true },
+                        glowOpacity = glowOpacity,
+                        onGlowOpacity = { glowOpacity = it; box.glow?.opacity = it; push() },
+                        glowSize = glowSize,
+                        onGlowSize = { glowSize = it; box.glow?.blur = it; push() },
+                        glowSpread = glowSpread,
+                        onGlowSpread = { glowSpread = it; box.glow?.spread = it; push() },
+                        bevelOn = bevelOn,
+                        onBevelOn = {
+                            bevelOn = it
+                            box.bevel = if (it) TextBevelSpec(bevelSize, bevelOpacity) else null
+                            push()
+                        },
+                        bevelSize = bevelSize,
+                        onBevelSize = { bevelSize = it; box.bevel?.size = it; push() },
+                        bevelOpacity = bevelOpacity,
+                        onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() }
                     )
                     3 -> StyleTab(
                         styleName = styleName,
@@ -415,6 +473,7 @@ fun TextEditorPanel(
                 2 -> shadowColor
                 3 -> gradStart
                 4 -> gradEnd
+                5 -> glowColor
                 else -> colorVal
             },
             onColorSelected = { c ->
@@ -423,6 +482,7 @@ fun TextEditorPanel(
                     2 -> { shadowColor = c; box.shadow?.color = c }
                     3 -> { gradStart = c; box.gradient.colorStart = c }
                     4 -> { gradEnd = c; box.gradient.colorEnd = c }
+                    5 -> { glowColor = c; box.glow?.color = c }
                     else -> { colorVal = c; box.color = c }
                 }
                 push()
@@ -639,7 +699,31 @@ private fun EffectTab(
     wordSp: Float,
     onWordSp: (Float) -> Unit,
     lineSp: Float,
-    onLineSp: (Float) -> Unit
+    onLineSp: (Float) -> Unit,
+    textOpacity: Float,
+    onTextOpacity: (Float) -> Unit,
+    uppercase: Boolean,
+    onUppercase: (Boolean) -> Unit,
+    underline: Boolean,
+    onUnderline: (Boolean) -> Unit,
+    strike: Boolean,
+    onStrike: (Boolean) -> Unit,
+    glowOn: Boolean,
+    onGlowOn: (Boolean) -> Unit,
+    glowColor: Int,
+    onPickGlowColor: () -> Unit,
+    glowOpacity: Float,
+    onGlowOpacity: (Float) -> Unit,
+    glowSize: Float,
+    onGlowSize: (Float) -> Unit,
+    glowSpread: Float,
+    onGlowSpread: (Float) -> Unit,
+    bevelOn: Boolean,
+    onBevelOn: (Boolean) -> Unit,
+    bevelSize: Float,
+    onBevelSize: (Float) -> Unit,
+    bevelOpacity: Float,
+    onBevelOpacity: (Float) -> Unit
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
@@ -703,6 +787,93 @@ private fun EffectTab(
         valueRange = -50f..80f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
+    Text("Opacity teks ${(textOpacity * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+    Slider(
+        value = textOpacity, onValueChange = onTextOpacity,
+        valueRange = 0.1f..1f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Kapital semua", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = uppercase,
+            onCheckedChange = onUppercase,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Garis bawah", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = underline,
+            onCheckedChange = onUnderline,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Coret tengah", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = strike,
+            onCheckedChange = onStrike,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Outer Glow", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("Cahaya di balik teks", color = Color.Gray, fontSize = 11.sp)
+        }
+        Switch(
+            checked = glowOn,
+            onCheckedChange = onGlowOn,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    if (glowOn) {
+        ColorRow("Warna glow (color wheel)", glowColor) { onPickGlowColor() }
+        Text("Opacity glow ${(glowOpacity * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = glowOpacity, onValueChange = onGlowOpacity,
+            valueRange = 0f..1f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Ukuran glow ${glowSize.toInt()} px", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = glowSize, onValueChange = onGlowSize,
+            valueRange = 0f..100f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Spread glow ${glowSpread.toInt()}%", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = glowSpread, onValueChange = onGlowSpread,
+            valueRange = 0f..100f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Bevel / Emboss", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("Efek timbul 3D", color = Color.Gray, fontSize = 11.sp)
+        }
+        Switch(
+            checked = bevelOn,
+            onCheckedChange = onBevelOn,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    if (bevelOn) {
+        Text("Ukuran bevel ${bevelSize.toInt()} px", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = bevelSize, onValueChange = onBevelSize,
+            valueRange = 0.5f..12f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Kekuatan ${(bevelOpacity * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = bevelOpacity, onValueChange = onBevelOpacity,
+            valueRange = 0f..1f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+    }
 }
 
 @Composable
@@ -764,6 +935,12 @@ private fun StyleTab(
                     letterSpacing = preset.letterSpacing,
                     wordSpacing = preset.wordSpacing,
                     lineSpacing = preset.lineSpacing,
+                    textOpacity = preset.textOpacity,
+                    uppercase = preset.uppercase,
+                    underline = preset.underline,
+                    strikethrough = preset.strikethrough,
+                    glow = preset.glow?.copy(),
+                    bevel = preset.bevel?.copy(),
                     fontName = preset.fontName,
                     typeface = tf ?: Typeface.DEFAULT_BOLD
                 )

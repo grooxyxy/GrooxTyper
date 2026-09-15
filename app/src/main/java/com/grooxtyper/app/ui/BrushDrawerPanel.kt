@@ -41,6 +41,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
@@ -67,6 +69,7 @@ import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.DrawingLayer
+import com.grooxtyper.app.model.LayerBlendMode
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.LayerProps
@@ -377,6 +380,7 @@ fun LayerPanel(
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<LayerItem?>(null) }
     var newName by remember { mutableStateOf("") }
+    var blendMenuFor by remember { mutableStateOf<String?>(null) }
 
     // Ubah properti display dengan satu langkah undo.
     fun mutateProps(layer: LayerItem, change: () -> Unit) {
@@ -552,6 +556,66 @@ fun LayerPanel(
                                     tint = Color.White,
                                     modifier = Modifier.size(18.dp)
                                 )
+                            }
+                        }
+
+                        // Opacity + blend mode (berlaku untuk semua jenis layer).
+                        var opacityBaseline by remember(layer.id) { mutableStateOf<Float?>(null) }
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "${(layer.opacity * 100).toInt()}%",
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(38.dp)
+                            )
+                            Slider(
+                                value = layer.opacity,
+                                onValueChange = {
+                                    if (opacityBaseline == null) opacityBaseline = layer.opacity
+                                    layer.opacity = it
+                                    onRefresh()
+                                },
+                                onValueChangeFinished = {
+                                    opacityBaseline?.let { before ->
+                                        undoManager.pushLayerProps(
+                                            layer.id,
+                                            LayerProps.of(layer).copy(opacity = before),
+                                            LayerProps.of(layer)
+                                        )
+                                        onRefresh()
+                                    }
+                                    opacityBaseline = null
+                                },
+                                valueRange = 0.1f..1f,
+                                modifier = Modifier.weight(1f),
+                                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(PanelBgLight)
+                                    .clickable { blendMenuFor = layer.id }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            ) {
+                                Text(layer.blendMode.displayName, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            }
+                            DropdownMenu(
+                                expanded = blendMenuFor == layer.id,
+                                onDismissRequest = { blendMenuFor = null }
+                            ) {
+                                LayerBlendMode.values().forEach { mode ->
+                                    DropdownMenuItem(
+                                        text = { Text(mode.displayName) },
+                                        onClick = {
+                                            mutateProps(layer) { layer.blendMode = mode }
+                                            blendMenuFor = null
+                                        }
+                                    )
+                                }
                             }
                         }
 

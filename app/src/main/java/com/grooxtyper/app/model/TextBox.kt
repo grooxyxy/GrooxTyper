@@ -37,6 +37,18 @@ data class TextGradientSpec(
     var angle: Float = 90f
 )
 
+data class TextGlowSpec(
+    var color: Int = 0xFFFFEE58.toInt(),
+    var blur: Float = 14f,
+    var spread: Float = 0f,
+    var opacity: Float = 0.75f
+)
+
+data class TextBevelSpec(
+    var size: Float = 2f,
+    var opacity: Float = 0.8f
+)
+
 /**
  * Satu kotak teks yang posisinya adalah TITIK TENGAH (center) blok teks
  * dalam koordinat piksel kanvas. Rotasi berputar mengelilingi [position]
@@ -61,6 +73,12 @@ class TextBox(
     var letterSpacing: Float = 0f,
     var wordSpacing: Float = 0f,
     var lineSpacing: Float = 12f,
+    var textOpacity: Float = 1f,
+    var uppercase: Boolean = false,
+    var underline: Boolean = false,
+    var strikethrough: Boolean = false,
+    var glow: TextGlowSpec? = null,
+    var bevel: TextBevelSpec? = null,
     var scale: Float = 1f,
     var rotation: Float = 0f,
     var fontName: String = "Default Bold",
@@ -80,6 +98,9 @@ class TextBox(
         typeface = effectiveTypeface()
     }
 
+    /** Teks yang tampil (kapital bila opsi menyala; asli tetap tersimpan). */
+    fun displayText(): String = if (uppercase) text.uppercase() else text
+
     /** Tinggi satu baris dalam px kanvas (dijaga >= 4 agar bounds/hit-test valid saat spacing minus). */
     fun lineHeightPx(): Float {
         val fm = basePaint().fontMetrics
@@ -89,7 +110,7 @@ class TextBox(
     /** Ukuran konten (tanpa padding outline/shadow), dalam px kanvas. */
     fun contentSize(): Pair<Float, Float> {
         val paint = basePaint()
-        val lines = text.split("\n").ifEmpty { listOf("") }
+        val lines = displayText().split("\n").ifEmpty { listOf("") }
         var maxW = 0f
         for (line in lines) {
             val w = spacedWidth(paint, line, letterSpacing * scale, wordSpacing * scale)
@@ -101,8 +122,9 @@ class TextBox(
     /** Bounds lengkap termasuk padding outline/shadow, dalam px kanvas. */
     fun getBounds(): RectF {
         val (w, h) = contentSize()
+        val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
         val pad = outlineWidth * scale + (shadow?.blur ?: 0f) * scale +
-            (shadow?.spread ?: 0f) * scale + 16f * scale
+            (shadow?.spread ?: 0f) * scale + glowPad + 16f * scale
         return RectF(
             position.x - w / 2f - pad,
             position.y - h / 2f - pad,
@@ -171,6 +193,12 @@ class TextBox(
         letterSpacing = letterSpacing,
         wordSpacing = wordSpacing,
         lineSpacing = lineSpacing,
+        textOpacity = textOpacity,
+        uppercase = uppercase,
+        underline = underline,
+        strikethrough = strikethrough,
+        glow = glow?.copy(),
+        bevel = bevel?.copy(),
         scale = scale,
         rotation = rotation,
         fontName = fontName,
@@ -196,6 +224,12 @@ class TextBox(
         letterSpacing = o.letterSpacing
         wordSpacing = o.wordSpacing
         lineSpacing = o.lineSpacing
+        textOpacity = o.textOpacity
+        uppercase = o.uppercase
+        underline = o.underline
+        strikethrough = o.strikethrough
+        glow = o.glow?.copy()
+        bevel = o.bevel?.copy()
         scale = o.scale
         rotation = o.rotation
         fontName = o.fontName
@@ -221,6 +255,12 @@ class TextBox(
             letterSpacing == o.letterSpacing &&
             wordSpacing == o.wordSpacing &&
             lineSpacing == o.lineSpacing &&
+            textOpacity == o.textOpacity &&
+            uppercase == o.uppercase &&
+            underline == o.underline &&
+            strikethrough == o.strikethrough &&
+            glow == o.glow &&
+            bevel == o.bevel &&
             scale == o.scale &&
             rotation == o.rotation &&
             fontName == o.fontName

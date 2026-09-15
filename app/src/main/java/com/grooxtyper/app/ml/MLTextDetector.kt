@@ -52,6 +52,59 @@ class MLTextDetector {
             }
     }
 
+    /**
+     * Estimasi warna teks asli di dalam [box]: rata-rata piksel yang lebih
+     * gelap dari rata-rata (diasumsikan tinta), agar TextBox pengganti
+     * langsung mirip warna aslinya. Fallback bila tak ada piksel valid.
+     */
+    fun estimateRegionTextColor(source: Bitmap, box: Rect, fallback: Int): Int {
+        return try {
+            val left = box.left.coerceIn(0, source.width - 1)
+            val top = box.top.coerceIn(0, source.height - 1)
+            val right = box.right.coerceIn(left + 1, source.width)
+            val bottom = box.bottom.coerceIn(top + 1, source.height)
+            val w = right - left
+            val h = bottom - top
+            if (w <= 0 || h <= 0) return fallback
+            val pixels = IntArray(w * h)
+            source.getPixels(pixels, 0, w, left, top, w, h)
+            var sumLum = 0L
+            var count = 0
+            for (p in pixels) {
+                if ((p ushr 24) < 16) continue
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                sumLum += (0.299 * r + 0.587 * g + 0.114 * b).toLong()
+                count++
+            }
+            if (count == 0) return fallback
+            val avg = sumLum / count
+            var sr = 0L
+            var sg = 0L
+            var sb = 0L
+            var sc = 0L
+            for (p in pixels) {
+                if ((p ushr 24) < 16) continue
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                val lum = (0.299 * r + 0.587 * g + 0.114 * b).toLong()
+                if (lum < avg) {
+                    sr += r
+                    sg += g
+                    sb += b
+                    sc++
+                }
+            }
+            if (sc == 0) return fallback
+            Color.rgb((sr / sc).toInt(), (sg / sc).toInt(), (sb / sc).toInt())
+        } catch (e: Exception) {
+            e.printStackTrace()
+            fallback
+        }
+    }
+
     fun generateMaskBitmap(
         canvasWidth: Int,
         canvasHeight: Int,

@@ -37,7 +37,7 @@ object TextRenderer {
         val fm = paint.fontMetrics
         val extra = box.letterSpacing * box.scale
         val wordExtra = box.wordSpacing * box.scale
-        val lines = box.text.split("\n")
+        val lines = box.displayText().split("\n")
         val lineH = box.lineHeightPx()
 
         var contentW = 0f
@@ -67,6 +67,7 @@ object TextRenderer {
                 strokeJoin = Paint.Join.ROUND
                 strokeCap = Paint.Cap.ROUND
                 color = withAlpha(box.outlineColor, box.strokeOpacity)
+                alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
                 clearShadowLayer()
             }
         } else null
@@ -80,6 +81,12 @@ object TextRenderer {
                 shader = null
                 color = box.color
             }
+            alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+        }
+
+        // Outer glow di bawah segalanya (cahaya di balik glif).
+        if (box.glow != null) {
+            drawOuterGlow(canvas, layouts, box, fill, extra, wordExtra)
         }
 
         when (box.strokePosition) {
@@ -104,7 +111,112 @@ object TextRenderer {
                 }
             }
         }
+
+        // Bevel/emboss di atas isi agar tepinya terlihat.
+        if (box.bevel != null) {
+            drawBevel(canvas, layouts, box, fill, extra, wordExtra)
+        }
+
+        // Garis bawah / coret per baris.
+        if (box.underline || box.strikethrough) {
+            drawDecorations(canvas, layouts, widths, box, fill, fm)
+        }
         canvas.restore()
+    }
+
+    /** Outer glow: bentuk digemukkan + shadow-layer warna cahaya. */
+    private fun drawOuterGlow(
+        canvas: Canvas,
+        layouts: List<LineLayout>,
+        box: TextBox,
+        fill: Paint,
+        extra: Float,
+        wordExtra: Float
+    ) {
+        val g = box.glow ?: return
+        val glowColor = withAlpha(g.color, g.opacity)
+        val glowPaint = Paint(fill).apply {
+            shader = null
+            style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
+            strokeWidth = g.spread * box.scale
+            strokeJoin = Paint.Join.ROUND
+            color = Color.WHITE
+            alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+            setShadowLayer(
+                maxOf(1f, g.blur * box.scale),
+                0f, 0f,
+                glowColor
+            )
+        }
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, glowPaint, extra, wordExtra)
+    }
+
+    /** Bevel/emboss murah: salinan terang gelap di atas-bawah, isi menutup tengah. */
+    private fun drawBevel(
+        canvas: Canvas,
+        layouts: List<LineLayout>,
+        box: TextBox,
+        fill: Paint,
+        extra: Float,
+        wordExtra: Float
+    ) {
+        val b = box.bevel ?: return
+        val d = maxOf(0.5f, b.size * box.scale)
+        val a = (255 * b.opacity * box.textOpacity).toInt().coerceIn(0, 255)
+        val dark = Paint(fill).apply {
+            shader = null
+            style = Paint.Style.FILL
+            strokeWidth = 0f
+            color = Color.BLACK
+            alpha = a
+            clearShadowLayer()
+        }
+        val light = Paint(dark).apply { color = Color.WHITE }
+        canvas.save()
+        canvas.translate(d, d)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, dark, extra, wordExtra)
+        canvas.restore()
+        canvas.save()
+        canvas.translate(-d, -d)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, light, extra, wordExtra)
+        canvas.restore()
+        // Isi normal menutup tengah agar hanya rim yang menyala.
+        val clean = Paint(fill).apply {
+            style = Paint.Style.FILL
+            strokeWidth = 0f
+            clearShadowLayer()
+        }
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, clean, extra, wordExtra)
+    }
+
+    /** Underline & strikethrough mengikuti lebar tiap baris. */
+    private fun drawDecorations(
+        canvas: Canvas,
+        layouts: List<LineLayout>,
+        widths: FloatArray,
+        box: TextBox,
+        fill: Paint,
+        fm: Paint.FontMetrics
+    ) {
+        val t = maxOf(1.5f, box.fontSize * box.scale / 16f)
+        val deco = Paint(fill).apply {
+            style = Paint.Style.FILL
+            strokeWidth = 0f
+            clearShadowLayer()
+        }
+        for (i in layouts.indices) {
+            val l = layouts[i]
+            val w = widths[i]
+            if (w <= 0f) continue
+            if (box.underline) {
+                val y = l.baseline + fm.descent * 0.35f
+                canvas.drawRect(l.x0, y - t / 2f, l.x0 + w, y + t / 2f, deco)
+            }
+            if (box.strikethrough) {
+                val y = l.baseline + fm.ascent * 0.35f
+                canvas.drawRect(l.x0, y - t / 2f, l.x0 + w, y + t / 2f, deco)
+            }
+        }
     }
 
     /** Isi teks + bayangan (mendukung opacity & spread ala Photoshop). */
@@ -266,6 +378,12 @@ object TextRenderer {
             letterSpacing = base.letterSpacing,
             wordSpacing = base.wordSpacing,
             lineSpacing = base.lineSpacing,
+            textOpacity = base.textOpacity,
+            uppercase = base.uppercase,
+            underline = base.underline,
+            strikethrough = base.strikethrough,
+            glow = base.glow?.copy(),
+            bevel = base.bevel?.copy(),
             scale = base.scale * fit,
             rotation = 0f,
             fontName = base.fontName,

@@ -29,7 +29,13 @@ data class TextStylePreset(
     var shadow: TextShadowSpec? = TextShadowSpec(),
     var letterSpacing: Float = 0f,
     var wordSpacing: Float = 0f,
-    var lineSpacing: Float = 12f
+    var lineSpacing: Float = 12f,
+    var textOpacity: Float = 1f,
+    var uppercase: Boolean = false,
+    var underline: Boolean = false,
+    var strikethrough: Boolean = false,
+    var glow: TextGlowSpec? = null,
+    var bevel: TextBevelSpec? = null
 ) {
     fun applyTo(box: TextBox, typeface: Typeface?) {
         box.fontName = fontName
@@ -49,6 +55,12 @@ data class TextStylePreset(
         box.letterSpacing = letterSpacing
         box.wordSpacing = wordSpacing
         box.lineSpacing = lineSpacing
+        box.textOpacity = textOpacity
+        box.uppercase = uppercase
+        box.underline = underline
+        box.strikethrough = strikethrough
+        box.glow = glow?.copy()
+        box.bevel = bevel?.copy()
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -83,6 +95,24 @@ data class TextStylePreset(
         put("letterSpacing", letterSpacing.toDouble())
         put("wordSpacing", wordSpacing.toDouble())
         put("lineSpacing", lineSpacing.toDouble())
+        put("textOpacity", textOpacity.toDouble())
+        put("uppercase", uppercase)
+        put("underline", underline)
+        put("strikethrough", strikethrough)
+        if (glow != null) {
+            put("glow", JSONObject().apply {
+                put("color", glow!!.color)
+                put("blur", glow!!.blur.toDouble())
+                put("spread", glow!!.spread.toDouble())
+                put("opacity", glow!!.opacity.toDouble())
+            })
+        }
+        if (bevel != null) {
+            put("bevel", JSONObject().apply {
+                put("size", bevel!!.size.toDouble())
+                put("opacity", bevel!!.opacity.toDouble())
+            })
+        }
     }
 
     companion object {
@@ -103,7 +133,13 @@ data class TextStylePreset(
             shadow = box.shadow?.copy(),
             letterSpacing = box.letterSpacing,
             wordSpacing = box.wordSpacing,
-            lineSpacing = box.lineSpacing
+            lineSpacing = box.lineSpacing,
+            textOpacity = box.textOpacity,
+            uppercase = box.uppercase,
+            underline = box.underline,
+            strikethrough = box.strikethrough,
+            glow = box.glow?.copy(),
+            bevel = box.bevel?.copy()
         )
 
         fun fromJson(o: JSONObject): TextStylePreset {
@@ -150,7 +186,25 @@ data class TextStylePreset(
                 shadow = shadow,
                 letterSpacing = o.optDouble("letterSpacing", 0.0).toFloat(),
                 wordSpacing = o.optDouble("wordSpacing", 0.0).toFloat(),
-                lineSpacing = o.optDouble("lineSpacing", 12.0).toFloat()
+                lineSpacing = o.optDouble("lineSpacing", 12.0).toFloat(),
+                textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
+                uppercase = o.optBoolean("uppercase", false),
+                underline = o.optBoolean("underline", false),
+                strikethrough = o.optBoolean("strikethrough", false),
+                glow = o.optJSONObject("glow")?.let { g ->
+                    TextGlowSpec(
+                        color = g.optInt("color", 0xFFFFEE58.toInt()),
+                        blur = g.optDouble("blur", 14.0).toFloat(),
+                        spread = g.optDouble("spread", 0.0).toFloat(),
+                        opacity = g.optDouble("opacity", 0.75).toFloat()
+                    )
+                },
+                bevel = o.optJSONObject("bevel")?.let { b ->
+                    TextBevelSpec(
+                        size = b.optDouble("size", 2.0).toFloat(),
+                        opacity = b.optDouble("opacity", 0.8).toFloat()
+                    )
+                }
             )
         }
     }

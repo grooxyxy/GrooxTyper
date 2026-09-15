@@ -6,45 +6,38 @@
 
     <!-- Background rounded square -->
     <path
-        android:fillColor="#0D0D0F"
-        android:pathData="M20,0 L88,0 A20,20 0 0 1 108,20 L108,88 A20,20 0 0 1 88,108 L20,108 A20,20 0 0 1 0,88 L0,20 A20,20 0 0 1 20,0 Z"/>
+        android:fillColor="#16161A"
+        android:pathData="M24,0 L84,0 A24,24 0 0 1 108,24 L108,84 A24,24 0 0 1 84,108 L24,108 A24,24 0 0 1 0,84 L0,24 A24,24 0 0 1 24,0 Z"/>
 
-    <!-- Stylized brush tip (main element) -->
+    <!-- Subtle bottom glow -->
     <path
         android:fillColor="#FF5722"
-        android:pathData="M54,18 C42,18 32,28 32,42 C32,56 42,66 54,66 C66,66 76,56 76,42 C76,28 66,18 54,18 Z M54,26 C62,26 68,32 68,42 C68,52 62,58 54,58 C46,58 40,52 40,42 C40,32 46,26 54,26 Z"/>
+        android:fillAlpha="26"
+        android:pathData="M0,78 L108,78 L108,84 A24,24 0 0 1 84,108 L24,108 A24,24 0 0 1 0,84 Z"/>
 
-    <!-- Inner highlight -->
+    <!-- Letter G: open arc -->
     <path
-        android:fillColor="#FF8A65"
-        android:pathData="M54,30 C48,30 44,35 44,42 C44,49 48,54 54,54 C60,54 64,49 64,42 C64,35 60,30 54,30 Z"/>
+        android:fillColor="#00000000"
+        android:strokeColor="#FF5722"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M73.7,40.2 A24,24 0 1,1 73.7,67.8"/>
 
-    <!-- Brush handle -->
+    <!-- Letter G: crossbar -->
     <path
-        android:fillColor="#FF5722"
-        android:pathData="M50,62 L58,62 L58,84 C58,86 56,88 54,88 C52,88 50,86 50,84 Z"/>
+        android:fillColor="#00000000"
+        android:strokeColor="#FF5722"
+        android:strokeWidth="12"
+        android:strokeLineCap="round"
+        android:pathData="M53,54 L75,54"/>
 
-    <!-- Metal ferrule -->
-    <path
-        android:fillColor="#B0BEC5"
-        android:pathData="M48,58 L60,58 L60,64 L48,64 Z"/>
-
-    <!-- Paint drip -->
-    <path
-        android:fillColor="#FF5722"
-        android:pathData="M54,88 C54,88 50,92 50,96 C50,100 52,102 54,102 C56,102 58,100 58,96 C58,92 54,88 54,88 Z"/>
-
-    <!-- Accent dots (color palette) -->
-    <path
-        android:fillColor="#FF5252"
-        android:pathData="M28,32m-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0"/>
-    <path
-        android:fillColor="#FFD740"
-        android:pathData="M80,32m-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0"/>
-    <path
-        android:fillColor="#69F0AE"
-        android:pathData="M28,76m-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0"/>
+    <!-- Pen-nib accent dot (typer) -->
     <path
         android:fillColor="#40C4FF"
-        android:pathData="M80,76m-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0"/>
+        android:pathData="M80,22m-5,0a5,5 0 1,0 10,0a5,5 0 1,0 -10,0"/>
+
+    <!-- Paint drop accent -->
+    <path
+        android:fillColor="#FFD740"
+        android:pathData="M28,80m-4,0a4,4 0 1,0 8,0a4,4 0 1,0 -8,0"/>
 </vector>

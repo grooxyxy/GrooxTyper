@@ -97,8 +97,8 @@ fun GalleryScreen(
                     val decoded = withContext(Dispatchers.IO) {
                         ImageImport.decodeContentUri(context.contentResolver, it)
                     } ?: return@launch
-                    val (projW, projH) = ImageImport.fitDimensions(
-                        decoded.width, decoded.height, ImageImport.MAX_CANVAS_DIM
+                    val (projW, projH) = ImageImport.fitImportDimensions(
+                        decoded.width, decoded.height
                     )
                     val fitted = ImageImport.scaleTo(decoded, projW, projH)
                     val projId = "${System.currentTimeMillis()}"

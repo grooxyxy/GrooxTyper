@@ -62,6 +62,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -172,6 +174,14 @@ fun CanvasEditorScreen(
         mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
     }
 
+    // Papan catur transparansi + paint berfilter (tampilan tajam saat zoom-out).
+    val checkerBitmap = remember(canvasWidth, canvasHeight) {
+        ImageImport.makeCheckerBitmap(canvasWidth, canvasHeight)
+    }
+    val filteredPaint = remember {
+        android.graphics.Paint().apply { isFilterBitmap = true }
+    }
+
     var refreshCanvasState by remember { mutableIntStateOf(0) }
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
     // Pelacakan perubahan kanvas untuk auto-save hemat (hanya simpan jika kotor).
@@ -250,6 +260,7 @@ fun CanvasEditorScreen(
     var showMLInpaintDialog by remember { mutableStateOf(false) }
     var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
     var selectedMaskType by remember { mutableStateOf(MLMaskType.REFINED_TEXT) }
+    var makeEditableText by remember { mutableStateOf(true) }
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
 
     fun flattenSelectedText() {
@@ -347,6 +358,14 @@ fun CanvasEditorScreen(
         return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 
+    /** Ambil warna dari kanvas pada posisi layar (untuk eyedropper). */
+    fun pickColorAt(screenPos: Offset) {
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val x = cp.x.toInt().coerceIn(0, canvasWidth - 1)
+        val y = cp.y.toInt().coerceIn(0, canvasHeight - 1)
+        runCatching { brushEngine.color = compositeBitmap.getPixel(x, y) }
+    }
+
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
     var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
@@ -355,6 +374,34 @@ fun CanvasEditorScreen(
     // Layer yang dipakai selama satu stroke (disimpan agar tidak lookup per-move
     // dan tidak ganti layer di tengah goresan).
     var strokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
+    // Eyedropper sementara via tahan jari (tanpa meninggalkan titik cat).
+    var colorPickActive by remember { mutableStateOf(false) }
+    var pressId by remember { mutableIntStateOf(0) }
+    var pressStartScreen by remember { mutableStateOf(Offset.Zero) }
+    var pressMoved by remember { mutableStateOf(false) }
+    // Sesi dua-jari aktif (untuk settle event pertama + menahan aksi satu jari).
+    var twoFingerActive by remember { mutableStateOf(false) }
+
+    // Tahan jari 600ms tanpa geser = eyedropper sementara.
+    // Titik awal dibatalkan via undo agar kanvas tetap bersih.
+    LaunchedEffect(pressId) {
+        if (pressId == 0) return@LaunchedEffect
+        delay(600L)
+        if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
+            !pressMoved && !colorPickActive && strokeLayer != null
+        ) {
+            val sl = strokeLayer
+            if (sl != null) {
+                undoRedoManager.undo(layerManager)
+                brushEngine.syncTiles(sl)
+                brushEngine.endStroke()
+                strokeLayer = null
+            }
+            colorPickActive = true
+            pickColorAt(cursorPosition ?: pressStartScreen)
+            refreshComposite()
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -381,6 +428,8 @@ fun CanvasEditorScreen(
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
                                 strokeLayer = null
                                 brushEngine.endStroke()
+                                colorPickActive = false
+                                pressId++
                                 lastCanvasPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
@@ -400,29 +449,48 @@ fun CanvasEditorScreen(
 
                                         val prevCenter = (prevP1 + prevP2) / 2f
                                         val curCenter = (curP1 + curP2) / 2f
-                                        pan = curCenter - prevCenter
 
-                                        val prevDist = (prevP1 - prevP2).getDistance()
-                                        val curDist = (curP1 - curP2).getDistance()
-                                        if (prevDist > 0f) zoom = curDist / prevDist
-
-                                        val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
-                                        val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
-                                        rotation = curAngle - prevAngle
-
-                                        // Pivot zoom/rotasi = titik tengah dua jari (dengan
-                                        // kompensasi offset) agar tidak teleport ke satu jari.
                                         val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
                                         val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
-                                        viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
 
-                                        viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
-                                        viewState.offsetX += pan.x
-                                        viewState.offsetY += pan.y
-                                        viewState.applyRotationDelta(rotation)
+                                        if (!twoFingerActive) {
+                                            // Event pertama dua-jari: previous tak stabil,
+                                            // hanya tetapkan pivot agar tidak lompat.
+                                            twoFingerActive = true
+                                            lastScreenPoint = null
+                                            viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
+                                            p1.consume()
+                                            p2.consume()
+                                        } else {
+                                            pan = curCenter - prevCenter
 
-                                        p1.consume()
-                                        p2.consume()
+                                            val prevDist = (prevP1 - prevP2).getDistance()
+                                            val curDist = (curP1 - curP2).getDistance()
+                                            // Jari bersilang (jarak ~0) membuat zoom meledak → abaikan.
+                                            if (prevDist > 20f) {
+                                                zoom = (curDist / prevDist).coerceIn(0.8f, 1.25f)
+                                            }
+
+                                            val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
+                                            val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
+                                            // Normalisasi delta ke [-180,180] agar tak spin 358°
+                                            // saat melewati batas -180/180.
+                                            rotation = ((curAngle - prevAngle + 540f) % 360f) - 180f
+
+                                            // Pivot zoom/rotasi = titik tengah dua jari (dengan
+                                            // kompensasi offset) agar tidak teleport ke satu jari.
+                                            viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
+
+                                            viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
+                                            viewState.offsetX += pan.x
+                                            viewState.offsetY += pan.y
+                                            viewState.applyRotationDelta(rotation)
+
+                                            p1.consume()
+                                            p2.consume()
+                                        }
+                                    } else {
+                                        lastScreenPoint = null
                                     }
                                 } else if (pointerCount == 1 && activeTool == ActiveTool.PAN) {
                                     val change = changes[0]
@@ -441,6 +509,13 @@ fun CanvasEditorScreen(
                             } else if (pointerCount == 1) {
                                 val change = changes[0]
                                 if (change.pressed) {
+                                    if (twoFingerActive) {
+                                        // Sisa satu jari setelah pinch: tahan semua aksi
+                                        // sampai jari diangkat (mencegah titik/goresan liar).
+                                        lastCanvasPoint = null
+                                        cursorPosition = null
+                                        change.consume()
+                                    } else {
                                     cursorPosition = change.position
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
@@ -510,8 +585,17 @@ fun CanvasEditorScreen(
                                                 refreshComposite()
                                             }
                                         }
+                                    } else if (activeTool == ActiveTool.EYEDROPPER) {
+                                        // Eyedropper tool: ketuk/seret untuk ambil warna kanvas.
+                                        pickColorAt(change.position)
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        if (lastCanvasPoint == null) {
+                                        if (colorPickActive) {
+                                            // Mode tahan-jari: ambil warna, jangan melukis.
+                                            pickColorAt(change.position)
+                                        } else if (lastCanvasPoint == null) {
+                                            pressId++
+                                            pressStartScreen = change.position
+                                            pressMoved = false
                                             val activeLayer = layerManager.ensureDrawingLayer()
                                             strokeLayer = activeLayer
                                             // Kunci tipe brush sekali saat stroke dimulai,
@@ -525,6 +609,9 @@ fun CanvasEditorScreen(
                                             brushEngine.beginStroke()
                                             brushEngine.strokeSegmentOnLayer(activeLayer, touchCanvasPos, touchCanvasPos, 0f)
                                         } else {
+                                            if ((change.position - pressStartScreen).getDistance() > 16f) {
+                                                pressMoved = true
+                                            }
                                             val target = strokeLayer ?: layerManager.ensureDrawingLayer()
                                             if (strokeLayer == null) strokeLayer = target
                                             val dist = (touchCanvasPos - lastCanvasPoint!!).getDistance()
@@ -536,10 +623,14 @@ fun CanvasEditorScreen(
                                     }
                                     lastCanvasPoint = touchCanvasPos
                                     change.consume()
+                                    } // else twoFingerActive
                                 } else {
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
+                                    colorPickActive = false
+                                    pressId++
+                                    twoFingerActive = false
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
@@ -549,6 +640,7 @@ fun CanvasEditorScreen(
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
                                 strokeLayer = null
                                 brushEngine.endStroke()
+                                twoFingerActive = false
                                 lastCanvasPoint = null
                                 lastScreenPoint = null
                                 cursorPosition = null
@@ -575,7 +667,10 @@ fun CanvasEditorScreen(
                     )
             ) {
                 val trigger = refreshCanvasState
-                drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, null)
+                // Grid transparansi di bawah artwork, lalu komposit berfilter
+                // agar tajam saat zoom-out (tanpa filter jadi shimmer/buram).
+                drawContext.canvas.nativeCanvas.drawBitmap(checkerBitmap, 0f, 0f, null)
+                drawContext.canvas.nativeCanvas.drawBitmap(compositeBitmap, 0f, 0f, filteredPaint)
 
                 layerManager.layers.filterIsInstance<TextLayer>().forEach { textLayer ->
                     val box = textLayer.box
@@ -643,7 +738,7 @@ fun CanvasEditorScreen(
             }
 
             // Brush cursor overlay
-            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.EYEDROPPER)) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cursorRadius = (brushEngine.size * viewState.scale) / 2f
                     drawCircle(
@@ -1098,6 +1193,21 @@ fun CanvasEditorScreen(
                     Column {
                         Text("Detected ${detectedTextRegions.size} text blocks.", color = Color.LightGray, fontSize = 13.sp)
                         Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Jadikan teks editable", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("Buat TextBox per baris terdeteksi", color = Color.Gray, fontSize = 11.sp)
+                            }
+                            Switch(
+                                checked = makeEditableText,
+                                onCheckedChange = { makeEditableText = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text("Inpainting Mask Mode:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -1124,9 +1234,46 @@ fun CanvasEditorScreen(
                             scope.launch {
                                 val active = layerManager.getActiveLayer()
                                 if (active != null && detectedTextRegions.isNotEmpty()) {
+                                    // Estimasi warna teks ASLI dulu (sebelum di-inpaint).
+                                    val wantsEditable = makeEditableText
+                                    val estimates = if (wantsEditable) {
+                                        detectedTextRegions.take(40).map { region ->
+                                            val b = region.boundingBox
+                                            val cx = (b.left + b.right) / 2f
+                                            val cy = (b.top + b.bottom) / 2f
+                                            val h = (b.bottom - b.top).toFloat()
+                                            Triple(
+                                                region,
+                                                Offset(cx, cy),
+                                                mlTextDetector.estimateRegionTextColor(
+                                                    active.getBitmap(), b, brushEngine.color
+                                                )
+                                            )
+                                        }
+                                    } else emptyList()
                                     undoRedoManager.saveSnapshot(active)
                                     val mask = mlTextDetector.generateMaskBitmap(canvasWidth, canvasHeight, detectedTextRegions, active.getBitmap(), selectedMaskType)
                                     withContext(Dispatchers.Default) { inpaintingManager.inpaintLayerArea(active, mask) }
+                                    // Ganti tiap baris terdeteksi jadi TextBox editable.
+                                    var firstBox: TextBox? = null
+                                    for ((region, center, textColor) in estimates) {
+                                        val h = (region.boundingBox.bottom - region.boundingBox.top).toFloat()
+                                        val box = TextBox(
+                                            text = region.text.ifBlank { "Teks" },
+                                            position = center,
+                                            fontSize = (h * 0.75f).coerceIn(20f, 220f),
+                                            color = textColor,
+                                            bold = true
+                                        )
+                                        val created = layerManager.addTextLayer(box)
+                                        undoRedoManager.pushLayerAdd(created.id)
+                                        if (firstBox == null) firstBox = box
+                                    }
+                                    firstBox?.let {
+                                        selectedTextBox = it
+                                        activeTool = ActiveTool.TEXT
+                                        showTextEditor = true
+                                    }
                                     refreshComposite()
                                 }
                                 showMLInpaintDialog = false
