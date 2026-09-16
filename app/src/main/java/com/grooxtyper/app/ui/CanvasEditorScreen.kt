@@ -1861,9 +1861,7 @@ fun CanvasEditorScreen(
                                 } else {
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
-                                    val wasInpaint = activeTool == ActiveTool.INPAINT
                                     val wasHealBrush = wasBrush && brushEngine.brushType == BrushType.HEAL_PATCH
-                                    val wasHeal = wasInpaint || wasHealBrush
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
