@@ -1,6 +1,12 @@
 package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +34,49 @@ enum class InpaintMode(val displayName: String) {
 
 class InpaintingManager {
 
+    /** Dilatasi mask 1px agar anti-alias tepi teks ikut ter-inpaint (anti-halo). */
+    var dilateMask: Boolean = true
+
+    /**
+     * Konversi mask ke ARGB_8888 putih bila perlu. Native Telea menolak
+     * ALPHA_8 (format mask hemat memori untuk 720x16000); PatchMatch membaca
+     * alpha saja sehingga ALPHA_8 sudah langsung kompatibel.
+     */
+    private fun ensureArgbMask(mask: Bitmap): Pair<Bitmap, Boolean> {
+        if (mask.config != Bitmap.Config.ALPHA_8) return mask to false
+        val w = mask.width
+        val h = mask.height
+        val argb = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(argb)
+        c.drawColor(Color.WHITE)
+        val p = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
+        c.drawBitmap(mask, 0f, 0f, p)
+        return argb to true
+    }
+
+    /** Dilatasi ~1px: blur SOLID pada SALINAN mask, lalu komposit OR kembali. */
+    private fun dilateMaskAlpha(mask: Bitmap) {
+        try {
+            // Salinan diburamkan (tepi alpha mengembang ~1-2px).
+            val blurred = mask.copy(mask.config ?: Bitmap.Config.ARGB_8888, true) ?: return
+            val cb = Canvas(blurred)
+            val p = Paint().apply {
+                maskFilter = BlurMaskFilter(1.2f, BlurMaskFilter.Blur.SOLID)
+            }
+            val snap = blurred.copy(blurred.config ?: Bitmap.Config.ARGB_8888, false)
+            if (snap != null) {
+                cb.drawBitmap(snap, 0f, 0f, p)
+                snap.recycle()
+            }
+            // OR-kan hasil blur ke mask asli (alpha maksimum = gabungan).
+            val cm = Canvas(mask)
+            cm.drawBitmap(blurred, 0f, 0f, null)
+            blurred.recycle()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
     // patch. Default CONTENT_AWARE (pengganti PS Content-Aware Fill).
@@ -41,6 +90,7 @@ class InpaintingManager {
         inpaintRadius: Double = 5.0
     ) {
         val srcBitmap = layer.getBitmap()
+        if (dilateMask) dilateMaskAlpha(maskBitmap)
         if (mode == InpaintMode.PATCH_MATCH) {
             // PatchMatch lebih bagus untuk manga (tekstur garis) — fallback ke Telea bila gagal
             try {
@@ -58,10 +108,15 @@ class InpaintingManager {
         val w = srcBitmap.width
         val h = srcBitmap.height
         val pixels = w.toLong() * h.toLong()
-        if (pixels > 4_000_000L) {
-            inpaintMaskedRegions(srcBitmap, maskBitmap, inpaintRadius)
-        } else {
-            NativeEngine.nativeInpaintTelea(srcBitmap, maskBitmap, inpaintRadius)
+        val (argbMask, isTempMask) = ensureArgbMask(maskBitmap)
+        try {
+            if (pixels > 4_000_000L) {
+                inpaintMaskedRegions(srcBitmap, argbMask, inpaintRadius)
+            } else {
+                NativeEngine.nativeInpaintTelea(srcBitmap, argbMask, inpaintRadius)
+            }
+        } finally {
+            if (isTempMask) runCatching { argbMask.recycle() }
         }
         layer.tileMap.importFromBitmap(srcBitmap)
         layer.markDirty()
@@ -73,11 +128,23 @@ class InpaintingManager {
             if (mode == InpaintMode.PATCH_MATCH) {
                 PatchMatchInpainter.inpaint(src, mask, feather = healFeather, mode = healMode)
             } else {
-                NativeEngine.nativeInpaintTelea(src, mask, 5.0)
+                val (argbMask, isTempMask) = ensureArgbMask(mask)
+                try {
+                    NativeEngine.nativeInpaintTelea(src, argbMask, 5.0)
+                } finally {
+                    if (isTempMask) runCatching { argbMask.recycle() }
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            try { NativeEngine.nativeInpaintTelea(src, mask, 5.0) } catch (_: Exception) {}
+            try {
+                val (argbMask, isTempMask) = ensureArgbMask(mask)
+                try {
+                    NativeEngine.nativeInpaintTelea(src, argbMask, 5.0)
+                } finally {
+                    if (isTempMask) runCatching { argbMask.recycle() }
+                }
+            } catch (_: Exception) {}
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
         }
@@ -96,11 +163,20 @@ class InpaintingManager {
             val t = dirty.top.toInt().coerceIn(0, src.height - 1)
             val r = dirty.right.toInt().coerceIn(1, src.width)
             val b = dirty.bottom.toInt().coerceIn(1, src.height)
-            // Fallback: bila dirty salah (mis. hitungan RectF keliru) jangan kosong
+            // Fallback: bila dirty salah (mis. hitungan RectF keliru) jangan
+            // pindai 46MB penuh — crop area dirty yang diperluas agar tetap aman.
             if (r - l < 4 || b - t < 4) {
-                // Coba cari bounds mask sebenarnya di sekitar dirty (±200px) agar
-                // tidak inpaint seluruh 46MB bila dirty kecil tapi mask besar
-                inpaintBitmapDirect(src, mask)
+                val cx = ((l + r) / 2).coerceIn(0, src.width)
+                val cy = ((t + b) / 2).coerceIn(0, src.height)
+                val safe = android.graphics.RectF(
+                    (cx - 256).toFloat().coerceAtLeast(0f),
+                    (cy - 256).toFloat().coerceAtLeast(0f),
+                    (cx + 256).toFloat().coerceAtMost(src.width.toFloat()),
+                    (cy + 256).toFloat().coerceAtMost(src.height.toFloat())
+                )
+                if (safe.width() >= 8f && safe.height() >= 8f) {
+                    inpaintHealDirty(src, mask, safe)
+                }
                 return
             }
             // Crop sempit di sekitar sapuan + padding adaptif (Vasilias 96-256)
@@ -116,6 +192,20 @@ class InpaintingManager {
             val cw = cr - cl
             val ch = cb - ct
             if (cw <= 8 || ch <= 8) return
+            // Dilatasi mask 1px di dalam crop saja (anti-halo tepi teks).
+            if (dilateMask) {
+                val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
+                if (maskCropPre != null) {
+                    dilateMaskAlpha(maskCropPre)
+                    try {
+                        val dst = Canvas(mask)
+                        val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+                        dst.drawRect(cl.toFloat(), ct.toFloat(), cr.toFloat(), cb.toFloat(), clear)
+                        dst.drawBitmap(maskCropPre, cl.toFloat(), ct.toFloat(), null)
+                    } catch (e: Exception) { e.printStackTrace() }
+                    runCatching { maskCropPre.recycle() }
+                }
+            }
             if (mode == InpaintMode.PATCH_MATCH) {
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
@@ -130,8 +220,22 @@ class InpaintingManager {
                     }
                 } catch (e: OutOfMemoryError) {
                     e.printStackTrace()
-                    // Fallback langsung tanpa crop besar agar tidak OOM
-                    try { PatchMatchInpainter.inpaint(src, mask, feather = healFeather, mode = healMode) } catch (_: Exception) {}
+                    // OOM di crop: JANGAN jalankan PatchMatch di bitmap 46MB
+                    // penuh (alokasi IntArray ~138MB → crash). Coba Telea di
+                    // crop yang sama (lebih ringan), lalu menyerah dengan aman.
+                    try {
+                        val srcCrop2 = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                        val maskCrop2 = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                        try {
+                            val (argb2, tmp2) = ensureArgbMask(maskCrop2)
+                            try { NativeEngine.nativeInpaintTelea(srcCrop2, argb2, 5.0) }
+                            finally { if (tmp2) runCatching { argb2.recycle() } }
+                            android.graphics.Canvas(src).drawBitmap(srcCrop2, cl.toFloat(), ct.toFloat(), null)
+                        } finally {
+                            runCatching { srcCrop2.recycle() }
+                            runCatching { maskCrop2.recycle() }
+                        }
+                    } catch (_: Exception) {} catch (_: OutOfMemoryError) {}
                 } catch (e: Exception) {
                     e.printStackTrace()
                     inpaintBitmapDirect(src, mask)

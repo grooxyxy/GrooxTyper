@@ -651,24 +651,37 @@ fun CanvasEditorScreen(
     // Mask heal 720x16000 = 46MB. Alokasi dilindungi OOM (return null bila
     // memori mepet) agar sapuan heal tidak crash. Dipakai ulang selama stroke,
     // dibebaskan via recycleInpaintMask() setelah commit agar tidak resident.
+    // Paint mask dipakai ulang per event move (dulu 2 alokasi Paint per event).
+    private val healMaskFillPaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.FILL
+        color = AndroidColor.WHITE
+    }
+    private val healMaskStrokePaint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.ROUND
+        strokeJoin = android.graphics.Paint.Join.ROUND
+        color = AndroidColor.WHITE
+    }
+
     fun ensureInpaintMask(): Pair<Bitmap, android.graphics.Canvas>? {
         var bmp = inpaintMask
         var cv = inpaintMaskCanvas
         if (bmp == null || bmp.isRecycled || bmp.width != canvasWidth || bmp.height != canvasHeight) {
             // Bebaskan sisa lama dulu sebelum alokasi jumbo.
             runCatching { bmp?.takeIf { !it.isRecycled }?.recycle() }
-            // Coba ARGB_8888 dulu (46MB untuk 720x16000); bila OOM coba ALPHA_8
-            // (11,5MB) yang cukup untuk mask putih/transparan, lalu fallback gagal.
-            var triedAlpha8 = false
+            // ALPHA_8 dulu (11,5MB untuk 720x16000, cukup untuk mask biner) →
+            // heal brush terasa instan tanpa jank alokasi 46MB + bebas OOM.
+            // ARGB_8888 hanya dicoba bila ALPHA_8 gagal (perangkat aneh).
+            val isHugeMask = canvasWidth.toLong() * canvasHeight > 4_000_000L
             try {
-                bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+                bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ALPHA_8)
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
-                // Hint GC lalu coba ALPHA_8 (seperti Vasilias BitmapSafety low-end)
                 runCatching { System.gc(); Thread.sleep(50) }
                 try {
-                    bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ALPHA_8)
-                    triedAlpha8 = true
+                    bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
                 } catch (e2: OutOfMemoryError) {
                     e2.printStackTrace()
                     inpaintMask = null
@@ -691,8 +704,8 @@ fun CanvasEditorScreen(
             inpaintMask = bmp
             inpaintMaskCanvas = cv
             inpaintDirty = null
-            if (triedAlpha8) {
-                android.util.Log.w("HealMask", "Mask dialokasikan ALPHA_8 hemat memori untuk 720x16000")
+            if (isHugeMask) {
+                android.util.Log.i("HealMask", "Mask ALPHA_8 hemat memori untuk ${canvasWidth}x${canvasHeight}")
             }
         }
         val b = bmp ?: return null
@@ -1635,11 +1648,7 @@ fun CanvasEditorScreen(
                                             val maskPair = ensureInpaintMask()
                                             if (maskPair != null) {
                                                 val (bmp, cv) = maskPair
-                                                val p = android.graphics.Paint().apply {
-                                                    isAntiAlias = true; style = android.graphics.Paint.Style.FILL
-                                                    color = AndroidColor.WHITE
-                                                }
-                                                cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
+                                                cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, healMaskFillPaint)
                                                 val r = brushEngine.size
                                                 val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
                                                 inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1649,14 +1658,9 @@ fun CanvasEditorScreen(
                                             val maskPair = ensureInpaintMask()
                                             if (maskPair != null) {
                                                 val (bmp, cv) = maskPair
-                                                val p = android.graphics.Paint().apply {
-                                                    isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
-                                                    strokeCap = android.graphics.Paint.Cap.ROUND
-                                                    strokeJoin = android.graphics.Paint.Join.ROUND
-                                                    strokeWidth = brushEngine.size; color = AndroidColor.WHITE
-                                                }
+                                                healMaskStrokePaint.strokeWidth = brushEngine.size
                                                 val prev = lastCanvasPoint!!
-                                                cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
+                                                cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, healMaskStrokePaint)
                                                 val r = brushEngine.size
                                                 val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
                                                 inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1681,11 +1685,7 @@ fun CanvasEditorScreen(
                                                 val maskPair = ensureInpaintMask()
                                                 if (maskPair != null) {
                                                     val (bmp, cv) = maskPair
-                                                    val p = android.graphics.Paint().apply {
-                                                        isAntiAlias = true; style = android.graphics.Paint.Style.FILL
-                                                        color = AndroidColor.WHITE
-                                                    }
-                                                    cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
+                                                    cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, healMaskFillPaint)
                                                     val r = brushEngine.size
                                                     val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
                                                     inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1695,14 +1695,9 @@ fun CanvasEditorScreen(
                                                 val maskPair = ensureInpaintMask()
                                                 if (maskPair != null) {
                                                     val (bmp, cv) = maskPair
-                                                    val p = android.graphics.Paint().apply {
-                                                        isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
-                                                        strokeCap = android.graphics.Paint.Cap.ROUND
-                                                        strokeJoin = android.graphics.Paint.Join.ROUND
-                                                        strokeWidth = brushEngine.size; color = AndroidColor.WHITE
-                                                    }
+                                                    healMaskStrokePaint.strokeWidth = brushEngine.size
                                                     val prev = lastCanvasPoint!!
-                                                    cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
+                                                    cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, healMaskStrokePaint)
                                                     val r = brushEngine.size
                                                     val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
                                                     inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1973,8 +1968,11 @@ fun CanvasEditorScreen(
                     drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
                 }
 
-                // Overlay mask inpaint (pink) — viewport culled, di atas komposit tapi di bawah teks
-                if (inpaintMask != null && activeTool == ActiveTool.INPAINT) {
+                // Overlay mask inpaint (pink) — viewport culled, di atas komposit tapi di bawah teks.
+                // Tampil juga saat brush HEAL_PATCH agar sapuan heal terlihat live.
+                val healBrushActive = (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
+                    brushEngine.brushType == BrushType.HEAL_PATCH
+                if (inpaintMask != null && (activeTool == ActiveTool.INPAINT || healBrushActive)) {
                     val maskBmp = inpaintMask
                     if (maskBmp != null && !maskBmp.isRecycled) {
                         val maskPaint = android.graphics.Paint().apply {

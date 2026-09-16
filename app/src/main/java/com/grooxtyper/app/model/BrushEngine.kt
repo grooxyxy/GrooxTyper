@@ -5,6 +5,7 @@ import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
@@ -120,6 +121,22 @@ class BrushEngine {
     // tiap segmen cukup clone dangkal (berbagi referensi maskFilter immutable).
     private var cachedPaint: Paint? = null
     private var cachedPaintKey: Int = 0
+
+    // Cache Canvas & Path: alokasi Canvas(bmp) baru per segmen = objek native
+    // baru per titik interpolasi (hingga 24/event di 720x16000) → GC churn
+    // dan mikro-jank. Path dipakai ulang untuk raster sekali-jalan (drawPath).
+    private var cachedCanvas: Canvas? = null
+    private var cachedCanvasBitmap: Bitmap? = null
+    private val strokePath = Path()
+
+    private fun getCanvasFor(bmp: Bitmap): Canvas {
+        val c = cachedCanvas
+        if (c != null && cachedCanvasBitmap === bmp) return c
+        val nc = Canvas(bmp)
+        cachedCanvas = nc
+        cachedCanvasBitmap = bmp
+        return nc
+    }
 
     fun beginStroke() {
         lastSmoothedPoint = null
@@ -291,7 +308,7 @@ class BrushEngine {
             }
         }
 
-        val canvas = Canvas(bmp)
+        val canvas = getCanvasFor(bmp)
 
         val paint = createBasePaint(isHuge)
         if (layer.isAlphaLocked) {
@@ -371,23 +388,41 @@ class BrushEngine {
                 xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
             }
         } else null
-        var prevX = curveStart.x
-        var prevY = curveStart.y
-        for (i in 1..steps) {
-            val t = i / steps.toFloat()
-            val x: Float
-            val y: Float
+        if (isHuge) {
+            // Huge 720x16000: SATU drawPath per segmen menggantikan loop 32
+            // drawLine. Skia me-raster seluruh kurva kuadratik dalam satu pass
+            // (presisi penuh, tanpa sampling dab) → 10-30x lebih sedikit
+            // draw-call per event; sapuan cepat tidak lagi delay/patah.
+            // Bonus: alpha tipis (Watercolor/Marker/Airbrush) tidak menumpuk
+            // di overlap antar-dab → warna konsisten di sepanjang goresan.
+            // BlurMaskFilter sudah nonaktif di huge sehingga tepi tetap tajam.
+            strokePath.rewind()
+            strokePath.moveTo(curveStart.x, curveStart.y)
             if (ctrl != null) {
-                val u = 1f - t
-                x = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
-                y = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
+                strokePath.quadTo(ctrl.x, ctrl.y, curveEnd.x, curveEnd.y)
             } else {
-                x = curveStart.x + (curveEnd.x - curveStart.x) * t
-                y = curveStart.y + (curveEnd.y - curveStart.y) * t
+                strokePath.lineTo(curveEnd.x, curveEnd.y)
             }
-            drawDab(canvas, paint, prevX, prevY, x, y, isHuge, oilHighlight)
-            prevX = x
-            prevY = y
+            canvas.drawPath(strokePath, paint)
+        } else {
+            var prevX = curveStart.x
+            var prevY = curveStart.y
+            for (i in 1..steps) {
+                val t = i / steps.toFloat()
+                val x: Float
+                val y: Float
+                if (ctrl != null) {
+                    val u = 1f - t
+                    x = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
+                    y = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
+                } else {
+                    x = curveStart.x + (curveEnd.x - curveStart.x) * t
+                    y = curveStart.y + (curveEnd.y - curveStart.y) * t
+                }
+                drawDab(canvas, paint, prevX, prevY, x, y, isHuge, oilHighlight)
+                prevX = x
+                prevY = y
+            }
         }
         canvas.restore()
 

@@ -47,33 +47,61 @@ sealed interface HistoryEntry {
      * dipanggil. Kanvas kecil tetap menyalin bitmap (lebih cepat).
      */
     class BitmapEntry(val layerId: String, source: Bitmap) : HistoryEntry {
-        private var liveBitmap: Bitmap? = null
-        private var pngBytes: ByteArray? = null
+        @Volatile private var liveBitmap: Bitmap? = null
+        @Volatile private var pngBytes: ByteArray? = null
         private val w = source.width
         private val h = source.height
 
+        // Thread encoder background (null di kanvas kecil). Dideklarasikan
+        // SEBELUM init agar assignment di init tidak tertimpa initializer.
+        @Volatile private var encodeThread: Thread? = null
+
         init {
             if (w.toLong() * h.toLong() > HUGE_CANVAS_PIXELS) {
-                // Kompresi langsung dari sumber TANPA copy 46MB dulu.
-                val out = java.io.ByteArrayOutputStream(1 shl 20)
-                try {
-                    source.compress(Bitmap.CompressFormat.PNG, 100, out)
-                    pngBytes = out.toByteArray()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    // Fallback: tetap salin mentah bila kompresi gagal.
-                    liveBitmap = source.copy(Bitmap.Config.ARGB_8888, true)
-                } catch (e: OutOfMemoryError) {
-                    e.printStackTrace()
-                    liveBitmap = null // biarkan null; materialize() akan gagal aman
+                // Kanvas jangkung 720x16000: kompresi PNG 11,5MP di UI thread
+                // memakan 1-3 detik = freeze NYATA di awal sapuan brush
+                // (saveSnapshot dipanggil saat ACTION_DOWN). Pindahkan ke
+                // background daemon; undo dipaksa menunggu bila encoding
+                // belum selesai (sinkron, aman terhadap mutasi bitmap sumber).
+                val src = source
+                val t = Thread {
+                    val out = java.io.ByteArrayOutputStream(1 shl 20)
+                    try {
+                        src.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        pngBytes = out.toByteArray()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        // Fallback: tetap salin mentah bila kompresi gagal.
+                        runCatching { liveBitmap = src.copy(Bitmap.Config.ARGB_8888, true) }
+                    } catch (e: OutOfMemoryError) {
+                        e.printStackTrace()
+                        liveBitmap = null // biarkan null; materialize() gagal aman
+                    }
                 }
+                t.isDaemon = true
+                t.priority = Thread.MIN_PRIORITY
+                t.name = "GrooxUndoEncoder"
+                encodeThread = t
+                t.start()
             } else {
                 liveBitmap = source.copy(Bitmap.Config.ARGB_8888, true)
             }
         }
 
+        /** Pastikan encoding background selesai sebelum baca hasil. */
+        private fun awaitEncode() {
+            val t = encodeThread ?: return
+            if (t.isAlive) {
+                try { t.join(10_000) } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+            encodeThread = null
+        }
+
         /** Bitmap siap pakai (decode bila disimpan terkompresi). */
         fun materialize(): Bitmap? {
+            awaitEncode()
             liveBitmap?.let { return it }
             val bytes = pngBytes ?: return null
             return try {
@@ -86,6 +114,7 @@ sealed interface HistoryEntry {
         }
 
         fun recycle() {
+            awaitEncode()
             runCatching { liveBitmap?.recycle() }
             liveBitmap = null
             pngBytes = null
