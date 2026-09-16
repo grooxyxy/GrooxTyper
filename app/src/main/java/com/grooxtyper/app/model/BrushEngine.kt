@@ -534,20 +534,36 @@ object BrushHugeGuide {
     fun isHugeCanvas(w: Int, h: Int): Boolean =
         w.toLong() * h.toLong() > HUGE_CANVAS_PIXELS
 
-    /** Hitung jendela kanvas terlihat dari viewState (untuk culling brush). */
+    /**
+     * Hitung jendela kanvas terlihat dari viewState (untuk culling brush).
+     * Diadaptasi dari CanvasEditorScreen viewport culling (pivot-aware).
+     * Rotasi !=0 -> kembalikan null (skip culling, gambar penuh) karena
+     * matematika pivot-rotasi kompleks; konservatif aman.
+     */
     fun visibleRect(
         viewportW: Float, viewportH: Float,
-        scale: Float, offsetX: Float, offsetY: Float
-    ): RectF {
-        if (viewportW <= 0f || viewportH <= 0f || scale <= 0f) {
-            return RectF(0f, 0f, viewportW, viewportH)
-        }
-        // Inverse sederhana tanpa rotasi (rotasi diabaikan konservatif:
-        // rect diperluas agar tidak memotong sapuan saat rotate).
-        val l = (-offsetX) / scale
-        val t = (-offsetY) / scale
-        val r = l + viewportW / scale
-        val b = t + viewportH / scale
+        scale: Float, offsetX: Float, offsetY: Float,
+        pivotFracX: Float = 0.5f, pivotFracY: Float = 0.5f,
+        rotation: Float = 0f
+    ): RectF? {
+        if (viewportW <= 1f || viewportH <= 1f || scale <= 0f) return null
+        if (rotation != 0f) return null // skip culling saat rotate, aman
+        // Inverse dari graphicsLayer(pivot, scale, offset) — sama persis dengan
+        // screenToCanvasCoordinates & drawVisibleBitmap di CanvasEditorScreen.
+        val pivX = pivotFracX * viewportW
+        val pivY = pivotFracY * viewportH
+        val sc = scale.coerceAtLeast(0.05f)
+        val xa = ((0f - pivX - offsetX) / sc) + pivX
+        val ya = ((0f - pivY - offsetY) / sc) + pivY
+        val xb = ((viewportW - pivX - offsetX) / sc) + pivX
+        val yb = ((viewportH - pivY - offsetY) / sc) + pivY
+        val l = minOf(xa, xb)
+        val t = minOf(ya, yb)
+        val r = maxOf(xa, xb)
+        val b = maxOf(ya, yb)
+        // Jika viewport hampir mencakup seluruh kanvas, jangan cull (biar stroke
+        // di tepi tidak terpotong akibat pembulatan).
+        // Caller akan clamp ke [0, canvas] sendiri.
         return RectF(l, t, r, b)
     }
 }

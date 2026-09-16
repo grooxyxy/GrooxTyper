@@ -657,22 +657,43 @@ fun CanvasEditorScreen(
         if (bmp == null || bmp.isRecycled || bmp.width != canvasWidth || bmp.height != canvasHeight) {
             // Bebaskan sisa lama dulu sebelum alokasi jumbo.
             runCatching { bmp?.takeIf { !it.isRecycled }?.recycle() }
+            // Coba ARGB_8888 dulu (46MB untuk 720x16000); bila OOM coba ALPHA_8
+            // (11,5MB) yang cukup untuk mask putih/transparan, lalu fallback gagal.
+            var triedAlpha8 = false
             try {
                 bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
-                inpaintMask = null
-                inpaintMaskCanvas = null
-                inpaintDirty = null
-                return null
+                // Hint GC lalu coba ALPHA_8 (seperti Vasilias BitmapSafety low-end)
+                runCatching { System.gc(); Thread.sleep(50) }
+                try {
+                    bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ALPHA_8)
+                    triedAlpha8 = true
+                } catch (e2: OutOfMemoryError) {
+                    e2.printStackTrace()
+                    inpaintMask = null
+                    inpaintMaskCanvas = null
+                    inpaintDirty = null
+                    return null
+                } catch (e2: Exception) {
+                    e2.printStackTrace()
+                    inpaintMask = null
+                    inpaintMaskCanvas = null
+                    inpaintDirty = null
+                    return null
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 return null
             }
+            // Canvas tetap bisa gambar putih di ALPHA_8 (alpha=255)
             cv = android.graphics.Canvas(bmp!!)
             inpaintMask = bmp
             inpaintMaskCanvas = cv
             inpaintDirty = null
+            if (triedAlpha8) {
+                android.util.Log.w("HealMask", "Mask dialokasikan ALPHA_8 hemat memori untuk 720x16000")
+            }
         }
         val b = bmp ?: return null
         val c = cv ?: return null
@@ -1315,11 +1336,15 @@ fun CanvasEditorScreen(
 
     // Tahan jari 600ms tanpa geser = eyedropper sementara.
     // Titik awal dibatalkan via undo agar kanvas tetap bersih.
+    // Pada kanvas jangkung 720x16000, tahan lama sering tidak sengaja memicu
+    // saat user menahan sebelum sapuan panjang → jangan batalkan stroke yang
+    // sudah menggores (strokeLength>0) dan beri delay lebih panjang.
     LaunchedEffect(pressId) {
         if (pressId == 0) return@LaunchedEffect
-        delay(600L)
+        val isHugeForPick = canvasWidth.toLong() * canvasHeight > 4_000_000L
+        delay(if (isHugeForPick) 1000L else 600L)
         if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
-            !pressMoved && !colorPickActive && strokeLayer != null
+            !pressMoved && !colorPickActive && strokeLayer != null && strokeLength == 0f
         ) {
             val sl = strokeLayer
             if (sl != null) {
@@ -1751,7 +1776,10 @@ fun CanvasEditorScreen(
                                                         viewportSize.height.toFloat().coerceAtLeast(1f),
                                                         viewState.scale,
                                                         viewState.offsetX,
-                                                        viewState.offsetY
+                                                        viewState.offsetY,
+                                                        viewState.pivotFracX,
+                                                        viewState.pivotFracY,
+                                                        viewState.rotation
                                                     )
                                                 }.getOrNull()
                                             } else null

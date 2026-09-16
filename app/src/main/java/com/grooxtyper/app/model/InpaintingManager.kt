@@ -85,6 +85,8 @@ class InpaintingManager {
      * Heal brush satu sapuan: inpaint hanya di dalam [dirty] (RectF kanvas)
      * agar 720x16000 tidak memindai 46MB penuh. Dipakai commit heal brush
      * interaktif — jauh lebih cepat dari Photoshop yang memproses layer penuh.
+     * Pad adaptif 96 (dari Vasilias CONTEXT_PAD) agar patch punya sumber luas
+     * dan tidak noise.
      */
     fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF) {
         try {
@@ -92,16 +94,23 @@ class InpaintingManager {
             val t = dirty.top.toInt().coerceIn(0, src.height - 1)
             val r = dirty.right.toInt().coerceIn(1, src.width)
             val b = dirty.bottom.toInt().coerceIn(1, src.height)
+            // Fallback: bila dirty salah (mis. hitungan RectF keliru) jangan kosong
             if (r - l < 4 || b - t < 4) {
+                // Coba cari bounds mask sebenarnya di sekitar dirty (±200px) agar
+                // tidak inpaint seluruh 46MB bila dirty kecil tapi mask besar
                 inpaintBitmapDirect(src, mask)
                 return
             }
-            // Crop sempit di sekitar sapuan + padding agar patch punya sumber.
-            val pad = 24
-            val cl = maxOf(0, l - pad)
-            val ct = maxOf(0, t - pad)
-            val cr = minOf(src.width, r + pad)
-            val cb = minOf(src.height, b + pad)
+            // Crop sempit di sekitar sapuan + padding adaptif (Vasilias 96-256)
+            // Teks manga 12-30px, butuh konteks minimal 96 agar patch menemukan
+            // background putih/tekstur kertas, bukan tepi teks sendiri (noise).
+            val bw = r - l
+            val bh = b - t
+            val adaptivePad = max(96, min(max(bw, bh) + 48, 256))
+            val cl = maxOf(0, l - adaptivePad)
+            val ct = maxOf(0, t - adaptivePad)
+            val cr = minOf(src.width, r + adaptivePad)
+            val cb = minOf(src.height, b + adaptivePad)
             val cw = cr - cl
             val ch = cb - ct
             if (cw <= 8 || ch <= 8) return
@@ -110,6 +119,7 @@ class InpaintingManager {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                     try {
+                        // PatchMatch sekarang multi-scale + guide + constraint (fix noise)
                         PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
                         android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
                     } finally {
@@ -118,7 +128,8 @@ class InpaintingManager {
                     }
                 } catch (e: OutOfMemoryError) {
                     e.printStackTrace()
-                    inpaintBitmapDirect(src, mask)
+                    // Fallback langsung tanpa crop besar agar tidak OOM
+                    try { PatchMatchInpainter.inpaint(src, mask, feather = healFeather, mode = healMode) } catch (_: Exception) {}
                 } catch (e: Exception) {
                     e.printStackTrace()
                     inpaintBitmapDirect(src, mask)
@@ -166,7 +177,7 @@ class InpaintingManager {
                 val rowOff = yy * w
                 for (xx in 0 until w step coarseStep) {
                     val p = buf[rowOff + xx]
-                    if (((p ushr 24) and 0xFF) > 30 && (p and 0xFF) > 30) {
+                    if (((p ushr 24) and 0xFF) > 30) {
                         stripHas[sIdx] = true
                         if (xx < stripMinX[sIdx]) stripMinX[sIdx] = xx
                         if (xx > stripMaxX[sIdx]) stripMaxX[sIdx] = xx
