@@ -400,9 +400,34 @@ fun CanvasEditorScreen(
     var showExitDialog by remember { mutableStateOf(false) }
     var isSavingExit by remember { mutableStateOf(false) }
     var discardOnExit by remember { mutableStateOf(false) }
+    // Status kerja berat untuk note progres di atas toolbar (wajib awal agar
+    // LaunchedEffect/imagePicker di bawah bisa baca tanpa unresolved reference).
+    var isHealing by remember { mutableStateOf(false) }
+    var healError by remember { mutableStateOf<String?>(null) }
+    var isImportingEditor by remember { mutableStateOf(false) }
+    var isMLInpainting by remember { mutableStateOf(false) }
     // Flatten bersifat destruktif (teks jadi piksel, tak bisa diedit lagi)
     // sehingga selalu lewat konfirmasi — teks tetap editable selama mungkin.
     var showFlattenConfirm by remember { mutableStateOf(false) }
+
+    /**
+     * "To Canvas": kembalikan view agar seluruh kanvas pas & terpusat di
+     * layar (dipakai saat user tak sengaja terlempar / kanvas hilang).
+     * Dideklarasikan awal agar LaunchedEffect import bisa pakai.
+     */
+    fun canvasToScreenEarly() {
+        val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
+        val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
+        val fit = (minOf(vw / canvasWidth.toFloat(), vh / canvasHeight.toFloat()) * 0.92f)
+            .coerceIn(0.05f, 10f)
+        viewState.pivotFracX = 0.5f
+        viewState.pivotFracY = 0.5f
+        viewState.rotation = 0f
+        viewState.rawRotation = 0f
+        viewState.scale = fit
+        viewState.offsetX = fit * (vw - canvasWidth) / 2f
+        viewState.offsetY = fit * (vh - canvasHeight) / 2f
+    }
 
     fun refreshComposite() {
         layerManager.renderComposite(compositeBitmap)
@@ -625,7 +650,7 @@ fun CanvasEditorScreen(
                 }
                 refreshComposite()
                 // Pastikan 720x16000 langsung pas di layar agar brush terasa hidup.
-                runCatching { canvasToScreen() }
+                runCatching { canvasToScreenEarly() }
             } finally {
                 isImportingEditor = false
             }
@@ -653,11 +678,7 @@ fun CanvasEditorScreen(
     var inpaintMask by remember { mutableStateOf<Bitmap?>(null) }
     var inpaintMaskCanvas by remember { mutableStateOf<android.graphics.Canvas?>(null) }
     var inpaintDirty by remember { mutableStateOf<RectF?>(null) }
-    // Status kerja berat untuk note progres di atas toolbar (indeterminate).
-    var isHealing by remember { mutableStateOf(false) }
-    var healError by remember { mutableStateOf<String?>(null) }
-    var isImportingEditor by remember { mutableStateOf(false) }
-    var isMLInpainting by remember { mutableStateOf(false) }
+    // (isHealing/healError/isImportingEditor/isMLInpainting dideklarasikan awal.)
     // Mask heal 720x16000 = 46MB. Alokasi dilindungi OOM (return null bila
     // memori mepet) agar sapuan heal tidak crash. Dipakai ulang selama stroke,
     // dibebaskan via recycleInpaintMask() setelah commit agar tidak resident.
@@ -1260,7 +1281,7 @@ fun CanvasEditorScreen(
                         // Referensi cukup versi kecil agar hemat memori.
                         referenceBitmap = downscaleForReference(loaded)
                         refreshComposite()
-                        runCatching { canvasToScreen() }
+                        runCatching { canvasToScreenEarly() }
                         if (loaded.width != canvasWidth || loaded.height != canvasHeight) {
                             healError = "Import 1:1 ${loaded.width}x${loaded.height} ke kanvas ${canvasWidth}x${canvasHeight}: kelebihan di-crop. Untuk full 720x16000 buka via Galeri."
                         }
@@ -1319,17 +1340,7 @@ fun CanvasEditorScreen(
      * scale*(kanvas - pivot) → offset = scale*(viewport - kanvas)/2.
      */
     fun canvasToScreen() {
-        val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
-        val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
-        val fit = (minOf(vw / canvasWidth.toFloat(), vh / canvasHeight.toFloat()) * 0.92f)
-            .coerceIn(0.05f, 10f)
-        viewState.pivotFracX = 0.5f
-        viewState.pivotFracY = 0.5f
-        viewState.rotation = 0f
-        viewState.rawRotation = 0f
-        viewState.scale = fit
-        viewState.offsetX = fit * (vw - canvasWidth) / 2f
-        viewState.offsetY = fit * (vh - canvasHeight) / 2f
+        canvasToScreenEarly()
     }
 
     /** Ambil warna dari kanvas pada posisi layar (untuk eyedropper). */
