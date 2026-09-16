@@ -2292,6 +2292,7 @@ fun CanvasEditorScreen(
                                         com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Aware"
                                         com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure"
                                         com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture"
+                                        com.grooxtyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga"
                                     },
                                     color = Color.White, fontSize = 10.sp,
                                     fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
@@ -2303,7 +2304,8 @@ fun CanvasEditorScreen(
                         when (inpaintingManager.healMode) {
                             com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Content-Aware: seimbang (pengganti PS)."
                             com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure: garis manga tetap tajam."
-                            com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
+                            com.grooptyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
+                            com.grooptyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga Seamless: garis + screentone (riset Xie SIGGRAPH21, terbaik)."
                         },
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
@@ -2894,6 +2896,48 @@ fun CanvasEditorScreen(
                         selectionEngine.clearSelection()
                         refreshComposite()
                         showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(if (isHealing) "Inpaint Seleksi… (proses)" else "Inpaint Seleksi (Heal)") },
+                    enabled = selectionEngine.hasSelection && !isHealing,
+                    onClick = {
+                        showLassoMenu = false
+                        val active = layerManager.getActiveLayer()
+                        val bounds = selectionEngine.selectionBounds()
+                        if (active == null || bounds == null) {
+                            healError = "Seleksi kosong"
+                        } else if (isHealing) {
+                            healError = "Tunggu heal selesai dulu"
+                        } else {
+                            isHealing = true
+                            healError = null
+                            undoRedoManager.saveSnapshot(active)
+                            scope.launch(Dispatchers.Default) {
+                                var ok = false
+                                var err: String? = null
+                                try {
+                                    val maskCopy = try {
+                                        selectionEngine.selectionMaskBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    } catch (e: Exception) { selectionEngine.selectionMaskBitmap }
+                                    ok = inpaintingManager.inpaintSelection(active, maskCopy, bounds)
+                                    if (maskCopy !== selectionEngine.selectionMaskBitmap) runCatching { maskCopy.recycle() }
+                                    if (!ok) err = "Inpaint seleksi dilewati: area/mask kosong"
+                                    else active.markDirty()
+                                } catch (e: Exception) { e.printStackTrace(); err = "Inpaint seleksi gagal: ${e.message ?: "error"}" }
+                                catch (e: OutOfMemoryError) { e.printStackTrace(); err = "Inpaint seleksi OOM: coba area lebih kecil" }
+                                finally {
+                                    val msg = err
+                                    val success = ok
+                                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                        isHealing = false
+                                        if (msg != null) healError = msg
+                                        else if (success) selectionEngine.clearSelection()
+                                        refreshComposite()
+                                    }
+                                }
+                            }
+                        }
                     }
                 )
                 DropdownMenuItem(text = { Text("Copy Area") }, onClick = {

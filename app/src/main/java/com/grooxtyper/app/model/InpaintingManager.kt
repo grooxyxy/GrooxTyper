@@ -79,10 +79,43 @@ class InpaintingManager {
 
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
-    // patch. Default CONTENT_AWARE (pengganti PS Content-Aware Fill).
+    // patch. Default MANGA_SEAMLESS (garis + screentone, riset Xie SIGGRAPH21).
     // mutableState agar pemilih mode di quick slider langsung recompose.
-    var healMode: HealMode by mutableStateOf(HealMode.CONTENT_AWARE)
+    var healMode: HealMode by mutableStateOf(HealMode.MANGA_SEAMLESS)
     var healFeather: Boolean by mutableStateOf(true)
+
+    /**
+     * Inpaint area seleksi (lasso/kotak/bubble) memakai mask seleksi full-kanvas.
+     * Dipakai fitur "Inpaint Seleksi": reuse jalur heal agar hemat + manga-aware.
+     * @return true bila ada piksel dikerjakan.
+     */
+    fun inpaintSelection(
+        layer: DrawingLayer,
+        selectionMask: Bitmap,
+        bounds: android.graphics.RectF
+    ): Boolean {
+        val src = layer.getPersistentBitmap()
+        if (src.width != selectionMask.width || src.height != selectionMask.height) {
+            android.util.Log.w("Inpaint", "selection: ukuran mask ${selectionMask.width}x${selectionMask.height} != src ${src.width}x${src.height}")
+            return false
+        }
+        if (bounds.width() < 4f || bounds.height() < 4f) {
+            android.util.Log.w("Inpaint", "selection: bounds terlalu kecil")
+            return false
+        }
+        // Dilatasi ringan agar anti-alias tepi seleksi ikut bersih.
+        if (dilateMask) {
+            try {
+                val tmp = Bitmap.createBitmap(selectionMask)
+                dilateMaskAlpha(tmp)
+                val c = android.graphics.Canvas(selectionMask)
+                c.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                c.drawBitmap(tmp, 0f, 0f, null)
+                runCatching { tmp.recycle() }
+            } catch (e: Exception) { e.printStackTrace() }
+        }
+        return inpaintHealDirty(src, selectionMask, bounds)
+    }
 
     fun inpaintLayerArea(
         layer: DrawingLayer,
@@ -211,6 +244,27 @@ class InpaintingManager {
                 }
             }
             if (mode == InpaintMode.PATCH_MATCH) {
+                // Hybrid otomatis (Telea vs PatchMatch, insight OpenCV anphiriel):
+                // tipis/kecil (<48px, <8k px) -> Telea cepat + garis halus;
+                // luas/bertekstur -> PatchMatch manga-aware.
+                val dirtyArea = bw.toLong() * bh.toLong()
+                val isThin = max(bw, bh) < 48 || dirtyArea < 8000L
+                if (isThin) {
+                    try {
+                        val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                        val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                        try {
+                            val (argb, tmp) = ensureArgbMask(maskCrop)
+                            try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 4.0) }
+                            finally { if (tmp) runCatching { argb.recycle() } }
+                            android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                            return true
+                        } finally {
+                            runCatching { srcCrop.recycle() }
+                            runCatching { maskCrop.recycle() }
+                        }
+                    } catch (e: Exception) { e.printStackTrace() } catch (e: OutOfMemoryError) { e.printStackTrace(); return false }
+                }
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
@@ -219,7 +273,14 @@ class InpaintingManager {
                         val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
                         if (!ok) {
                             android.util.Log.w("Inpaint", "heal: PatchMatch skip (mask/ROI kosong)")
-                            return false
+                            // Fallback Telea agar seleksi/heal kecil tetap ada hasil.
+                            try {
+                                val (argbF, tmpF) = ensureArgbMask(maskCrop)
+                                try { NativeEngine.nativeInpaintTelea(srcCrop, argbF, 5.0) }
+                                finally { if (tmpF) runCatching { argbF.recycle() } }
+                                android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                                return true
+                            } catch (_: Exception) { return false }
                         }
                         android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
                         return true

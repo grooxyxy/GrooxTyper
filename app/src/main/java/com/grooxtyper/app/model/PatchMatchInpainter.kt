@@ -26,7 +26,8 @@ import kotlin.random.Random
 enum class HealMode(val displayName: String, val desc: String) {
     CONTENT_AWARE("Content-Aware", "Seimbang warna + tekstur"),
     PRESERVE_STRUCTURE("Preserve Structure", "Garis manga tetap tajam"),
-    PRESERVE_TEXTURE("Preserve Texture", "Screentone/kertas mulus")
+    PRESERVE_TEXTURE("Preserve Texture", "Screentone/kertas mulus"),
+    MANGA_SEAMLESS("Manga Seamless", "Garis + screentone seimbang (terbaik)")
 }
 
 object PatchMatchInpainter {
@@ -91,6 +92,7 @@ object PatchMatchInpainter {
         val pad = when (mode) {
             HealMode.PRESERVE_STRUCTURE -> adaptivePad + 24
             HealMode.PRESERVE_TEXTURE -> (adaptivePad * 0.85f).toInt().coerceAtLeast(48)
+            HealMode.MANGA_SEAMLESS -> adaptivePad + 12
             else -> adaptivePad
         }
         val rx = (minX - pad).coerceIn(0, w - 1)
@@ -211,7 +213,16 @@ object PatchMatchInpainter {
         get() = when (currentHealMode) {
             HealMode.PRESERVE_STRUCTURE -> 3.0f
             HealMode.PRESERVE_TEXTURE -> 0.5f
+            HealMode.MANGA_SEAMLESS -> 2.0f
             else -> 1.0f
+        }
+    // screentoneWeight: MANGA_SEAMLESS + TEXTURE menjaga pola halftone (Xie et al.)
+    private val screentoneWeight: Float
+        get() = when (currentHealMode) {
+            HealMode.MANGA_SEAMLESS -> 0.6f
+            HealMode.PRESERVE_TEXTURE -> 0.8f
+            HealMode.PRESERVE_STRUCTURE -> 0.15f
+            else -> 0.35f
         }
 
     // ── Vasilias pipeline (disalin, sedikit adaptasi) ─────────────────────
@@ -536,8 +547,14 @@ object PatchMatchInpainter {
 
         var sum = 0.0
         var count = 0
-        // gradWeight untuk HealMode (dipertahankan demi brush-check & struktur)
+        // Manga-aware (Criminisi isophote + Xie screentone): warna + Sobel gradien + variansi halftone.
+        // Referensi: Barnes PatchMatch, Criminisi exemplar priority, Xie SIGGRAPH21 disentangle garis/screentone,
+        // Telea/NS insight (anphiriel: Telea kecil-halus, NS/PatchMatch tekstur-luas), LaMa/MI-GAN on-device butuh model 200MB (ditolak agar tetap ringan).
         val gw = gradWeight
+        val sw = screentoneWeight
+        var tMean = 0.0
+        var sMean = 0.0
+        var tCount = 0
         for (dy in -PATCH_RADIUS..PATCH_RADIUS) {
             val ty2 = ty + dy
             val sy2 = sy + dy
@@ -556,16 +573,73 @@ object PatchMatchInpainter {
                 val db = Color.blue(a) - Color.blue(b)
                 val weight = 1.0 / (1 + abs(dx) + abs(dy))
                 sum += (dr * dr + dg * dg + db * db) * weight
-                // Tambahan gradWeight untuk mode STRUCTURE/TEXTURE (jika >1, lebih sensitif tepi)
-                if (gw != 1.0f) {
-                    // Sederhana: bobot gradien via luminance diff (approx)
-                    // Tidak hitung Sobel penuh untuk hemat, cukup tambahkan penalty
-                    sum += (gw - 1f) * abs(dr + dg + db) * 0.1
+                // Sobel gradien: selisih tepi target vs sumber ( garis manga tetap nyambung ).
+                if (gw != 1.0f || currentHealMode == HealMode.MANGA_SEAMLESS || currentHealMode == HealMode.CONTENT_AWARE) {
+                    val tLum = (0.299 * Color.red(a) + 0.587 * Color.green(a) + 0.114 * Color.blue(a))
+                    val sLum = (0.299 * Color.red(b) + 0.587 * Color.green(b) + 0.114 * Color.blue(b))
+                    val tGx = lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2 + 1, ty2) - lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2 - 1, ty2)
+                    val sGx = lumAt(pixels, null, null, w, h, sx2 + 1, sy2) - lumAt(pixels, null, null, w, h, sx2 - 1, sy2)
+                    val tGy = lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2, ty2 + 1) - lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2, ty2 - 1)
+                    val sGy = lumAt(pixels, null, null, w, h, sx2, sy2 + 1) - lumAt(pixels, null, null, w, h, sx2, sy2 - 1)
+                    val gDiff = abs(tGx - sGx) + abs(tGy - sGy)
+                    val gScale = when (currentHealMode) {
+                        HealMode.PRESERVE_STRUCTURE -> (gw - 1f).coerceAtLeast(0f) * 2.0f + 1.0f
+                        HealMode.MANGA_SEAMLESS -> 2.0f
+                        HealMode.PRESERVE_TEXTURE -> 0.4f
+                        else -> 0.9f
+                    }
+                    sum += gDiff * gScale * weight * 0.6
+                    tMean += tLum * weight
+                    sMean += sLum * weight
+                    tCount++
                 }
                 count++
             }
         }
-        return if (count == 0) Float.MAX_VALUE else (sum / count).toFloat()
+        if (count == 0) return Float.MAX_VALUE
+        var cost = sum / count
+        // Screentone variance: samakan kontras halftone agar dot tidak jadi blur.
+        if (tCount > 4 && sw > 0f) {
+            val tm = tMean / tCount
+            val sm = sMean / tCount
+            var tv = 0.0
+            var sv = 0.0
+            var vc = 0
+            for (dy in -PATCH_RADIUS..PATCH_RADIUS step 2) {
+                val ty2 = ty + dy
+                val sy2 = sy + dy
+                if (ty2 !in 0 until h || sy2 !in 0 until h) continue
+                for (dx in -PATCH_RADIUS..PATCH_RADIUS step 2) {
+                    val tx2 = tx + dx
+                    val sx2 = sx + dx
+                    if (tx2 !in 0 until w || sx2 !in 0 until w) continue
+                    val t = ty2 * w + tx2
+                    val s = sy2 * w + sx2
+                    if (mask[s]) continue
+                    val a = if (mask[t]) guidePixels[t] else pixels[t]
+                    val b = pixels[s]
+                    val tl = (0.299 * Color.red(a) + 0.587 * Color.green(a) + 0.114 * Color.blue(a)) - tm
+                    val sl = (0.299 * Color.red(b) + 0.587 * Color.green(b) + 0.114 * Color.blue(b)) - sm
+                    tv += tl * tl
+                    sv += sl * sl
+                    vc++
+                }
+            }
+            if (vc > 0) {
+                tv /= vc
+                sv /= vc
+                cost += abs(tv - sv) * sw * 0.35
+            }
+        }
+        return cost.toFloat()
+    }
+
+    private fun lumAt(pixels: IntArray, mask: BooleanArray?, guide: IntArray?, w: Int, h: Int, x: Int, y: Int): Double {
+        val cx = x.coerceIn(0, w - 1)
+        val cy = y.coerceIn(0, h - 1)
+        val i = cy * w + cx
+        val c = if (mask != null && guide != null && mask[i]) guide[i] else pixels[i]
+        return 0.299 * Color.red(c) + 0.587 * Color.green(c) + 0.114 * Color.blue(c)
     }
 
     private fun buildNearestBackgroundGuide(

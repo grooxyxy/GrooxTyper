@@ -120,6 +120,18 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
         double totalWeight = 0.0;
         double rAcc = 0.0, gAcc = 0.0, bAcc = 0.0, aAcc = 0.0;
 
+        // Gradien citra di titik c untuk bobot isophote ala Telea (garis manga tetap nyambung).
+        auto lumAt = [&](int x, int y) -> double {
+            x = std::max(0, std::min(width - 1, x));
+            y = std::max(0, std::min(height - 1, y));
+            uint32_t px = srcPtr[y * width + x];
+            double r = (px & 0xFF), g = ((px >> 8) & 0xFF), b = ((px >> 16) & 0xFF);
+            return 0.299 * r + 0.587 * g + 0.114 * b;
+        };
+        double gx_c = (lumAt(cx + 1, cy) - lumAt(cx - 1, cy)) * 0.5;
+        double gy_c = (lumAt(cx, cy + 1) - lumAt(cx, cy - 1)) * 0.5;
+        double grad_c = std::sqrt(gx_c * gx_c + gy_c * gy_c) + 1e-4;
+
         int rad = (int)ceil(radius);
         for (int ry = -rad; ry <= rad; ++ry) {
             for (int rx = -rad; rx <= rad; ++rx) {
@@ -132,8 +144,17 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintTelea(
                         float dist2 = (float)(rx * rx + ry * ry);
                         float rad2 = (float)(radius * radius);
                         if (dist2 <= rad2 && dist2 > 0.0001f) {
-                            // weight = 1/dist^2 — tanpa sqrt (lebih cepat).
-                            float weight = 1.0f / dist2;
+                            // Telea: w = dir * dst * lev (disederhanakan, tanpa sqrt berlebih).
+                            // dst = 1/dist^2, lev = 1/(1+|T(c)-T(p)|), dir = | (p-c)·N | / (|p-c|*|N|).
+                            float dst = 1.0f / dist2;
+                            double lp = lumAt(nx, ny);
+                            double lc = lumAt(cx, cy);
+                            double lev = 1.0 / (1.0 + std::abs(lc - lp) / 32.0);
+                            double len = std::sqrt((double)dist2) + 1e-4;
+                            // Normal = gradien tegak lurus isophote; pakai grad_c sebagai proxy.
+                            double dir = std::abs((rx * gx_c + ry * gy_c) / (len * grad_c));
+                            dir = 0.25 + 0.75 * dir; // jangan nol total agar area datar tetap terisi
+                            float weight = (float)(dst * lev * dir);
                             uint32_t px = srcPtr[nIdx];
                             aAcc += ((px >> 24) & 0xFF) * weight;
                             bAcc += ((px >> 16) & 0xFF) * weight;
