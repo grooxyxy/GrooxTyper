@@ -160,6 +160,30 @@ class LayerManager(val width: Int, val height: Int) {
         return layer
     }
 
+    /** Duplikat drawing layer aktif (bitmap + opacity/blend/visibility). Null bila OOM / bukan gambar. */
+    fun duplicateLayer(id: String): DrawingLayer? {
+        val src = findDrawingLayerById(id) ?: return null
+        return try {
+            val copy = DrawingLayer(width, height, "${src.name} copy")
+            android.graphics.Canvas(copy.getPersistentBitmap()).drawBitmap(src.getPersistentBitmap(), 0f, 0f, null)
+            copy.tileMap.importFromBitmap(copy.getPersistentBitmap())
+            copy.opacity = src.opacity
+            copy.blendMode = src.blendMode
+            copy.isVisible = src.isVisible
+            copy.isAlphaLocked = src.isAlphaLocked
+            val idx = layers.indexOfFirst { it.id == id }.coerceAtLeast(0)
+            layers.add((idx + 1).coerceIn(0, layers.size), copy)
+            activeLayerId = copy.id
+            copy
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     fun addTextLayer(box: TextBox): TextLayer {
         val textLayer = TextLayer(box, name = "Text: ${box.text.take(16)}")
         layers.add(0, textLayer)

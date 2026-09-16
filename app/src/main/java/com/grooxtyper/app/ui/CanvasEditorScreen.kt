@@ -897,16 +897,34 @@ fun CanvasEditorScreen(
     var boxCurrent by remember { mutableStateOf<Offset?>(null) }
 
     fun runBubbleDetection() {
+        if (bubbleDetecting) return
         scope.launch {
             val snap = runCatching {
                 compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
-            }.getOrNull() ?: return@launch
+            }.getOrNull()
+            if (snap == null) {
+                healError = "Deteksi bubble gagal: memori habis saat salin kanvas"
+                return@launch
+            }
             bubbleDetecting = true
-            // Jalankan deteksi bubble heuristik on-device.
-            val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
-            runCatching { snap.recycle() }
-            detectedBubbles = found
-            bubbleDetecting = false
+            healError = null
+            try {
+                // Jalankan deteksi bubble heuristik on-device.
+                val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
+                detectedBubbles = found
+                if (found.isEmpty()) {
+                    healError = "Bubble tak ditemukan — coba turunkan ambang / area lebih dekat"
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                healError = "Deteksi bubble OOM — coba kanvas lebih kecil"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                healError = "Deteksi bubble gagal: ${e.message ?: "error"}"
+            } finally {
+                runCatching { snap.recycle() }
+                bubbleDetecting = false
+            }
             showBubbleOverlay = true
             refreshComposite()
         }
@@ -1258,6 +1276,11 @@ fun CanvasEditorScreen(
         }
     }
 
+    var pendingImport by remember { mutableStateOf<Bitmap?>(null) }
+    var pendingImportW by remember { mutableStateOf("") }
+    var pendingImportH by remember { mutableStateOf("") }
+    var pendingImportOpacity by remember { mutableFloatStateOf(1f) }
+
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -1266,33 +1289,15 @@ fun CanvasEditorScreen(
                 isImportingEditor = true
                 healError = null
                 try {
-                    // Decode di IO (budget piksel + koreksi EXIF), gambar HQ di Main.
+                    // Decode di IO (budget piksel + koreksi EXIF); hasil jadi layer baru via dialog.
                     val loaded = withContext(Dispatchers.IO) {
                         ImageImport.decodeContentUri(context.contentResolver, it)
                     } ?: return@launch
-                    try {
-                        val active = layerManager.ensureDrawingLayer()
-                        undoRedoManager.saveSnapshot(active)
-                        // Import TANPA resize di background (46MB) agar UI tidak freeze.
-                        withContext(Dispatchers.Default) {
-                            // Import TANPA resize: 1:1 no-scale (kelebihan di-crop,
-                            // kekurangan transparan) agar tidak mengubah piksel asli.
-                            // Untuk 720x16000 buka via Galeri agar kanvas = ukuran gambar.
-                            ImageImport.drawBitmapCenterNoScale(active.getPersistentBitmap(), loaded)
-                            active.tileMap.importFromBitmap(active.getPersistentBitmap())
-                            active.markDirty()
-                        }
-                        // Referensi cukup versi kecil agar hemat memori.
-                        referenceBitmap = downscaleForReference(loaded)
-                        refreshComposite()
-                        runCatching { canvasToScreenEarly() }
-                        if (loaded.width != canvasWidth || loaded.height != canvasHeight) {
-                            healError = "Import 1:1 ${loaded.width}x${loaded.height} ke kanvas ${canvasWidth}x${canvasHeight}: kelebihan di-crop. Untuk full 720x16000 buka via Galeri."
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                        healError = "Import gagal: ${e.message ?: "error"}"
-                    }
+                    pendingImport?.let { runCatching { if (!it.isRecycled) it.recycle() } }
+                    pendingImport = loaded
+                    pendingImportW = loaded.width.coerceIn(1, canvasWidth).toString()
+                    pendingImportH = loaded.height.coerceIn(1, canvasHeight).toString()
+                    pendingImportOpacity = 1f
                 } finally {
                     isImportingEditor = false
                 }
@@ -1363,6 +1368,9 @@ fun CanvasEditorScreen(
     // Layer yang dipakai selama satu stroke (disimpan agar tidak lookup per-move
     // dan tidak ganti layer di tengah goresan).
     var strokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
+    // Kunci status heal + layer saat press agar release tak terpengaruh ganti tool/layer.
+    var strokeIsHeal by remember { mutableStateOf(false) }
+    var lockedStrokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Eyedropper sementara via tahan jari (tanpa meninggalkan titik cat).
     var colorPickActive by remember { mutableStateOf(false) }
     var pressId by remember { mutableIntStateOf(0) }
@@ -1381,6 +1389,7 @@ fun CanvasEditorScreen(
         val isHugeForPick = canvasWidth.toLong() * canvasHeight > 4_000_000L
         delay(if (isHugeForPick) 1000L else 600L)
         if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
+            brushEngine.brushType != BrushType.HEAL_PATCH &&
             !pressMoved && !colorPickActive && strokeLayer != null && strokeLength == 0f
         ) {
             val sl = strokeLayer
@@ -1435,8 +1444,15 @@ fun CanvasEditorScreen(
 
                             if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
                                 // Gesture berubah jadi pan/zoom: akhiri stroke yang tertunda.
+                                // Heal yang setengah jadi dibuang eksplisit agar tak menggantung.
+                                if (strokeIsHeal) {
+                                    clearInpaintMask()
+                                    healError = "Sapuan heal dibatalkan (pinch/pan)"
+                                }
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
                                 strokeLayer = null
+                                lockedStrokeLayer = null
+                                strokeIsHeal = false
                                 brushEngine.endStroke()
                                 colorPickActive = false
                                 pressId++
@@ -1664,6 +1680,8 @@ fun CanvasEditorScreen(
                                         if (lastCanvasPoint == null) {
                                             val activeLayer = layerManager.ensureDrawingLayer()
                                             strokeLayer = activeLayer
+                                            lockedStrokeLayer = activeLayer
+                                            strokeIsHeal = true
                                             pressId++
                                             pressStartScreen = change.position
                                             pressMoved = false
@@ -1685,6 +1703,7 @@ fun CanvasEditorScreen(
                                                 healMaskStrokePaint.strokeWidth = brushEngine.size
                                                 val prev = lastCanvasPoint!!
                                                 cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, healMaskStrokePaint)
+                                                strokeLength += (touchCanvasPos - prev).getDistance()
                                                 val r = brushEngine.size
                                                 val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
                                                 inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1701,6 +1720,8 @@ fun CanvasEditorScreen(
                                             if (lastCanvasPoint == null) {
                                                 val activeLayer = layerManager.ensureDrawingLayer()
                                                 strokeLayer = activeLayer
+                                                lockedStrokeLayer = activeLayer
+                                                strokeIsHeal = true
                                                 pressId++
                                                 pressStartScreen = change.position
                                                 pressMoved = false
@@ -1722,6 +1743,7 @@ fun CanvasEditorScreen(
                                                     healMaskStrokePaint.strokeWidth = brushEngine.size
                                                     val prev = lastCanvasPoint!!
                                                     cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, healMaskStrokePaint)
+                                                    strokeLength += (touchCanvasPos - prev).getDistance()
                                                     val r = brushEngine.size
                                                     val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
                                                     inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
@@ -1738,6 +1760,8 @@ fun CanvasEditorScreen(
                                             pressMoved = false
                                             val activeLayer = layerManager.ensureDrawingLayer()
                                             strokeLayer = activeLayer
+                                            lockedStrokeLayer = activeLayer
+                                            strokeIsHeal = false
                                             // Kunci tipe brush sekali saat stroke dimulai,
                                             // bukan per-move (menghindari recompose tiap event).
                                             if (activeTool == ActiveTool.ERASER) {
@@ -1843,55 +1867,71 @@ fun CanvasEditorScreen(
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
-                                    // Commit heal PatchMatch jika ada mask (crop dirty saja).
+                                    // Commit heal: pakai status + layer yang dikunci saat press.
+                                    val wasHeal = strokeIsHeal
+                                    val commitLayer = lockedStrokeLayer ?: layerManager.getActiveLayer()
                                     if (wasHeal && inpaintMask != null && inpaintDirty != null) {
-                                        val maskToUse = inpaintMask
                                         val dirty = inpaintDirty
-                                        val targetLayer = layerManager.getActiveLayer()
-                                        if (maskToUse != null && dirty != null && targetLayer != null) {
+                                        val targetLayer = commitLayer
+                                        if (dirty != null && targetLayer != null) {
                                             if (isHealing) {
-                                                // Cegah antrean job paralel saat sapuan cepat.
-                                                clearInpaintMask()
+                                                healError = "Tunggu heal selesai… sapuan disimpan, coba lagi"
                                             } else {
-                                                isHealing = true
-                                                healError = null
-                                                scope.launch(Dispatchers.Default) {
-                                                    var ok = false
-                                                    var err: String? = null
-                                                    try {
-                                                        val l = dirty.left.toInt().coerceIn(0, canvasWidth)
-                                                        val t = dirty.top.toInt().coerceIn(0, canvasHeight)
-                                                        val r = dirty.right.toInt().coerceIn(0, canvasWidth)
-                                                        val b = dirty.bottom.toInt().coerceIn(0, canvasHeight)
-                                                        if (r > l && b > t) {
-                                                            ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), maskToUse, dirty)
+                                                // Snapshot copy agar job tak balapan dengan sapuan baru.
+                                                val l = dirty.left.toInt().coerceIn(0, canvasWidth - 1)
+                                                val t = dirty.top.toInt().coerceIn(0, canvasHeight - 1)
+                                                val r = dirty.right.toInt().coerceIn(1, canvasWidth)
+                                                val b = dirty.bottom.toInt().coerceIn(1, canvasHeight)
+                                                val maskSnapshot = runCatching {
+                                                    inpaintMask!!.copy(inpaintMask!!.config ?: Bitmap.Config.ARGB_8888, false)
+                                                }.getOrNull()
+                                                val dirtySnapshot = RectF(dirty)
+                                                clearInpaintMask()
+                                                if (maskSnapshot != null && r > l && b > t) {
+                                                    isHealing = true
+                                                    healError = null
+                                                    scope.launch(Dispatchers.Default) {
+                                                        var ok = false
+                                                        var err: String? = null
+                                                        try {
+                                                            ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), maskSnapshot, dirtySnapshot)
                                                             if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
-                                                            else targetLayer.markDirty()
+                                                            else {
+                                                                targetLayer.markDirty()
+                                                                targetLayer.tileMap.importFromBitmap(targetLayer.getPersistentBitmap())
+                                                            }
                                                             withContext(Dispatchers.Main) { refreshComposite() }
-                                                        } else {
-                                                            err = "Heal dilewati: area sapuan terlalu kecil"
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        e.printStackTrace()
-                                                        err = "Heal gagal: ${e.message ?: "error"}"
-                                                    } catch (e: OutOfMemoryError) {
-                                                        e.printStackTrace()
-                                                        err = "Heal gagal: memori habis, coba sapuan lebih kecil"
-                                                    } finally {
-                                                        val msg = err
-                                                        withContext(Dispatchers.Main) {
-                                                            isHealing = false
-                                                            if (msg != null) healError = msg
-                                                            recycleInpaintMask()
-                                                            refreshCanvasState++
+                                                        } catch (e: Exception) {
+                                                            e.printStackTrace()
+                                                            err = "Heal gagal: ${e.message ?: "error"}"
+                                                        } catch (e: OutOfMemoryError) {
+                                                            e.printStackTrace()
+                                                            err = "Heal gagal: memori habis, coba sapuan lebih kecil"
+                                                        } finally {
+                                                            val msg = err
+                                                            runCatching { maskSnapshot.recycle() }
+                                                            withContext(Dispatchers.Main) {
+                                                                isHealing = false
+                                                                if (msg != null) healError = msg
+                                                                refreshCanvasState++
+                                                            }
                                                         }
                                                     }
+                                                } else {
+                                                    runCatching { maskSnapshot?.recycle() }
+                                                    healError = "Heal dilewati: area sapuan terlalu kecil"
                                                 }
                                             }
                                         } else {
+                                            healError = "Sapuan heal kosong — coba sapu lagi"
                                             clearInpaintMask()
                                         }
+                                    } else if (wasHeal) {
+                                        healError = "Sapuan heal kosong — coba sapu lagi"
+                                        clearInpaintMask()
                                     }
+                                    strokeIsHeal = false
+                                    lockedStrokeLayer = null
                                     colorPickActive = false
                                     pressId++
                                     twoFingerActive = false
@@ -1938,6 +1978,8 @@ fun CanvasEditorScreen(
                             } else {
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
                                 strokeLayer = null
+                                lockedStrokeLayer = null
+                                strokeIsHeal = false
                                 brushEngine.endStroke()
                                 twoFingerActive = false
                                 lassoPath?.let { sketch ->
@@ -2450,7 +2492,9 @@ fun CanvasEditorScreen(
                         color = Accent,
                         trackColor = Color(0xFF38383A)
                     )
-                } else if (healError != null) {
+                }
+                if (healError != null) {
+                    if (busyNote != null) Spacer(modifier = Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             healError ?: "",
@@ -2469,6 +2513,92 @@ fun CanvasEditorScreen(
                     }
                 }
             }
+        }
+
+        // Dialog import sebagai layer baru: resize px + opacity awal.
+        if (pendingImport != null) {
+            AlertDialog(
+                onDismissRequest = { },
+                title = { Text("Import sebagai Layer", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text(
+                            "Asli ${pendingImport?.width ?: 0}x${pendingImport?.height ?: 0}px → layer ${canvasWidth}x${canvasHeight}px (tengah, center-crop).",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = pendingImportW,
+                                onValueChange = { pendingImportW = it.filter { c -> c.isDigit() }.take(5) },
+                                label = { Text("Lebar (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = pendingImportH,
+                                onValueChange = { pendingImportH = it.filter { c -> c.isDigit() }.take(5) },
+                                label = { Text("Tinggi (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Opacity layer: ${(pendingImportOpacity * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = pendingImportOpacity,
+                            onValueChange = { pendingImportOpacity = it.coerceIn(0.1f, 1f) },
+                            valueRange = 0.1f..1f
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val src = pendingImport ?: return@TextButton
+                        val w = pendingImportW.toIntOrNull()?.coerceIn(1, canvasWidth) ?: src.width.coerceIn(1, canvasWidth)
+                        val h = pendingImportH.toIntOrNull()?.coerceIn(1, canvasHeight) ?: src.height.coerceIn(1, canvasHeight)
+                        val op = pendingImportOpacity.coerceIn(0.1f, 1f)
+                        pendingImport = null
+                        isImportingEditor = true
+                        healError = null
+                        scope.launch(Dispatchers.Default) {
+                            try {
+                                val scaled = if (w == src.width && h == src.height) src
+                                else ImageImport.scaleTo(src, w, h)
+                                val nl = layerManager.addLayer("Imported ${w}x${h}")
+                                nl.opacity = op
+                                ImageImport.drawBitmapCenterNoScale(nl.getPersistentBitmap(), scaled)
+                                nl.tileMap.importFromBitmap(nl.getPersistentBitmap())
+                                nl.markDirty()
+                                if (scaled !== src) runCatching { scaled.recycle() }
+                                runCatching { if (!src.isRecycled) src.recycle() }
+                                referenceBitmap = downscaleForReference(
+                                    nl.getPersistentBitmap().copy(Bitmap.Config.ARGB_8888, false)
+                                )
+                                undoRedoManager.pushLayerAdd(nl.id)
+                                withContext(Dispatchers.Main) { refreshComposite() }
+                            } catch (e: OutOfMemoryError) {
+                                e.printStackTrace()
+                                withContext(Dispatchers.Main) { healError = "Import OOM — coba ukuran px lebih kecil" }
+                                runCatching { if (!src.isRecycled) src.recycle() }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                withContext(Dispatchers.Main) { healError = "Import gagal: ${e.message ?: "error"}" }
+                                runCatching { if (!src.isRecycled) src.recycle() }
+                            } finally {
+                                withContext(Dispatchers.Main) { isImportingEditor = false }
+                            }
+                        }
+                    }) { Text("Tambah layer", color = Accent) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        pendingImport?.let { runCatching { if (!it.isRecycled) it.recycle() } }
+                        pendingImport = null
+                    }) { Text("Batal", color = Color.Gray) }
+                },
+                containerColor = PanelBg
+            )
         }
 
         // Dialog export: format + kualitas + progres + hasil (tak lagi gagal diam-diam).

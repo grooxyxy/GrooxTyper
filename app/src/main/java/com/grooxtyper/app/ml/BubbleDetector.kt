@@ -77,8 +77,10 @@ class BubbleDetector {
         // Legacy seg: box(4) + 1 kelas + 32 koef = 37 kanal.
         private const val NUM_CHANNELS_SEG = 4 + 1 + NUM_MASK_COEF
         private const val CONF_THRESH = 0.25f
+        private const val TALL_CONF_THRESH = 0.15f
         private const val IOU_THRESH = 0.45f
         private const val MAX_DETECTIONS = 150
+        private const val TALL_MAX_DETECTIONS = 300
     }
 
     @Volatile
@@ -104,10 +106,10 @@ class BubbleDetector {
                 val longSide = max(bitmap.width, bitmap.height)
                 val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
                 val aspect = longSide / shortSide.toFloat()
-                if (aspect >= 4f || longSide > 3000) {
+                if (aspect >= 3f || longSide >= 2000) {
                     return@withContext detectTallOnnx(bitmap, session)
                 }
-                val dets = runOnnx(session, bitmap)
+                val dets = runOnnx(session, bitmap).filter { it.classId == 0 }
                 nms(dets, IOU_THRESH)
                     .sortedByDescending { it.score }
                     .take(MAX_DETECTIONS)
@@ -165,7 +167,7 @@ class BubbleDetector {
      * - detect 2-class baru: 1 output (1,6,8400) atau (1,8400,6), tanpa mask.
      * - seg legacy: 2 output (1,37,8400) + (1,32,160,160) dengan mask.
      */
-    private suspend fun runOnnx(session: OrtSession, src: Bitmap): List<DetectedBubble> {
+    private suspend fun runOnnx(session: OrtSession, src: Bitmap, conf: Float = CONF_THRESH): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
         // Letterbox: skala seragam + padding abu (114) ala YOLO.
         val scale = min(
@@ -227,7 +229,7 @@ class BubbleDetector {
                 val rawVal = res[0].value
                 val mat: Array<FloatArray>? = extractBatchMatrix(rawVal)
                 if (mat != null) {
-                    decodeDetect(mat, src.width, src.height, scale, padX, padY)
+                    decodeDetect(mat, src.width, src.height, scale, padX, padY, conf)
                 } else {
                     emptyList()
                 }
@@ -264,7 +266,8 @@ class BubbleDetector {
     private fun decodeDetect(
         mat: Array<FloatArray>,
         origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float
+        scale: Float, padX: Float, padY: Float,
+        conf: Float = CONF_THRESH
     ): List<DetectedBubble> {
         val d0 = mat.size
         if (d0 == 0) return emptyList()
@@ -299,7 +302,7 @@ class BubbleDetector {
                     bestCls = c
                 }
             }
-            if (bestScore < CONF_THRESH) continue
+            if (bestScore < conf) continue
             val cx = get(0, a)
             val cy = get(1, a)
             val w = get(2, a)
@@ -467,8 +470,8 @@ class BubbleDetector {
         val vertical = h >= w
         val shortSide = min(w, h)
         val longSide = max(w, h)
-        val win = shortSide.coerceIn(256, 1024)
-        val step = max(64, (win * 0.85f).toInt())
+        val win = shortSide.coerceIn(512, 1024)
+        val step = max(64, (win * 0.70f).toInt())
         val out = mutableListOf<DetectedBubble>()
         var offset = 0
         while (offset < longSide) {
@@ -483,7 +486,7 @@ class BubbleDetector {
             }
             if (crop != null) {
                 try {
-                    val found = runOnnx(session, crop)
+                    val found = runOnnx(session, crop, TALL_CONF_THRESH).filter { it.classId == 0 }
                     for (b in found) {
                         val r = b.boundingBox
                         val shifted = if (vertical) {
@@ -504,7 +507,7 @@ class BubbleDetector {
         }
         return nms(out, IOU_THRESH)
             .sortedByDescending { it.score }
-            .take(MAX_DETECTIONS)
+            .take(TALL_MAX_DETECTIONS)
     }
 
     // ------------------------------------------------------------------
@@ -515,7 +518,7 @@ class BubbleDetector {
         val longSide = max(bitmap.width, bitmap.height)
         val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
         val aspect = longSide / shortSide.toFloat()
-        if (aspect >= 4f || longSide > 3000) {
+        if (aspect >= 3f || longSide >= 2000) {
             return detectTallHeuristic(bitmap, model)
         }
         val (maxDim, thresh, cap) = rawParams(model)

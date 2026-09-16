@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Flip
@@ -435,6 +436,25 @@ fun LayerPanel(
                         Icon(Icons.Default.Add, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("New", color = Color.White, fontSize = 12.sp)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            val id = layerManager.activeLayerId
+                            if (id.isNotEmpty()) {
+                                val copy = layerManager.duplicateLayer(id)
+                                if (copy != null) {
+                                    undoManager.pushLayerAdd(copy.id)
+                                    onRefresh()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = PanelBgLight),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy layer", tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Copy", color = Color.White, fontSize = 12.sp)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
