@@ -37,7 +37,8 @@ class FileExportManager(private val context: Context) {
             layerManager.renderComposite(composite)
 
             val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
-            val file = File(picturesDir, "$filename${format.extension}")
+            val grooxDir = File(picturesDir, "GrooxTyper").apply { if (!exists()) mkdirs() }
+            val file = File(grooxDir, "$filename${format.extension}")
 
             try {
                 val os: OutputStream = FileOutputStream(file)
