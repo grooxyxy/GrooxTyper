@@ -786,6 +786,19 @@ class FontRegistry(private val context: Context) {
                 }
             }
         }
+        // Font komik bawaan (OFL, lihat assets/fonts/OFL.txt).
+        runCatching {
+            context.assets.list("fonts")
+                ?.filter { it.endsWith(".ttf", true) || it.endsWith(".otf", true) }
+                ?.sorted()
+                ?.forEach { name ->
+                    try {
+                        list.add(name.substringBeforeLast('.') to Typeface.createFromAsset(context.assets, "fonts/$name"))
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+        }
         return list
     }
 

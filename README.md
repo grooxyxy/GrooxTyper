@@ -81,3 +81,14 @@ python -c "from ultralytics import YOLO; YOLO('best.pt').export(format='onnx', i
 
 CI: GitHub Actions (`.github/workflows/android.yml`) mem-build APK debug +
 release dan mengunggah artefak.
+
+## Font komik bawaan
+
+`app/src/main/assets/fonts/` berisi 18 font gaya komik berlisensi SIL Open Font
+License 1.1 (lihat `OFL.txt`), cocok untuk dialog/SFX webtoon EN/ID:
+Bangers, Bungee, Caveat Brush, Comic Neue (Regular/Bold), Gochi Hand,
+Neucha, Patrick Hand, Patrick Hand SC, Kalam (Regular/Bold),
+Architects Daughter, Indie Flower, Shadows Into Light, Titan One,
+RocknRoll One (mendukung kana/kanji), Short Stack, Sniglet.
+Sumber: repo `google/fonts` (masing-masing `ofl/<nama>/`). Font custom
+`.ttf`/`.otf` tetap bisa diimpor manual dan muncul setelah font bawaan.
