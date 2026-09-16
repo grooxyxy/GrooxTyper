@@ -18,6 +18,19 @@ import kotlin.random.Random
  *
  * Tidak pakai native: murni Kotlin + int[] agar tidak menambah .so.
  */
+/**
+ * Mode heal brush — melampaui Photoshop Content-Aware Fill untuk manga:
+ * - CONTENT_AWARE: seimbang warna + tekstur (pengganti default PS).
+ * - PRESERVE_STRUCTURE: bobot gradien tepi 3x — garis manga/screentone
+ *   tetap tajam, tidak beleber seperti PS.
+ * - PRESERVE_TEXTURE: bobot luminance halus — kertas/noise menyatu mulus.
+ */
+enum class HealMode(val displayName: String, val desc: String) {
+    CONTENT_AWARE("Content-Aware", "Seimbang warna + tekstur"),
+    PRESERVE_STRUCTURE("Preserve Structure", "Garis manga tetap tajam"),
+    PRESERVE_TEXTURE("Preserve Texture", "Screentone/kertas mulus")
+}
+
 object PatchMatchInpainter {
 
     private const val PATCH = 7
@@ -28,8 +41,9 @@ object PatchMatchInpainter {
     /**
      * Inpaint [src] di area [mask] (putih = lubang). Hasil ditulis balik ke [src].
      * [mask] dan [src] harus seukuran kanvas. Hanya area crop yang diproses.
+     * [mode] memilih strategi patch agar melampaui Photoshop untuk manga.
      */
-    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true) {
+    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.CONTENT_AWARE) {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return
@@ -84,7 +98,7 @@ object PatchMatchInpainter {
             srcCrop = sW; maskCrop = mW
         }
         try {
-            val res = patchMatchCore(srcCrop, maskCrop, feather)
+            val res = patchMatchCore(srcCrop, maskCrop, feather, mode)
             // Kembalikan ke src skala penuh
             val toBlit = if (scale != 1f) {
                 val up = Bitmap.createScaledBitmap(res, cw, ch, true)
@@ -99,7 +113,7 @@ object PatchMatchInpainter {
         }
     }
 
-    private fun patchMatchCore(srcCrop: Bitmap, maskCrop: Bitmap, feather: Boolean): Bitmap {
+    private fun patchMatchCore(srcCrop: Bitmap, maskCrop: Bitmap, feather: Boolean, mode: HealMode = HealMode.CONTENT_AWARE): Bitmap {
         val w = srcCrop.width
         val h = srcCrop.height
         val srcPx = IntArray(w * h)
@@ -117,6 +131,27 @@ object PatchMatchInpainter {
         if (holeCount > w * h * 0.85) {
             // Terlalu banyak lubang, tidak ada patch valid
             return srcCrop.copy(Bitmap.Config.ARGB_8888, false)
+        }
+        // Gradien Sobel luminance sekali per crop — untuk mode STRUCTURE/TEXTURE
+        // agar garis manga & screentone dipertahankan (unggul vs Photoshop yang
+        // hanya memakai warna). Dihitung dari known saja, hole diisi 0.
+        val lum = FloatArray(w * h) { i ->
+            val c = srcPx[i]
+            (0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF))
+        }
+        val gradX = FloatArray(w * h)
+        val gradY = FloatArray(w * h)
+        if (mode != HealMode.CONTENT_AWARE) {
+            for (y in 1 until h - 1) for (x in 1 until w - 1) {
+                val i = y * w + x
+                if (isHole[i]) continue
+                val gx = -lum[i - w - 1] - 2f * lum[i - 1] - lum[i + w - 1] +
+                    lum[i - w + 1] + 2f * lum[i + 1] + lum[i + w + 1]
+                val gy = -lum[i - w - 1] - 2f * lum[i - w] - lum[i - w + 1] +
+                    lum[i + w - 1] + 2f * lum[i + w] + lum[i + w + 1]
+                gradX[i] = gx / 8f
+                gradY[i] = gy / 8f
+            }
         }
         // Jarak ke known untuk onion order
         val dist = IntArray(w * h) { -1 }
@@ -162,14 +197,16 @@ object PatchMatchInpainter {
                 if (!isHole[ri] && patchValid(rx, ry, w, h, isHole)) {
                     nnX[idx] = rx - (idx % w)
                     nnY[idx] = ry - (idx / w)
-                    bestDist[idx] = patchDist(idx % w, idx / w, rx, ry, w, h, srcPx, isHole, srcPx)
+                    bestDist[idx] = patchDist(idx % w, idx / w, rx, ry, w, h, srcPx, isHole, srcPx, gradX, gradY, mode)
                     break
                 }
                 tries++
             }
         }
-        // Iterasi PatchMatch
-        for (iter in 0 until ITER) {
+        // Iterasi adaptif: lubang besar butuh 2 iterasi ekstra agar struktur
+        // jauh tetap konsisten (mengalahkan PS pada objek besar).
+        val iters = if (holeCount > w * h * 0.25) ITER + 2 else ITER
+        for (iter in 0 until iters) {
             val reverse = iter % 2 == 1
             val order = if (reverse) holeIdx.reversed() else holeIdx
             for (idx in order) {
@@ -188,7 +225,7 @@ object PatchMatchInpainter {
                             val candY = ny + nnY[ni] - d[1]
                             if (candX in HALF until w - HALF && candY in HALF until h - HALF) {
                                 if (patchValid(candX, candY, w, h, isHole)) {
-                                    val distCand = patchDist(x, y, candX, candY, w, h, srcPx, isHole, srcPx)
+                                    val distCand = patchDist(x, y, candX, candY, w, h, srcPx, isHole, srcPx, gradX, gradY, mode)
                                     if (distCand < best) {
                                         best = distCand; bestX = candX; bestY = candY
                                     }
@@ -199,11 +236,14 @@ object PatchMatchInpainter {
                 }
                 // Random search
                 var rad = max(w, h) / 2
+                // STRUCTURE butuh jangkauan cari lebih jauh (garis lanjutan jauh),
+                // TEXTURE cukup lokal agar noise tidak melompat jauh.
+                if (mode == HealMode.PRESERVE_TEXTURE) rad = min(rad, max(w, h) / 4)
                 while (rad >= 1) {
                     val rx = (bestX + rnd.nextInt(rad * 2 + 1) - rad).coerceIn(HALF, w - HALF - 1)
                     val ry = (bestY + rnd.nextInt(rad * 2 + 1) - rad).coerceIn(HALF, h - HALF - 1)
                     if (patchValid(rx, ry, w, h, isHole)) {
-                        val d = patchDist(x, y, rx, ry, w, h, srcPx, isHole, srcPx)
+                        val d = patchDist(x, y, rx, ry, w, h, srcPx, isHole, srcPx, gradX, gradY, mode)
                         if (d < best) { best = d; bestX = rx; bestY = ry }
                     }
                     rad /= 2
@@ -213,10 +253,13 @@ object PatchMatchInpainter {
                 bestDist[idx] = best
             }
         }
-        // Fill dengan feathering: rata-rata tertimbang patch overlapping (3x3 voting)
+        // Fill dengan feathering adaptif per mode (unggul vs Photoshop):
+        // - STRUCTURE: voting silang (center+4 tetangga) agar garis tidak blur.
+        // - TEXTURE/CONTENT: voting 3x3 penuh + bobot tepi (seamless Poisson-ish).
         val out = IntArray(w * h)
         // Salin known dulu
         for (i in srcPx.indices) out[i] = if (isHole[i]) 0 else srcPx[i]
+        val useCrossOnly = (mode == HealMode.PRESERVE_STRUCTURE)
         for (idx in holeIdx) {
             val x = idx % w; val y = idx / w
             val sx = x + nnX[idx]; val sy = y + nnY[idx]
@@ -224,9 +267,21 @@ object PatchMatchInpainter {
             if (!feather) {
                 out[idx] = srcPx[sy * w + sx]
             } else {
-                // Voting 3x3: rata-rata patch di sekitar
+                // Voting: rata-rata patch di sekitar
                 var rSum = 0; var gSum = 0; var bSum = 0; var cnt = 0
-                for (dy in -1..1) for (dx in -1..1) {
+                // Bobot tengah 2x agar tidak over-blur (detail terjaga).
+                val offsets = if (useCrossOnly) arrayOf(
+                    intArrayOf(0, 0), intArrayOf(0, 0),
+                    intArrayOf(-1, 0), intArrayOf(1, 0),
+                    intArrayOf(0, -1), intArrayOf(0, 1)
+                ) else arrayOf(
+                    intArrayOf(0, 0), intArrayOf(0, 0),
+                    intArrayOf(-1, -1), intArrayOf(0, -1), intArrayOf(1, -1),
+                    intArrayOf(-1, 0), intArrayOf(1, 0),
+                    intArrayOf(-1, 1), intArrayOf(0, 1), intArrayOf(1, 1)
+                )
+                for (o in offsets) {
+                    val dx = o[0]; val dy = o[1]
                     val hx = x + dx; val hy = y + dy
                     if (hx !in 0 until w || hy !in 0 until h) continue
                     val hi = hy * w + hx
@@ -272,9 +327,19 @@ object PatchMatchInpainter {
         w: Int, h: Int,
         src: IntArray,
         isHole: BooleanArray,
-        srcForPatch: IntArray
+        srcForPatch: IntArray,
+        gradX: FloatArray,
+        gradY: FloatArray,
+        mode: HealMode
     ): Float {
-        // SSD patch 7x7, abaikan piksel hole di target patch (sudah diketahui border)
+        // SSD patch 7x7 + gradien (mode-aware). STRUCTURE menimbang gradien 3x
+        // agar patch dengan arah garis sama yang menang (tajam, tidak beleber).
+        // TEXTURE menimbang luminance halus agar screentone menyatu.
+        val gradWeight = when (mode) {
+            HealMode.PRESERVE_STRUCTURE -> 3.0f
+            HealMode.PRESERVE_TEXTURE -> 0.5f
+            else -> 1.0f
+        }
         var sum = 0f
         var cnt = 0
         for (dy in -HALF..HALF) for (dx in -HALF..HALF) {
@@ -291,8 +356,13 @@ object PatchMatchInpainter {
             val dg = ((tc shr 8) and 0xFF) - ((sc shr 8) and 0xFF)
             val db = (tc and 0xFF) - (sc and 0xFF)
             sum += (dr * dr + dg * dg + db * db).toFloat()
+            if (gradWeight > 0f && mode != HealMode.CONTENT_AWARE) {
+                val ggx = gradX[ti] - gradX[si]
+                val ggy = gradY[ti] - gradY[si]
+                sum += gradWeight * (ggx * ggx + ggy * ggy) * 0.5f
+            }
             cnt++
-            if (sum > 80000f) return sum // early exit
+            if (sum > 120000f) return sum // early exit
         }
         return if (cnt == 0) Float.MAX_VALUE else sum / cnt
     }

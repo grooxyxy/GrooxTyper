@@ -525,8 +525,10 @@ fun CanvasEditorScreen(
      * Kembalikan false bila pemanggil harus render penuh: struktur tak cocok
      * ATAU regio menyentuh teks tampil (teks vector tak ikut ter-blit).
      * Clear-then-draw agar penghapus ikut tampil live (bukan stale).
+     * [deferRefresh]: true = jangan recompose per blit (batch 1x per event).
+     * WAJIB untuk 720x16000: 64 blit × recompose per move = delay parah.
      */
-    fun blitLayerToComposite(layer: DrawingLayer, p1: Offset?, p2: Offset): Boolean {
+    fun blitLayerToComposite(layer: DrawingLayer, p1: Offset?, p2: Offset, deferRefresh: Boolean = false): Boolean {
         if (!isSingleLayerFastPath()) return false
         val rad = brushEngine.size * 1.5f + 16f
         val ax = p1?.x ?: p2.x
@@ -562,7 +564,7 @@ fun CanvasEditorScreen(
             e.printStackTrace()
             return false
         }
-        refreshCanvasLight()
+        if (!deferRefresh) refreshCanvasLight()
         return true
     }
 
@@ -643,22 +645,52 @@ fun CanvasEditorScreen(
     var inpaintMask by remember { mutableStateOf<Bitmap?>(null) }
     var inpaintMaskCanvas by remember { mutableStateOf<android.graphics.Canvas?>(null) }
     var inpaintDirty by remember { mutableStateOf<RectF?>(null) }
-    fun ensureInpaintMask(): Pair<Bitmap, android.graphics.Canvas> {
+    // Mask heal 720x16000 = 46MB. Alokasi dilindungi OOM (return null bila
+    // memori mepet) agar sapuan heal tidak crash. Dipakai ulang selama stroke,
+    // dibebaskan via recycleInpaintMask() setelah commit agar tidak resident.
+    fun ensureInpaintMask(): Pair<Bitmap, android.graphics.Canvas>? {
         var bmp = inpaintMask
         var cv = inpaintMaskCanvas
         if (bmp == null || bmp.isRecycled || bmp.width != canvasWidth || bmp.height != canvasHeight) {
-            bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
-            cv = android.graphics.Canvas(bmp)
+            // Bebaskan sisa lama dulu sebelum alokasi jumbo.
+            runCatching { bmp?.takeIf { !it.isRecycled }?.recycle() }
+            try {
+                bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                inpaintMask = null
+                inpaintMaskCanvas = null
+                inpaintDirty = null
+                return null
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return null
+            }
+            cv = android.graphics.Canvas(bmp!!)
             inpaintMask = bmp
             inpaintMaskCanvas = cv
             inpaintDirty = null
         }
-        return bmp to cv!!
+        val b = bmp ?: return null
+        val c = cv ?: return null
+        return b to c
     }
     fun clearInpaintMask() {
         inpaintMask?.let { bm ->
-            android.graphics.Canvas(bm).drawColor(AndroidColor.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+            if (!bm.isRecycled) {
+                runCatching {
+                    android.graphics.Canvas(bm).drawColor(AndroidColor.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+                }
+            }
         }
+        inpaintDirty = null
+    }
+    // Bebaskan 46MB mask setelah commit heal (anti-OOM crash di 720x16000).
+    // Alokasi berikutnya dibuat ulang di ensureInpaintMask().
+    fun recycleInpaintMask() {
+        runCatching { inpaintMask?.takeIf { !it.isRecycled }?.recycle() }
+        inpaintMask = null
+        inpaintMaskCanvas = null
         inpaintDirty = null
     }
 
@@ -1572,34 +1604,85 @@ fun CanvasEditorScreen(
                                             pressMoved = false
                                             undoRedoManager.saveSnapshot(activeLayer)
                                             brushEngine.beginStroke()
-                                            val (bmp, cv) = ensureInpaintMask()
-                                            val p = android.graphics.Paint().apply {
-                                                isAntiAlias = true; style = android.graphics.Paint.Style.FILL
-                                                color = AndroidColor.WHITE
+                                            val maskPair = ensureInpaintMask()
+                                            if (maskPair != null) {
+                                                val (bmp, cv) = maskPair
+                                                val p = android.graphics.Paint().apply {
+                                                    isAntiAlias = true; style = android.graphics.Paint.Style.FILL
+                                                    color = AndroidColor.WHITE
+                                                }
+                                                cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
+                                                val r = brushEngine.size
+                                                val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
+                                                inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                                refreshCanvasState++
                                             }
-                                            cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
-                                            val r = brushEngine.size
-                                            val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
-                                            inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
-                                            refreshCanvasState++
                                         } else {
-                                            val (bmp, cv) = ensureInpaintMask()
-                                            val p = android.graphics.Paint().apply {
-                                                isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
-                                                strokeCap = android.graphics.Paint.Cap.ROUND
-                                                strokeJoin = android.graphics.Paint.Join.ROUND
-                                                strokeWidth = brushEngine.size; color = AndroidColor.WHITE
+                                            val maskPair = ensureInpaintMask()
+                                            if (maskPair != null) {
+                                                val (bmp, cv) = maskPair
+                                                val p = android.graphics.Paint().apply {
+                                                    isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
+                                                    strokeCap = android.graphics.Paint.Cap.ROUND
+                                                    strokeJoin = android.graphics.Paint.Join.ROUND
+                                                    strokeWidth = brushEngine.size; color = AndroidColor.WHITE
+                                                }
+                                                val prev = lastCanvasPoint!!
+                                                cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
+                                                val r = brushEngine.size
+                                                val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
+                                                inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                                if ((change.position - pressStartScreen).getDistance() > 16f) pressMoved = true
+                                                refreshCanvasState++
+                                            } else {
+                                                if ((change.position - pressStartScreen).getDistance() > 16f) pressMoved = true
                                             }
-                                            val prev = lastCanvasPoint!!
-                                            cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
-                                            val r = brushEngine.size
-                                            val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
-                                            inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
-                                            if ((change.position - pressStartScreen).getDistance() > 16f) pressMoved = true
-                                            refreshCanvasState++
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        if (colorPickActive) {
+                                        // Heal brush via tool BRUSH (tipe HEAL_PATCH): alihkan ke
+                                        // akumulasi mask inpaint agar berfungsi di kedua tool.
+                                        if (brushEngine.brushType == BrushType.HEAL_PATCH) {
+                                            if (lastCanvasPoint == null) {
+                                                val activeLayer = layerManager.ensureDrawingLayer()
+                                                strokeLayer = activeLayer
+                                                pressId++
+                                                pressStartScreen = change.position
+                                                pressMoved = false
+                                                undoRedoManager.saveSnapshot(activeLayer)
+                                                brushEngine.beginStroke()
+                                                val maskPair = ensureInpaintMask()
+                                                if (maskPair != null) {
+                                                    val (bmp, cv) = maskPair
+                                                    val p = android.graphics.Paint().apply {
+                                                        isAntiAlias = true; style = android.graphics.Paint.Style.FILL
+                                                        color = AndroidColor.WHITE
+                                                    }
+                                                    cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
+                                                    val r = brushEngine.size
+                                                    val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
+                                                    inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                                    refreshCanvasState++
+                                                }
+                                            } else {
+                                                val maskPair = ensureInpaintMask()
+                                                if (maskPair != null) {
+                                                    val (bmp, cv) = maskPair
+                                                    val p = android.graphics.Paint().apply {
+                                                        isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
+                                                        strokeCap = android.graphics.Paint.Cap.ROUND
+                                                        strokeJoin = android.graphics.Paint.Join.ROUND
+                                                        strokeWidth = brushEngine.size; color = AndroidColor.WHITE
+                                                    }
+                                                    val prev = lastCanvasPoint!!
+                                                    cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
+                                                    val r = brushEngine.size
+                                                    val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
+                                                    inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                                    if ((change.position - pressStartScreen).getDistance() > 16f) pressMoved = true
+                                                    refreshCanvasState++
+                                                }
+                                            }
+                                        } else if (colorPickActive) {
                                             // Mode tahan-jari: ambil warna, jangan melukis.
                                             pickColorAt(change.position)
                                         } else if (lastCanvasPoint == null) {
@@ -1635,8 +1718,13 @@ fun CanvasEditorScreen(
                                             val jump = (touchCanvasPos - startPt).getDistance()
                                             val stepLen = (brushEngine.size * 0.5f).coerceIn(4f, 24f)
                                             val movePts = ArrayList<Offset>()
+                                            // Huge 720x16000: batasi interpolasi luar 24 titik
+                                            // (bukan 64) + inner 32 steps → cegah 2000+ drawLine
+                                            // per event yang bikin delay + GC thrash.
+                                            val isHugeCanvas = canvasWidth.toLong() * canvasHeight > 4_000_000L
+                                            val maxInterp = if (isHugeCanvas) 24 else 64
                                             if (jump > stepLen * 2f) {
-                                                val segments = (jump / stepLen).toInt().coerceAtMost(64)
+                                                val segments = (jump / stepLen).toInt().coerceAtMost(maxInterp)
                                                 for (si in 1..segments) {
                                                     val t = si / (segments + 1f)
                                                     movePts.add(
@@ -1650,6 +1738,7 @@ fun CanvasEditorScreen(
                                             movePts.add(touchCanvasPos)
                                             if (strokeLayer == null) strokeLayer = target
                                             var needFullRefresh = false
+                                            var didBlit = false
                                             for (pt in movePts) {
                                                 // pt sudah di ruang kanvas; cek gerakan layar pakai titik event.
                                                 if ((change.position - pressStartScreen).getDistance() > 16f) {
@@ -1661,14 +1750,20 @@ fun CanvasEditorScreen(
                                                 strokeLength += dist
                                                 val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
                                                 brushEngine.strokeSegmentOnLayer(target, prev, cpt, progress)
-                                                // Jalur cepat per titik; false bila regio
-                                                // menyentuh teks → render penuh sekali.
-                                                if (!blitLayerToComposite(target, prev, cpt)) {
+                                                // Batch: tunda recompose per titik (deferRefresh)
+                                                // agar 1 touch event = 1 recompose, bukan N.
+                                                if (!blitLayerToComposite(target, prev, cpt, deferRefresh = true)) {
                                                     needFullRefresh = true
+                                                } else {
+                                                    didBlit = true
                                                 }
                                                 lastCanvasPoint = cpt
                                             }
-                                            if (needFullRefresh) refreshComposite()
+                                            if (needFullRefresh) {
+                                                refreshComposite()
+                                            } else if (didBlit) {
+                                                refreshCanvasLight()
+                                            }
                                         }
                                     }
                                     lastCanvasPoint = touchCanvasPos
@@ -1678,11 +1773,13 @@ fun CanvasEditorScreen(
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
                                     val wasInpaint = activeTool == ActiveTool.INPAINT
+                                    val wasHealBrush = wasBrush && brushEngine.brushType == BrushType.HEAL_PATCH
+                                    val wasHeal = wasInpaint || wasHealBrush
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
-                                    // Commit heal PatchMatch jika ada mask
-                                    if (wasInpaint && inpaintMask != null && inpaintDirty != null) {
+                                    // Commit heal PatchMatch jika ada mask (crop dirty saja).
+                                    if (wasHeal && inpaintMask != null && inpaintDirty != null) {
                                         val maskToUse = inpaintMask
                                         val dirty = inpaintDirty
                                         val targetLayer = layerManager.getActiveLayer()
@@ -1694,14 +1791,16 @@ fun CanvasEditorScreen(
                                                     val r = dirty.right.toInt().coerceIn(0, canvasWidth)
                                                     val b = dirty.bottom.toInt().coerceIn(0, canvasHeight)
                                                     if (r > l && b > t) {
-                                                        inpaintingManager.inpaintBitmapDirect(targetLayer.getPersistentBitmap(), maskToUse)
+                                                        inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), maskToUse, dirty)
                                                         targetLayer.markDirty()
                                                         withContext(Dispatchers.Main) { refreshComposite() }
                                                     }
                                                 } catch (e: Exception) { e.printStackTrace() } catch (e: OutOfMemoryError) { e.printStackTrace() }
                                                 finally {
-                                                    clearInpaintMask()
-                                                    withContext(Dispatchers.Main) { refreshCanvasState++ }
+                                                    withContext(Dispatchers.Main) {
+                                                        recycleInpaintMask()
+                                                        refreshCanvasState++
+                                                    }
                                                 }
                                             }
                                         } else {
@@ -1743,7 +1842,9 @@ fun CanvasEditorScreen(
                                     }
                                     // Satu render penuh per stroke menutup jalur cepat
                                     // inkremental (menjamin konsisten bila ada teks/layer).
-                                    if (hadStroke && wasBrush) refreshComposite()
+                                    // Heal brush menunggu commit async (recycle mask) agar
+                                    // tidak render sebelum hasil PatchMatch kembali.
+                                    if (hadStroke && wasBrush && !wasHealBrush) refreshComposite()
                                     textHandleMode = TextHandle.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
@@ -2081,6 +2182,47 @@ fun CanvasEditorScreen(
                         color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
                         modifier = Modifier.width(40.dp),
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
+                    )
+                }
+                // Heal brush modes — melampaui Photoshop Content-Aware untuk manga.
+                if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.HEAL_PATCH) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Spacer(modifier = Modifier.width(38.dp))
+                        Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
+                        com.grooxtyper.app.model.HealMode.values().forEach { hm ->
+                            val sel = inpaintingManager.healMode == hm
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) Accent else Color(0xFF2C2C2E))
+                                    .clickable { inpaintingManager.healMode = hm }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    when (hm) {
+                                        com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Aware"
+                                        com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure"
+                                        com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture"
+                                    },
+                                    color = Color.White, fontSize = 10.sp,
+                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        when (inpaintingManager.healMode) {
+                            com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Content-Aware: seimbang (pengganti PS)."
+                            com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure: garis manga tetap tajam."
+                            com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
+                        },
+                        color = Color.Gray, fontSize = 10.sp,
+                        modifier = Modifier.padding(start = 78.dp)
                     )
                 }
             }

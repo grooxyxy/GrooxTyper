@@ -2,6 +2,9 @@ package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.grooxtyper.app.native.NativeEngine
 
 /**
@@ -24,6 +27,11 @@ enum class InpaintMode(val displayName: String) {
 class InpaintingManager {
 
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
+    // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
+    // patch. Default CONTENT_AWARE (pengganti PS Content-Aware Fill).
+    // mutableState agar pemilih mode di quick slider langsung recompose.
+    var healMode by mutableStateOf(HealMode.CONTENT_AWARE)
+    var healFeather by mutableStateOf(true)
 
     fun inpaintLayerArea(
         layer: DrawingLayer,
@@ -34,7 +42,7 @@ class InpaintingManager {
         if (mode == InpaintMode.PATCH_MATCH) {
             // PatchMatch lebih bagus untuk manga (tekstur garis) — fallback ke Telea bila gagal
             try {
-                PatchMatchInpainter.inpaint(srcBitmap, maskBitmap, feather = true)
+                PatchMatchInpainter.inpaint(srcBitmap, maskBitmap, feather = healFeather, mode = healMode)
                 layer.tileMap.importFromBitmap(srcBitmap)
                 layer.markDirty()
                 return
@@ -61,13 +69,68 @@ class InpaintingManager {
     fun inpaintBitmapDirect(src: Bitmap, mask: Bitmap) {
         try {
             if (mode == InpaintMode.PATCH_MATCH) {
-                PatchMatchInpainter.inpaint(src, mask, feather = true)
+                PatchMatchInpainter.inpaint(src, mask, feather = healFeather, mode = healMode)
             } else {
                 NativeEngine.nativeInpaintTelea(src, mask, 5.0)
             }
         } catch (e: Exception) {
             e.printStackTrace()
             try { NativeEngine.nativeInpaintTelea(src, mask, 5.0) } catch (_: Exception) {}
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Heal brush satu sapuan: inpaint hanya di dalam [dirty] (RectF kanvas)
+     * agar 720x16000 tidak memindai 46MB penuh. Dipakai commit heal brush
+     * interaktif — jauh lebih cepat dari Photoshop yang memproses layer penuh.
+     */
+    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF) {
+        try {
+            val l = dirty.left.toInt().coerceIn(0, src.width - 1)
+            val t = dirty.top.toInt().coerceIn(0, src.height - 1)
+            val r = dirty.right.toInt().coerceIn(1, src.width)
+            val b = dirty.bottom.toInt().coerceIn(1, src.height)
+            if (r - l < 4 || b - t < 4) {
+                inpaintBitmapDirect(src, mask)
+                return
+            }
+            // Crop sempit di sekitar sapuan + padding agar patch punya sumber.
+            val pad = 24
+            val cl = maxOf(0, l - pad)
+            val ct = maxOf(0, t - pad)
+            val cr = minOf(src.width, r + pad)
+            val cb = minOf(src.height, b + pad)
+            val cw = cr - cl
+            val ch = cb - ct
+            if (cw <= 8 || ch <= 8) return
+            if (mode == InpaintMode.PATCH_MATCH) {
+                try {
+                    val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                    val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                    try {
+                        PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
+                        android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                    } finally {
+                        runCatching { srcCrop.recycle() }
+                        runCatching { maskCrop.recycle() }
+                    }
+                } catch (e: OutOfMemoryError) {
+                    e.printStackTrace()
+                    inpaintBitmapDirect(src, mask)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    inpaintBitmapDirect(src, mask)
+                }
+            } else {
+                inpaintBitmapDirect(src, mask)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try { inpaintBitmapDirect(src, mask) } catch (_: Exception) {}
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
         }
     }
 

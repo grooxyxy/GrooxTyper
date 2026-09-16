@@ -131,8 +131,8 @@ class BrushEngine {
         velocityHistory.clear()
     }
 
-    private fun smoothPoint(current: Offset, previous: Offset?): Offset {
-        if (!stabilizer.isEnabled || previous == null) return current
+    private fun smoothPoint(current: Offset, previous: Offset?, enabled: Boolean): Offset {
+        if (!enabled || previous == null) return current
         val factor = stabilizer.strength
         return Offset(
             previous.x + (current.x - previous.x) * (1f - factor),
@@ -229,19 +229,23 @@ class BrushEngine {
 
         val bmp = layer.getPersistentBitmap()
         val isHuge = bmp.width.toLong() * bmp.height > HUGE_CANVAS_PIXELS
-        // Huge: kurangi smoothing & velocity agar hemat CPU
-        if (isHuge) stabilizer.isEnabled = false
+        // Huge: jangan matikan stabilizer global (mutableState picu recompose tiap
+        // segmen + nonaktifkan permanen). Pakai flag lokal saja agar hemat CPU
+        // tanpa efek samping UI.
+        val useStabilizer = stabilizer.isEnabled && !isHuge
 
-        val smoothedP1 = smoothPoint(rulerGuide.snapPoint(p1), lastSmoothedPoint)
-        val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1)
+        val smoothedP1 = smoothPoint(rulerGuide.snapPoint(p1), lastSmoothedPoint, useStabilizer)
+        val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1, useStabilizer)
         lastSmoothedPoint = smoothedP2
 
         if (brushType == BrushType.BLUR) {
-            // Huge: blur per segmen sangat mahal (4 alokasi bitmap per dab) → throttle
-            if (isHuge && hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y) > 80f) {
+            // Huge: blur per segmen sangat mahal (4 alokasi bitmap per dab).
+            // Lewati segmen loncat besar dan batasi luas region agar tidak OOM.
+            val jump = hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y)
+            if (isHuge && jump > 80f) {
                 // skip blur intermediate jika lompatan besar, tunggu pen lift
             } else {
-                applyBlurStroke(layer, smoothedP1, smoothedP2)
+                applyBlurStroke(layer, smoothedP1, smoothedP2, isHuge)
             }
             prevCurvePoint = smoothedP2
             return
@@ -304,13 +308,14 @@ class BrushEngine {
         }
 
         // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.
-        // Huge: spacing lebih renggang + cap steps lebih kecil → hemat drawCall
+        // Huge: spacing lebih renggang + cap steps lebih kecil → hemat drawCall.
+        // Cap 32 (bukan 64) agar 720x16000 tidak menumpuk drawLine per event.
         val spacing = if (isHuge) max(3f, paint.strokeWidth * 0.35f) else max(1.5f, paint.strokeWidth * 0.2f)
         // Panjang jalur: chord + deviasi kurva bila smoothing kuadratik aktif.
         val pathLen = if (curveControl != null) {
             distance + hypot(curveControl.x - curveStart.x, curveControl.y - curveStart.y) * 0.5f
         } else distance
-        val maxSteps = if (isHuge) 64 else 256
+        val maxSteps = if (isHuge) 32 else 256
         val steps = ceil((pathLen / spacing).toDouble()).toInt().coerceIn(1, maxSteps)
 
         // Batasi rasterisasi ke dirty rect segmen. Tanpa clip, pada kanvas
@@ -326,9 +331,25 @@ class BrushEngine {
             .coerceIn(0f, bmp.width.toFloat())
         val cb = (max(max(curveStart.y, curveEnd.y), ctrl?.y ?: curveEnd.y) + clipPad)
             .coerceIn(0f, bmp.height.toFloat())
+        if (cr - cl < 1f || cb - ct < 1f) {
+            layer.markDirty()
+            return
+        }
         canvas.save()
         canvas.clipRect(cl, ct, cr, cb)
 
+        // OIL highlight dibuat SEKALI per segmen lalu dipakai ulang untuk semua
+        // dab. Versi lama mengalokasi Paint baru per dab (hingga 32x per segmen)
+        // → GC churn + delay di kanvas jumbo. Huge: highlight dimatikan
+        // (single-pass) agar 3x lebih sedikit drawCall.
+        val oilHighlight: Paint? = if (brushType == BrushType.OIL && !isHuge) {
+            Paint(paint).apply {
+                alpha = (paint.alpha * 0.4f).toInt()
+                strokeWidth = paint.strokeWidth * 0.6f
+                color = Color.WHITE
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+            }
+        } else null
         var prevX = curveStart.x
         var prevY = curveStart.y
         for (i in 1..steps) {
@@ -343,7 +364,7 @@ class BrushEngine {
                 x = curveStart.x + (curveEnd.x - curveStart.x) * t
                 y = curveStart.y + (curveEnd.y - curveStart.y) * t
             }
-            drawDab(canvas, paint, prevX, prevY, x, y)
+            drawDab(canvas, paint, prevX, prevY, x, y, isHuge, oilHighlight)
             prevX = x
             prevY = y
         }
@@ -360,36 +381,47 @@ class BrushEngine {
         layer.tileMap.importFromBitmap(layer.getPersistentBitmap())
     }
 
-    private fun drawDab(canvas: Canvas, paint: Paint, x1: Float, y1: Float, x2: Float, y2: Float) {
-        // Watercolor: draw multiple overlapping strokes for texture
+    private fun drawDab(canvas: Canvas, paint: Paint, x1: Float, y1: Float, x2: Float, y2: Float, isHuge: Boolean = false, oilHighlight: Paint? = null) {
+        // Watercolor: draw multiple overlapping strokes for texture.
+        // Huge: single-pass agar 3x lebih hemat drawCall di 720x16000.
         if (brushType == BrushType.WATERCOLOR) {
-            val baseAlpha = paint.alpha
-            val baseWidth = paint.strokeWidth
-            for (i in 1..3) {
-                paint.alpha = (baseAlpha * (0.3f + i * 0.2f)).toInt().coerceIn(0, 255)
-                paint.strokeWidth = baseWidth * (0.7f + i * 0.15f)
-                val jitterX = (i - 2) * baseWidth * 0.1f
-                val jitterY = (i - 2) * baseWidth * 0.08f
-                canvas.drawLine(x1 + jitterX, y1 + jitterY, x2 + jitterX, y2 + jitterY, paint)
+            if (isHuge) {
+                canvas.drawLine(x1, y1, x2, y2, paint)
+            } else {
+                val baseAlpha = paint.alpha
+                val baseWidth = paint.strokeWidth
+                for (i in 1..3) {
+                    paint.alpha = (baseAlpha * (0.3f + i * 0.2f)).toInt().coerceIn(0, 255)
+                    paint.strokeWidth = baseWidth * (0.7f + i * 0.15f)
+                    val jitterX = (i - 2) * baseWidth * 0.1f
+                    val jitterY = (i - 2) * baseWidth * 0.08f
+                    canvas.drawLine(x1 + jitterX, y1 + jitterY, x2 + jitterX, y2 + jitterY, paint)
+                }
+                paint.alpha = baseAlpha
+                paint.strokeWidth = baseWidth
             }
-            paint.alpha = baseAlpha
-            paint.strokeWidth = baseWidth
         } else if (brushType == BrushType.OIL) {
-            // Oil: draw core + edge highlight
+            // Oil: draw core + edge highlight (highlight dipakai ulang per segmen).
+            // Huge: core saja (hemat 2x drawCall + tanpa alokasi).
             canvas.drawLine(x1, y1, x2, y2, paint)
-            val highlight = Paint(paint).apply {
-                alpha = (paint.alpha * 0.4f).toInt()
-                strokeWidth = paint.strokeWidth * 0.6f
-                color = Color.WHITE
-                xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+            if (!isHuge && oilHighlight != null) {
+                canvas.drawLine(x1, y1, x2, y2, oilHighlight)
+            } else if (!isHuge && oilHighlight == null) {
+                // Fallback bila dipanggil tanpa cache (kanvas kecil, path lama).
+                val highlight = Paint(paint).apply {
+                    alpha = (paint.alpha * 0.4f).toInt()
+                    strokeWidth = paint.strokeWidth * 0.6f
+                    color = Color.WHITE
+                    xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
+                }
+                canvas.drawLine(x1, y1, x2, y2, highlight)
             }
-            canvas.drawLine(x1, y1, x2, y2, highlight)
         } else {
             canvas.drawLine(x1, y1, x2, y2, paint)
         }
     }
 
-    private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset) {
+    private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
         val bmp = layer.getPersistentBitmap()
         val radius = max(3f, size / 2f)
         val pad = (size + radius * 2f + 4f)
@@ -406,39 +438,51 @@ class BrushEngine {
         val w = right - left
         val h = bottom - top
         if (w <= 0 || h <= 0) return
+        if (isHuge && w.toLong() * h.toLong() > 140_000L) return
 
         // Hanya proses dirty rect, bukan seluruh kanvas (hemat CPU/GC per segmen).
-        val region = Bitmap.createBitmap(bmp, left, top, w, h)
-        val blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val blurCanvas = Canvas(blurred)
-        val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
+        // Semua alokasi dilindungi OOM + recycle di finally agar tidak bocor.
+        var region: Bitmap? = null
+        var blurred: Bitmap? = null
+        var maskBmp: Bitmap? = null
+        var tempLayer: Bitmap? = null
+        try {
+            region = Bitmap.createBitmap(bmp, left, top, w, h)
+            blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val blurCanvas = Canvas(blurred!!)
+            val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
+            }
+            blurCanvas.drawBitmap(region!!, 0f, 0f, blurPaint)
+
+            maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val maskCanvas = Canvas(maskBmp!!)
+            val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+                strokeWidth = size
+                color = Color.BLACK
+            }
+            maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)
+
+            tempLayer = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val tempCanvas = Canvas(tempLayer!!)
+            tempCanvas.drawBitmap(blurred!!, 0f, 0f, null)
+            val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
+            tempCanvas.drawBitmap(maskBmp!!, 0f, 0f, dstIn)
+
+            Canvas(bmp).drawBitmap(tempLayer!!, left.toFloat(), top.toFloat(), null)
+            layer.markDirty()
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            runCatching { region?.recycle() }
+            runCatching { blurred?.recycle() }
+            runCatching { maskBmp?.recycle() }
+            runCatching { tempLayer?.recycle() }
         }
-        blurCanvas.drawBitmap(region, 0f, 0f, blurPaint)
-
-        val maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val maskCanvas = Canvas(maskBmp)
-        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-            strokeWidth = size
-            color = Color.BLACK
-        }
-        maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)
-
-        val tempLayer = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val tempCanvas = Canvas(tempLayer)
-        tempCanvas.drawBitmap(blurred, 0f, 0f, null)
-        val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
-        tempCanvas.drawBitmap(maskBmp, 0f, 0f, dstIn)
-
-        Canvas(bmp).drawBitmap(tempLayer, left.toFloat(), top.toFloat(), null)
-
-        region.recycle()
-        blurred.recycle()
-        maskBmp.recycle()
-        tempLayer.recycle()
-        layer.markDirty()
     }
 }
