@@ -70,6 +70,7 @@ import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.DrawingLayer
+import com.grooxtyper.app.model.ImageLayer
 import com.grooxtyper.app.model.LayerBlendMode
 import com.grooxtyper.app.model.LayerItem
 import com.grooxtyper.app.model.LayerManager
@@ -756,6 +757,20 @@ private fun LayerThumbnail(layer: LayerItem, refreshTick: Int) {
                 is TextLayer -> {
                     val sample = layer.box.text.substringBefore("\n").take(16).ifBlank { "T" }
                     TextRenderer.renderSampleBox(layer.box, sample, 168, 96, forceWhiteText = true)
+                }
+                is ImageLayer -> {
+                    val src = layer.bitmap
+                    if (src.isRecycled || src.width <= 0 || src.height <= 0) {
+                        null
+                    } else {
+                        val s = 112f / maxOf(src.width, src.height).toFloat()
+                        Bitmap.createScaledBitmap(
+                            src,
+                            maxOf(1, (src.width * s).toInt()),
+                            maxOf(1, (src.height * s).toInt()),
+                            true
+                        )
+                    }
                 }
                 else -> null
             }

@@ -95,6 +95,96 @@ class TextLayer(
     layerId: String = UUID.randomUUID().toString()
 ) : LayerItem(name = name, isFolder = false, id = layerId)
 
+/**
+ * Layer gambar bebas (stiker): menyimpan bitmap sumber + transform yang bisa
+ * diubah kapan pun (move/rotate/resize/opacity), mirip TextBox ber-handle.
+ * Berbeda dari DrawingLayer yang bitmapnya full-canvas dan dibake permanen.
+ */
+class ImageLayer(
+    var bitmap: Bitmap,
+    var centerX: Float,
+    var centerY: Float,
+    var widthPx: Float,
+    var heightPx: Float,
+    var rotationDeg: Float = 0f,
+    name: String = "Image"
+) : LayerItem(name = name, isFolder = false) {
+    var lockedAspect by mutableStateOf(true)
+
+    fun scaleX(): Float = widthPx / bitmap.width.toFloat().coerceAtLeast(1f)
+    fun scaleY(): Float = heightPx / bitmap.height.toFloat().coerceAtLeast(1f)
+
+    /** Matrix kanvas: T(center) · R · S · T(-half). */
+    fun matrix(): android.graphics.Matrix {
+        val sx = scaleX()
+        val sy = scaleY()
+        return android.graphics.Matrix().apply {
+            setTranslate(centerX, centerY)
+            postRotate(rotationDeg)
+            postScale(sx, sy)
+            postTranslate(-bitmap.width / 2f, -bitmap.height / 2f)
+        }
+    }
+
+    /** Kotak pembungkus axis-aligned hasil transform (untuk overlay/culling). */
+    fun bounds(): android.graphics.RectF {
+        val m = matrix()
+        val pts = floatArrayOf(
+            0f, 0f, bitmap.width.toFloat(), 0f,
+            bitmap.width.toFloat(), bitmap.height.toFloat(), 0f, bitmap.height.toFloat()
+        )
+        m.mapPoints(pts)
+        var l = pts[0]; var t = pts[1]; var r = pts[0]; var b = pts[1]
+        for (i in 2 until 8 step 2) {
+            if (pts[i] < l) l = pts[i]
+            if (pts[i] > r) r = pts[i]
+            if (pts[i + 1] < t) t = pts[i + 1]
+            if (pts[i + 1] > b) b = pts[i + 1]
+        }
+        return android.graphics.RectF(l, t, r, b)
+    }
+
+    /** Titik kanvas → ruang lokal bitmap. Null bila matriks tak invertible. */
+    fun toLocal(x: Float, y: Float): android.graphics.PointF? {
+        val inv = android.graphics.Matrix()
+        if (!matrix().invert(inv)) return null
+        val pts = floatArrayOf(x, y)
+        inv.mapPoints(pts)
+        return android.graphics.PointF(pts[0], pts[1])
+    }
+
+    fun hitTest(x: Float, y: Float): Boolean {
+        val p = toLocal(x, y) ?: return false
+        return p.x in 0f..bitmap.width.toFloat() && p.y in 0f..bitmap.height.toFloat()
+    }
+}
+
+/** Snapshot transform image untuk undo (murah: tanpa duplikat bitmap). */
+data class ImageTransform(
+    val centerX: Float,
+    val centerY: Float,
+    val widthPx: Float,
+    val heightPx: Float,
+    val rotationDeg: Float,
+    val opacity: Float
+) {
+    companion object {
+        fun of(layer: ImageLayer) = ImageTransform(
+            layer.centerX, layer.centerY, layer.widthPx, layer.heightPx,
+            layer.rotationDeg, layer.opacity
+        )
+    }
+
+    fun applyTo(layer: ImageLayer) {
+        layer.centerX = centerX
+        layer.centerY = centerY
+        layer.widthPx = widthPx
+        layer.heightPx = heightPx
+        layer.rotationDeg = rotationDeg
+        layer.opacity = opacity
+    }
+}
+
 class LayerManager(val width: Int, val height: Int) {
     val layers = mutableStateListOf<LayerItem>()
     var activeLayerId by mutableStateOf<String>("")
@@ -189,6 +279,50 @@ class LayerManager(val width: Int, val height: Int) {
         layers.add(0, textLayer)
         activeLayerId = textLayer.id
         return textLayer
+    }
+
+    /**
+     * Tambah image layer bebas (bitmap sumber + center + ukuran tampil px).
+     * Ukuran dijepit ke kanvas; aspek dijaga bila [lockedAspect].
+     */
+    fun addImageLayer(
+        bitmap: Bitmap,
+        displayW: Int,
+        displayH: Int,
+        opacityInit: Float = 1f,
+        name: String = "Image ${layers.size + 1}"
+    ): ImageLayer {
+        val w = displayW.coerceIn(1, width)
+        val h = displayH.coerceIn(1, height)
+        val layer = ImageLayer(
+            bitmap = bitmap,
+            centerX = width / 2f,
+            centerY = height / 2f,
+            widthPx = w.toFloat(),
+            heightPx = h.toFloat(),
+            name = name
+        )
+        layer.opacity = opacityInit.coerceIn(0.1f, 1f)
+        layers.add(0, layer)
+        activeLayerId = layer.id
+        return layer
+    }
+
+    /** Semua ImageLayer yang terlihat (untuk hit-test topmost-first). */
+    fun visibleImageLayers(): List<ImageLayer> {
+        val out = mutableListOf<ImageLayer>()
+        fun walk(items: List<LayerItem>, ancestorsVisible: Boolean) {
+            for (item in items) {
+                val vis = ancestorsVisible && item.isVisible
+                if (item is ImageLayer) {
+                    if (vis) out.add(item)
+                } else if (item.isFolder) {
+                    walk(item.children, vis)
+                }
+            }
+        }
+        walk(layers, true)
+        return out
     }
 
     fun addFolder(name: String = "Folder ${layers.size + 1}"): LayerItem {
@@ -334,7 +468,7 @@ class LayerManager(val width: Int, val height: Int) {
         fun collectLayers(items: List<LayerItem>) {
             for (item in items) {
                 if (item.isVisible) {
-                    if (item is DrawingLayer || item is TextLayer) {
+                    if (item is DrawingLayer || item is TextLayer || item is ImageLayer) {
                         flatLayers.add(item)
                     } else if (item.isFolder) {
                         collectLayers(item.children)
@@ -373,6 +507,12 @@ class LayerManager(val width: Int, val height: Int) {
                         baseMaskBitmap = bmp
                     }
                 }
+            } else if (layer is ImageLayer) {
+                if (layer.bitmap.isRecycled) continue
+                canvas.save()
+                canvas.concat(layer.matrix())
+                canvas.drawBitmap(layer.bitmap, 0f, 0f, paint)
+                canvas.restore()
             } else if (layer is TextLayer) {
                 if (!withText) continue
                 // Jalur cepat: tanpa bitmap intermediate saat opacity penuh & blend normal.

@@ -108,7 +108,14 @@ class BrushEngine {
 
     // Stroke smoothing state
     private var lastSmoothedPoint: Offset? = null
-    private var velocityHistory = mutableListOf<Float>()
+    // Kecepatan lowpass ala MyPaint (fac=exp(-dt/T)) untuk dynamics halus.
+    private var velocityEma = 0f
+    // One-Euro filter per sumbu (studi stroke-stabilizer): lambat = halus,
+    // cepat = responsif. Reset tiap stroke agar tak ada lompatan awal.
+    private var euroX = 0f
+    private var euroY = 0f
+    private var euroDx = 0f
+    private var euroInit = false
     // Prediksi Ink-style: ekstrapolasi titik berikut dari kecepatan agar
     // sapuan 720x16000 terasa responsif walau event touch jarang (low-latency
     // front-buffered idea dari androidx.graphics.lowlatency).
@@ -149,7 +156,11 @@ class BrushEngine {
     fun beginStroke() {
         lastSmoothedPoint = null
         prevCurvePoint = null
-        velocityHistory.clear()
+        velocityEma = 0f
+        euroX = 0f
+        euroY = 0f
+        euroDx = 0f
+        euroInit = false
         lastVelocity = Offset.Zero
         dirtyTiles.clear()
         dirtyTileBounds.setEmpty()
@@ -158,7 +169,8 @@ class BrushEngine {
     fun endStroke() {
         lastSmoothedPoint = null
         prevCurvePoint = null
-        velocityHistory.clear()
+        velocityEma = 0f
+        euroInit = false
         lastVelocity = Offset.Zero
     }
 
@@ -203,13 +215,42 @@ class BrushEngine {
         return out
     }
 
+    /**
+     * Stabilizer One-Euro: lowpass adaptif (lambat = smoothing kuat, cepat =
+     * mengikuti). strength 0..1 dipetakan ke minCutoff 2.5..0.6.
+     * Plus noise gate 2px agar jitter sensor tak jadi goresan.
+     */
     private fun smoothPoint(current: Offset, previous: Offset?, enabled: Boolean): Offset {
-        if (!enabled || previous == null) return current
-        val factor = stabilizer.strength
-        return Offset(
-            previous.x + (current.x - previous.x) * (1f - factor),
-            previous.y + (current.y - previous.y) * (1f - factor)
-        )
+        if (!enabled || previous == null) {
+            if (enabled && !euroInit) {
+                euroX = current.x
+                euroY = current.y
+                euroDx = 0f
+                euroInit = true
+            }
+            return current
+        }
+        if (!euroInit) {
+            euroX = previous.x
+            euroY = previous.y
+            euroDx = 0f
+            euroInit = true
+        }
+        // Noise gate: abaikan mikro-jitter di bawah 2px.
+        val dxRaw = current.x - previous.x
+        val dyRaw = current.y - previous.y
+        if (dxRaw * dxRaw + dyRaw * dyRaw < 4f) {
+            return Offset(euroX, euroY)
+        }
+        val minCutoff = 2.5f - stabilizer.strength.coerceIn(0f, 1f) * 1.9f
+        val beta = 0.02f
+        val speed = kotlin.math.hypot(dxRaw, dyRaw)
+        euroDx = euroDx + 0.25f * (speed - euroDx)
+        val cutoff = minCutoff + beta * euroDx
+        val alpha = cutoff / (cutoff + 1f)
+        euroX += alpha * (current.x - euroX)
+        euroY += alpha * (current.y - euroY)
+        return Offset(euroX, euroY)
     }
 
     private fun createBasePaint(isHuge: Boolean = false): Paint {
@@ -282,17 +323,27 @@ class BrushEngine {
         return paint
     }
 
-    // ibisPaint-style: dip pen pressure simulation based on velocity
+    // ibisPaint-style: dip pen pressure simulation based on velocity.
+    // Lowpass eksponensial ala MyPaint agar lebar tak bergetar per-event.
     private fun getVelocityFactor(distance: Float): Float {
-        velocityHistory.add(distance)
-        if (velocityHistory.size > 5) velocityHistory.removeAt(0)
-        val avgVelocity = velocityHistory.average().toFloat()
+        velocityEma += 0.35f * (distance - velocityEma)
+        val v = velocityEma
         // Slower = thicker, faster = thinner (like real ink pen)
         return when {
-            avgVelocity < 2f -> 1.3f
-            avgVelocity > 15f -> 0.6f
-            else -> (1.3f - (avgVelocity - 2f) * 0.05f).coerceIn(0.6f, 1.3f)
+            v < 2f -> 1.3f
+            v > 15f -> 0.6f
+            else -> (1.3f - (v - 2f) * 0.05f).coerceIn(0.6f, 1.3f)
         }
+    }
+
+    /** Taper buatan kepala/ekor untuk jari/mouse (Touch Taper ala Procreate). */
+    private fun fingerTaper(progress: Float, taperLen: Float = 0.12f): Float {
+        if (progress <= 0f || progress >= 1f) return 0.35f
+        val head = (progress / taperLen).coerceIn(0f, 1f)
+        val tail = ((1f - progress) / taperLen).coerceIn(0f, 1f)
+        // smoothstep agar transisi halus
+        fun ss(t: Float) = t * t * (3f - 2f * t)
+        return (0.35f + 0.65f * minOf(ss(head), ss(tail))).coerceIn(0.35f, 1f)
     }
 
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f, visibleRect: RectF? = null) {
@@ -396,6 +447,12 @@ class BrushEngine {
 
             paint.strokeWidth = paint.strokeWidth * factor
             paint.alpha = ((paint.alpha / 255f) * factor * 255).toInt().coerceIn(0, 255)
+        } else if ((brushType == BrushType.PEN_HARD || brushType == BrushType.PENCIL) &&
+            progressFraction > 0f && progressFraction < 1f
+        ) {
+            // Taper jari ringan agar goresan pena terasa kaligrafi.
+            val t = fingerTaper(progressFraction)
+            paint.strokeWidth = paint.strokeWidth * (0.6f + 0.4f * t)
         }
 
         // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.

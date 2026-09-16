@@ -135,6 +135,9 @@ sealed interface HistoryEntry {
 
     /** Properti layer diubah (nama/visibilitas/opacity/blend/kunci). */
     data class LayerPropEntry(val layerId: String, val before: LayerProps, val after: LayerProps) : HistoryEntry
+
+    /** Transform image layer SEBELUM diubah (geser/skala/putar/panel). */
+    data class ImageTransformEntry(val layerId: String, val before: ImageTransform) : HistoryEntry
 }
 
 class UndoRedoManager(private val maxHistory: Int = 15) {
@@ -188,6 +191,11 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         push(HistoryEntry.TextBoxEntry(layerId, before))
     }
 
+    /** Snapshot transform image sebelum diubah. */
+    fun pushImageTransform(layerId: String, before: ImageTransform) {
+        push(HistoryEntry.ImageTransformEntry(layerId, before))
+    }
+
     fun pushLayerAdd(layerId: String) {
         push(HistoryEntry.LayerAddEntry(layerId))
     }
@@ -239,6 +247,13 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
                 layer.box.setFrom(entry.box)
                 true
             }
+            is HistoryEntry.ImageTransformEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) as? ImageLayer
+                    ?: return false
+                redoStack.add(HistoryEntry.ImageTransformEntry(layer.id, ImageTransform.of(layer)))
+                entry.before.applyTo(layer)
+                true
+            }
             is HistoryEntry.LayerAddEntry -> {
                 val idx = layerManager.indexOfLayer(entry.layerId)
                 if (idx < 0) return false
@@ -284,6 +299,13 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
                     ?: return false
                 undoStack.add(HistoryEntry.TextBoxEntry(layer.id, layer.box.copy()))
                 layer.box.setFrom(entry.box)
+                true
+            }
+            is HistoryEntry.ImageTransformEntry -> {
+                val layer = layerManager.findLayerById(entry.layerId) as? ImageLayer
+                    ?: return false
+                undoStack.add(HistoryEntry.ImageTransformEntry(layer.id, ImageTransform.of(layer)))
+                entry.before.applyTo(layer)
                 true
             }
             is HistoryEntry.LayerAddEntry -> {

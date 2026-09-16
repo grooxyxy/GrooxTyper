@@ -18,13 +18,13 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BUBBLE -> `models/bd.onnx` (YOLO detect 2 kelas text_bubble/text_free,
- * input 640x640, single output (1,6,8400)). Model DIEKSEKUSI LANGSUNG di
- * perangkat via ONNX Runtime Mobile. Nama file disamarkan agar tak terekspos di APK.
+ * BUBBLE -> `models/bd.onnx` (YOLO26-nano detect end-to-end NMS-free,
+ * 1 kelas text, input 640x640, single output (1,300,6) = x1,y1,x2,y2,score,cls).
+ * Model DIEKSEKUSI LANGSUNG di perangkat via ONNX Runtime Mobile.
+ * Nama file disamarkan agar tak terekspos di APK.
  *
- * Kompatibel mundur: bila ONNX mengembalikan 2 output (det + protos seg
- * legacy 37ch), dipakai jalur seg + mask. Bila 1 output (detect), dipakai
- * jalur detect tanpa mask (mask=null).
+ * Kompatibel mundur: klasik 2-output seg (37ch + protos) dan klasik detect
+ * (1,6,8400) tetap didukung bila model lama dipakai; jalur detect tanpa mask.
  */
 enum class BubbleModel(
     val displayName: String,
@@ -43,7 +43,7 @@ data class DetectedBubble(
     val score: Float,
     /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null; null untuk model detect). */
     val mask: Bitmap? = null,
-    /** Id kelas model: 0 = text_bubble, 1 = text_free. -1 = tak diketahui/heuristik. */
+    /** Id kelas model: 0 = text (model e2e baru). -1 = tak diketahui/heuristik. */
     val classId: Int = -1
 )
 
@@ -56,12 +56,12 @@ object YoloBubbleModel {
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model aktif: YOLO detect 2-class (text_bubble/text_free), input 640x640,
- *   output tunggal (1,6,8400) = 4 box + 2 skor kelas, tanpa mask.
+ * - Model aktif: YOLO26-nano detect end-to-end (NMS-free), 1 kelas text,
+ *   input 640x640, output tunggal (1,300,6) = x1,y1,x2,y2,score,cls tanpa mask.
  * - Legacy: YOLO seg 1-class, output (1,37,8400) + protos (1,32,160,160)
  *   dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
- * 720px ber-overlap 15%; setiap tile di-letterbox ke 640x640, dijalankan
+ * ber-overlap 30%; setiap tile di-letterbox ke 640x640, dijalankan
  * lewat model, lalu duplikat di sambungan tile dibuang via NMS global.
  *
  * Bila session ONNX gagal dibuat (asset hilang / runtime tidak tersedia),
@@ -225,11 +225,16 @@ class BubbleDetector {
                         // Jatuh ke jalur detect di bawah.
                     }
                 }
-                // Jalur detect: 1 output (1,C,N) atau (1,N,C), C = 4 + numClasses.
+                // Jalur detect: 1 output (1,C,N) klasik, (1,N,C) transpos, atau
+                // (1,N,6) end-to-end NMS-free (YOLO26: x1,y1,x2,y2,score,cls).
                 val rawVal = res[0].value
                 val mat: Array<FloatArray>? = extractBatchMatrix(rawVal)
                 if (mat != null) {
-                    decodeDetect(mat, src.width, src.height, scale, padX, padY, conf)
+                    if (mat.isNotEmpty() && mat[0].size == 6 && mat.size in 2..1000) {
+                        decodeE2E(mat, src.width, src.height, scale, padX, padY, conf)
+                    } else {
+                        decodeDetect(mat, src.width, src.height, scale, padX, padY, conf)
+                    }
                 } else {
                     emptyList()
                 }
@@ -259,9 +264,44 @@ class BubbleDetector {
     }
 
     /**
+     * Decode output YOLO end-to-end NMS-free: matriks (N,6) dengan baris
+     * [x1,y1,x2,y2,score,cls] dalam skala input letterbox (640).
+     * Sudah deduplikasi oleh head (one-to-one matching) sehingga tanpa NMS:
+     * cukup threshold skor + buang box mungil. Mask=null (box-only).
+     */
+    private fun decodeE2E(
+        mat: Array<FloatArray>,
+        origW: Int, origH: Int,
+        scale: Float, padX: Float, padY: Float,
+        conf: Float = CONF_THRESH
+    ): List<DetectedBubble> {
+        val out = ArrayList<DetectedBubble>(mat.size.coerceAtMost(300))
+        for (row in mat) {
+            if (row.size < 6) continue
+            val score = row[4]
+            if (score < conf) continue
+            val cls = row[5].toInt()
+            // Balik letterbox ke koordinat bitmap asli.
+            val x1 = (row[0] - padX) / scale
+            val y1 = (row[1] - padY) / scale
+            val x2 = (row[2] - padX) / scale
+            val y2 = (row[3] - padY) / scale
+            val box = RectF(
+                x1.coerceIn(0f, origW.toFloat()),
+                y1.coerceIn(0f, origH.toFloat()),
+                x2.coerceIn(0f, origW.toFloat()),
+                y2.coerceIn(0f, origH.toFloat())
+            )
+            if (box.width() < 8f || box.height() < 8f) continue
+            out.add(DetectedBubble(box, score, null, cls))
+        }
+        return out.sortedByDescending { it.score }
+    }
+
+    /**
      * Decode output YOLO detect: matriks (C,N) atau (N,C) dengan
      * C = 4 box (cx,cy,w,h relatif 640) + numClasses skor.
-     * Model aktif: C=6 (text_bubble=0, text_free=1). Mask=null (box-only).
+     * Model klasik: C=6 (2 kelas). Mask=null (box-only).
      */
     private fun decodeDetect(
         mat: Array<FloatArray>,
@@ -316,7 +356,7 @@ class BubbleDetector {
         }
         if (raw.isEmpty()) return emptyList()
 
-        // NMS global (abaikan kelas agar duplikat text_bubble/text_free menyatu).
+        // NMS global (abaikan kelas agar duplikat menyatu).
         val kept = ArrayList<RawBox>()
         for (d in raw.sortedByDescending { it.score }) {
             var dup = false
@@ -460,7 +500,7 @@ class BubbleDetector {
     /**
      * Deteksi ONNX untuk gambar jangkung/lebar ekstrem (mis. 720x16000):
      * potong sepanjang sumbu panjang jadi jendela persegi (sisi = sisi
-     * pendek, min 256px, maks 1024px) ber-overlap 15%, inferensi per tile,
+     * pendek, min 512px, maks 1024px) ber-overlap 30%, inferensi per tile,
      * geser koordinat, lalu NMS global untuk buang duplikat di overlap.
      */
     private suspend fun detectTallOnnx(bitmap: Bitmap, session: OrtSession): List<DetectedBubble> {

@@ -158,8 +158,12 @@ enum class ActiveTool {
     LASSO,
     SELECT_BOX,
     TEXT,
+    IMAGE,
     EYEDROPPER
 }
+
+/** Handle transform image layer (cermin TextHandle). */
+enum class ImageHandleMode { NONE, BODY, SCALE, ROTATE }
 
 /** Satu baris script (dialog) untuk fitur Script kombo seleksi/bubble. */
 data class ScriptEntry(
@@ -663,6 +667,11 @@ fun CanvasEditorScreen(
 
     var selectedTextBox by remember { mutableStateOf<TextBox?>(null) }
     var textHandleMode by remember { mutableStateOf(TextHandle.NONE) }
+    // Image layer terpilih + mode handle (cermin TextBox).
+    var selectedImageId by remember { mutableStateOf<String?>(null) }
+    var imageHandleMode by remember { mutableStateOf(ImageHandleMode.NONE) }
+    val selectedImage: com.grooxtyper.app.model.ImageLayer?
+        get() = selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
 
     var showColorPicker by remember { mutableStateOf(false) }
     var showLayersPanel by remember { mutableStateOf(false) }
@@ -1325,6 +1334,19 @@ fun CanvasEditorScreen(
         }
     }
 
+    /** Handle image terdekat dari titik kanvas: sudut = SCALE, atas-tengah = ROTATE. */
+    fun imageHandleAt(img: com.grooxtyper.app.model.ImageLayer, pos: Offset, grip: Float): ImageHandleMode {
+        val b = img.bounds()
+        val corners = listOf(
+            Offset(b.left, b.top), Offset(b.right, b.top),
+            Offset(b.right, b.bottom), Offset(b.left, b.bottom)
+        )
+        if (corners.any { (it - pos).getDistance() <= grip }) return ImageHandleMode.SCALE
+        val rotHandle = Offset((b.left + b.right) / 2f, b.top - grip * 1.2f)
+        if ((rotHandle - pos).getDistance() <= grip) return ImageHandleMode.ROTATE
+        return ImageHandleMode.NONE
+    }
+
     fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
         // Inverse dari Modifier.graphicsLayer(scale, translation, rotationZ)
         // yang pivot-nya DINAMIS mengikuti titik tengah jari (pivotFrac).
@@ -1371,6 +1393,58 @@ fun CanvasEditorScreen(
     // Kunci status heal + layer saat press agar release tak terpengaruh ganti tool/layer.
     var strokeIsHeal by remember { mutableStateOf(false) }
     var lockedStrokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
+    // Antrean heal tunggal (conflate): sapuan saat commit jalan digabung, tak dibuang.
+    var pendingHealMask by remember { mutableStateOf<Bitmap?>(null) }
+    var pendingHealDirty by remember { mutableStateOf<RectF?>(null) }
+    var pendingHealLayerId by remember { mutableStateOf<String?>(null) }
+
+    /** Luncurkan commit heal; mask dimiliki eksklusif oleh job (jangan disentuh UI lagi). */
+    fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer) {
+        isHealing = true
+        healError = null
+        scope.launch(Dispatchers.Default) {
+            var ok = false
+            var err: String? = null
+            try {
+                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty))
+                if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
+                else {
+                    targetLayer.markDirty()
+                    targetLayer.tileMap.importFromBitmap(targetLayer.getPersistentBitmap())
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Heal gagal: ${e.message ?: "error"}"
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Heal gagal: memori habis, coba sapuan lebih kecil"
+            } finally {
+                runCatching { mask.recycle() }
+                val msg = err
+                withContext(Dispatchers.Main) {
+                    // Promosikan antrean bila ada (conflate), jika tidak selesai.
+                    val pm = pendingHealMask
+                    val pd = pendingHealDirty
+                    val pl = pendingHealLayerId?.let { layerManager.findDrawingLayerById(it) }
+                    if (pm != null && pd != null && pl != null) {
+                        pendingHealMask = null
+                        pendingHealDirty = null
+                        pendingHealLayerId = null
+                        launchHealCommit(pm, pd, pl)
+                    } else {
+                        runCatching { pm?.recycle() }
+                        pendingHealMask = null
+                        pendingHealDirty = null
+                        pendingHealLayerId = null
+                        isHealing = false
+                        if (msg != null) healError = msg
+                    }
+                    refreshComposite()
+                    refreshCanvasState++
+                }
+            }
+        }
+    }
     // Eyedropper sementara via tahan jari (tanpa meninggalkan titik cat).
     var colorPickActive by remember { mutableStateOf(false) }
     var pressId by remember { mutableIntStateOf(0) }
@@ -1446,7 +1520,7 @@ fun CanvasEditorScreen(
                                 // Gesture berubah jadi pan/zoom: akhiri stroke yang tertunda.
                                 // Heal yang setengah jadi dibuang eksplisit agar tak menggantung.
                                 if (strokeIsHeal) {
-                                    clearInpaintMask()
+                                    recycleInpaintMask()
                                     healError = "Sapuan heal dibatalkan (pinch/pan)"
                                 }
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
@@ -1622,6 +1696,67 @@ fun CanvasEditorScreen(
                                                         )
                                                     }
                                                     TextHandle.NONE -> Unit
+                                                }
+                                                refreshComposite()
+                                            }
+                                        }
+                                    } else if (activeTool == ActiveTool.IMAGE) {
+                                        val grip = 32f / viewState.scale
+                                        if (lastCanvasPoint == null) {
+                                            val current = selectedImage
+                                            val handle = current?.let { imageHandleAt(it, touchCanvasPos, grip) }
+                                                ?: ImageHandleMode.NONE
+                                            if (handle != ImageHandleMode.NONE && current != null) {
+                                                imageHandleMode = handle
+                                                undoRedoManager.pushImageTransform(current.id, com.grooxtyper.app.model.ImageTransform.of(current))
+                                            } else {
+                                                val hit = layerManager.visibleImageLayers()
+                                                    .findLast { it.hitTest(touchCanvasPos.x, touchCanvasPos.y) }
+                                                if (hit != null) {
+                                                    selectedImageId = hit.id
+                                                    layerManager.activeLayerId = hit.id
+                                                    imageHandleMode = ImageHandleMode.BODY
+                                                    undoRedoManager.pushImageTransform(hit.id, com.grooxtyper.app.model.ImageTransform.of(hit))
+                                                    refreshComposite()
+                                                } else {
+                                                    selectedImageId = null
+                                                    imageHandleMode = ImageHandleMode.NONE
+                                                }
+                                            }
+                                        } else {
+                                            selectedImage?.let { img ->
+                                                when (imageHandleMode) {
+                                                    ImageHandleMode.BODY -> {
+                                                        val delta = touchCanvasPos - lastCanvasPoint!!
+                                                        img.centerX += delta.x
+                                                        img.centerY += delta.y
+                                                    }
+                                                    ImageHandleMode.SCALE -> {
+                                                        val oldDist = (lastCanvasPoint!! - androidx.compose.ui.geometry.Offset(img.centerX, img.centerY)).getDistance()
+                                                        val newDist = (touchCanvasPos - androidx.compose.ui.geometry.Offset(img.centerX, img.centerY)).getDistance()
+                                                        if (oldDist > 1f && newDist > 1f) {
+                                                            val f = (newDist / oldDist).coerceIn(0.1f, 10f)
+                                                            img.widthPx = (img.widthPx * f).coerceIn(8f, canvasWidth * 3f)
+                                                            if (img.lockedAspect) {
+                                                                img.heightPx = (img.widthPx * img.bitmap.height / img.bitmap.width.toFloat().coerceAtLeast(1f)).coerceIn(8f, canvasHeight * 3f)
+                                                            } else {
+                                                                img.heightPx = (img.heightPx * f).coerceIn(8f, canvasHeight * 3f)
+                                                            }
+                                                        }
+                                                    }
+                                                    ImageHandleMode.ROTATE -> {
+                                                        val aOld = kotlin.math.atan2(
+                                                            (lastCanvasPoint!!.y - img.centerY).toDouble(),
+                                                            (lastCanvasPoint!!.x - img.centerX).toDouble()
+                                                        )
+                                                        val aNew = kotlin.math.atan2(
+                                                            (touchCanvasPos.y - img.centerY).toDouble(),
+                                                            (touchCanvasPos.x - img.centerX).toDouble()
+                                                        )
+                                                        var d = Math.toDegrees(aNew - aOld).toFloat()
+                                                        img.rotationDeg = ((img.rotationDeg + d) % 360f + 360f) % 360f
+                                                    }
+                                                    ImageHandleMode.NONE -> Unit
                                                 }
                                                 refreshComposite()
                                             }
@@ -1865,68 +2000,49 @@ fun CanvasEditorScreen(
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
-                                    // Commit heal: pakai status + layer yang dikunci saat press.
+                                    // Commit heal: serah-terima swap (O(1), tanpa copy/fill full di Main).
                                     val wasHeal = strokeIsHeal
                                     val commitLayer = lockedStrokeLayer ?: layerManager.getActiveLayer()
                                     if (wasHeal && inpaintMask != null && inpaintDirty != null) {
-                                        val dirty = inpaintDirty
+                                        val maskOwned = inpaintMask
+                                        val dirtyOwned = inpaintDirty?.let { RectF(it) }
                                         val targetLayer = commitLayer
-                                        if (dirty != null && targetLayer != null) {
+                                        // Lepaskan dari UI agar sapuan baru dapat mask segar.
+                                        inpaintMask = null
+                                        inpaintMaskCanvas = null
+                                        inpaintDirty = null
+                                        if (maskOwned != null && dirtyOwned != null && targetLayer != null &&
+                                            dirtyOwned.right > dirtyOwned.left && dirtyOwned.bottom > dirtyOwned.top
+                                        ) {
                                             if (isHealing) {
-                                                healError = "Tunggu heal selesai… sapuan disimpan, coba lagi"
-                                            } else {
-                                                // Snapshot copy agar job tak balapan dengan sapuan baru.
-                                                val l = dirty.left.toInt().coerceIn(0, canvasWidth - 1)
-                                                val t = dirty.top.toInt().coerceIn(0, canvasHeight - 1)
-                                                val r = dirty.right.toInt().coerceIn(1, canvasWidth)
-                                                val b = dirty.bottom.toInt().coerceIn(1, canvasHeight)
-                                                val maskSnapshot = runCatching {
-                                                    inpaintMask!!.copy(inpaintMask!!.config ?: Bitmap.Config.ARGB_8888, false)
-                                                }.getOrNull()
-                                                val dirtySnapshot = RectF(dirty)
-                                                clearInpaintMask()
-                                                if (maskSnapshot != null && r > l && b > t) {
-                                                    isHealing = true
-                                                    healError = null
-                                                    scope.launch(Dispatchers.Default) {
-                                                        var ok = false
-                                                        var err: String? = null
-                                                        try {
-                                                            ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), maskSnapshot, dirtySnapshot)
-                                                            if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
-                                                            else {
-                                                                targetLayer.markDirty()
-                                                                targetLayer.tileMap.importFromBitmap(targetLayer.getPersistentBitmap())
-                                                            }
-                                                            withContext(Dispatchers.Main) { refreshComposite() }
-                                                        } catch (e: Exception) {
-                                                            e.printStackTrace()
-                                                            err = "Heal gagal: ${e.message ?: "error"}"
-                                                        } catch (e: OutOfMemoryError) {
-                                                            e.printStackTrace()
-                                                            err = "Heal gagal: memori habis, coba sapuan lebih kecil"
-                                                        } finally {
-                                                            val msg = err
-                                                            runCatching { maskSnapshot.recycle() }
-                                                            withContext(Dispatchers.Main) {
-                                                                isHealing = false
-                                                                if (msg != null) healError = msg
-                                                                refreshCanvasState++
-                                                            }
-                                                        }
-                                                    }
+                                                // Gabung ke antrean tunggal (conflate), jangan buang.
+                                                val pm = pendingHealMask
+                                                if (pm != null && !pm.isRecycled && pm.width == maskOwned.width && pm.height == maskOwned.height) {
+                                                    try {
+                                                        android.graphics.Canvas(pm).drawBitmap(maskOwned, 0f, 0f, null)
+                                                    } catch (e: Exception) { e.printStackTrace() }
+                                                    runCatching { maskOwned.recycle() }
+                                                    val pd = pendingHealDirty
+                                                    pendingHealDirty = if (pd == null) dirtyOwned else RectF(
+                                                        minOf(pd.left, dirtyOwned.left), minOf(pd.top, dirtyOwned.top),
+                                                        maxOf(pd.right, dirtyOwned.right), maxOf(pd.bottom, dirtyOwned.bottom)
+                                                    )
                                                 } else {
-                                                    runCatching { maskSnapshot?.recycle() }
-                                                    healError = "Heal dilewati: area sapuan terlalu kecil"
+                                                    runCatching { pm?.recycle() }
+                                                    pendingHealMask = maskOwned
+                                                    pendingHealDirty = dirtyOwned
+                                                    pendingHealLayerId = targetLayer.id
                                                 }
+                                            } else {
+                                                launchHealCommit(maskOwned, dirtyOwned, targetLayer)
                                             }
                                         } else {
+                                            runCatching { maskOwned?.recycle() }
                                             healError = "Sapuan heal kosong — coba sapu lagi"
-                                            clearInpaintMask()
                                         }
                                     } else if (wasHeal) {
                                         healError = "Sapuan heal kosong — coba sapu lagi"
-                                        clearInpaintMask()
+                                        recycleInpaintMask()
                                     }
                                     strokeIsHeal = false
                                     lockedStrokeLayer = null
@@ -1969,6 +2085,7 @@ fun CanvasEditorScreen(
                                     // tidak render sebelum hasil PatchMatch kembali.
                                     if (hadStroke && wasBrush && !wasHealBrush) refreshComposite()
                                     textHandleMode = TextHandle.NONE
+                                    imageHandleMode = ImageHandleMode.NONE
                                     lastCanvasPoint = null
                                     cursorPosition = null
                                     strokeLength = 0f
@@ -2200,6 +2317,33 @@ fun CanvasEditorScreen(
                         pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
                     }
                     drawContext.canvas.nativeCanvas.drawPath(sketch, previewPaint)
+                }
+
+                // Bingkai seleksi image layer + handle SCALE (sudut) + ROTATE (atas).
+                selectedImage?.let { img ->
+                    if (!img.bitmap.isRecycled) {
+                        val native = drawContext.canvas.nativeCanvas
+                        val b = img.bounds()
+                        val framePaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f / viewState.scale
+                            color = android.graphics.Color.YELLOW
+                        }
+                        val dotPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.YELLOW
+                        }
+                        native.drawRect(b.left, b.top, b.right, b.bottom, framePaint)
+                        val gr = 32f / viewState.scale
+                        val hr = 14f / viewState.scale
+                        for (cx in listOf(b.left, b.right)) for (cy in listOf(b.top, b.bottom)) {
+                            native.drawCircle(cx, cy, hr, dotPaint)
+                        }
+                        val rotHx = (b.left + b.right) / 2f
+                        val rotHy = b.top - gr * 1.2f
+                        native.drawLine(rotHx, b.top, rotHx, rotHy, framePaint)
+                        native.drawCircle(rotHx, rotHy, hr, dotPaint)
+                    }
                 }
 
                 // Pratinjau drag kotak seleksi (tool Kotak Seleksi).
@@ -2464,7 +2608,7 @@ fun CanvasEditorScreen(
 
         // Note loading global tepat di bawah top bar untuk fitur berat yang tidak instan.
         val busyNote: String? = when {
-            isHealing -> "Healing PatchMatch… jangan sapu dulu"
+            isHealing -> if (pendingHealMask != null) "Healing… (1 antre)" else "Healing PatchMatch… jangan sapu dulu"
             isImportingEditor -> "Mengimpor gambar…"
             bubbleDetecting -> "Mendeteksi bubble…"
             mlDetecting -> "Mendeteksi teks ML Kit…"
@@ -2563,15 +2707,13 @@ fun CanvasEditorScreen(
                             try {
                                 val scaled = if (w == src.width && h == src.height) src
                                 else ImageImport.scaleTo(src, w, h)
-                                val nl = layerManager.addLayer("Imported ${w}x${h}")
-                                nl.opacity = op
-                                ImageImport.drawBitmapCenterNoScale(nl.getPersistentBitmap(), scaled)
-                                nl.tileMap.importFromBitmap(nl.getPersistentBitmap())
-                                nl.markDirty()
-                                if (scaled !== src) runCatching { scaled.recycle() }
-                                runCatching { if (!src.isRecycled) src.recycle() }
+                                // scaleTo mendaur-ulang src bila diskala; hanya src asli yang mungkin sisa.
+                                if (scaled !== src) runCatching { if (!src.isRecycled) src.recycle() }
+                                val nl = layerManager.addImageLayer(scaled, w, h, op, "Imported ${w}x${h}")
+                                selectedImageId = nl.id
+                                layerManager.activeLayerId = nl.id
                                 referenceBitmap = downscaleForReference(
-                                    nl.getPersistentBitmap().copy(Bitmap.Config.ARGB_8888, false)
+                                    scaled.copy(Bitmap.Config.ARGB_8888, false)
                                 )
                                 undoRedoManager.pushLayerAdd(nl.id)
                                 withContext(Dispatchers.Main) { refreshComposite() }
@@ -2594,6 +2736,111 @@ fun CanvasEditorScreen(
                         pendingImport?.let { runCatching { if (!it.isRecycled) it.recycle() } }
                         pendingImport = null
                     }) { Text("Batal", color = Color.Gray) }
+                },
+                containerColor = PanelBg
+            )
+        }
+
+        // Panel properti image layer terpilih: resize px + rotate + opacity.
+        selectedImage?.let { img ->
+            val imgBaseline = remember(img.id) { com.grooxtyper.app.model.ImageTransform.of(img) }
+            fun commitImgBaseline() {
+                if (imgBaseline != com.grooxtyper.app.model.ImageTransform.of(img)) {
+                    undoRedoManager.pushImageTransform(img.id, imgBaseline)
+                }
+            }
+            AlertDialog(
+                onDismissRequest = {
+                    commitImgBaseline()
+                    selectedImageId = null
+                },
+                title = { Text("Image Layer", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text(
+                            "Asli ${img.bitmap.width}x${img.bitmap.height}px • tap-drag di kanvas: geser, sudut: skala, atas: putar.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = img.widthPx.toInt().toString(),
+                                onValueChange = { v ->
+                                    v.filter { c -> c.isDigit() }.take(5).toIntOrNull()?.let { w ->
+                                        img.widthPx = w.coerceIn(8, canvasWidth * 3).toFloat()
+                                        if (img.lockedAspect) {
+                                            img.heightPx = (img.widthPx * img.bitmap.height / img.bitmap.width.toFloat().coerceAtLeast(1f)).coerceIn(8f, (canvasHeight * 3).toFloat())
+                                        }
+                                        refreshComposite()
+                                    }
+                                },
+                                label = { Text("Lebar (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = img.heightPx.toInt().toString(),
+                                onValueChange = { v ->
+                                    v.filter { c -> c.isDigit() }.take(5).toIntOrNull()?.let { h ->
+                                        img.heightPx = h.coerceIn(8, canvasHeight * 3).toFloat()
+                                        if (img.lockedAspect) {
+                                            img.widthPx = (img.heightPx * img.bitmap.width / img.bitmap.height.toFloat().coerceAtLeast(1f)).coerceIn(8f, (canvasWidth * 3).toFloat())
+                                        }
+                                        refreshComposite()
+                                    }
+                                },
+                                label = { Text("Tinggi (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        TextButton(onClick = {
+                            undoRedoManager.pushImageTransform(img.id, com.grooxtyper.app.model.ImageTransform.of(img))
+                            img.lockedAspect = !img.lockedAspect
+                        }) {
+                            Text(
+                                if (img.lockedAspect) "Aspek terkunci ✓" else "Aspek bebas",
+                                color = Accent, fontSize = 12.sp
+                            )
+                        }
+                        Text("Rotasi: ${img.rotationDeg.toInt()}°", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = img.rotationDeg,
+                            onValueChange = {
+                                img.rotationDeg = it
+                                refreshComposite()
+                            },
+                            onValueChangeFinished = { refreshComposite() },
+                            valueRange = 0f..360f
+                        )
+                        Text("Opacity: ${(img.opacity * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = img.opacity,
+                            onValueChange = {
+                                img.opacity = it.coerceIn(0.05f, 1f)
+                                refreshComposite()
+                            },
+                            valueRange = 0.05f..1f
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        commitImgBaseline()
+                        selectedImageId = null
+                    }) { Text("Selesai", color = Accent) }
+                },
+                dismissButton = {
+                    TextButton(onClick = {
+                        val idx = layerManager.indexOfLayer(img.id)
+                        if (idx >= 0) {
+                            undoRedoManager.pushLayerRemove(img, idx)
+                            layerManager.removeLayerById(img.id)
+                            if (selectedImageId == img.id) selectedImageId = null
+                            refreshComposite()
+                        }
+                    }) { Text("Hapus", color = Color.Red) }
                 },
                 containerColor = PanelBg
             )
@@ -2906,6 +3153,14 @@ fun CanvasEditorScreen(
                 if (selectedTextBox != null) showTextEditor = true
             }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
+            }
+
+            // Image: pindah/putar/ubah ukuran image layer.
+            IconButton(onClick = {
+                activeTool = ActiveTool.IMAGE
+                showBrushSettings = false
+            }) {
+                Icon(Icons.Default.FlipToBack, contentDescription = "Image", tint = if (activeTool == ActiveTool.IMAGE) Accent else Color.White)
             }
 
             // Text Detector (ML Kit lokal, tanpa download model) — dikembalikan ke toolbar.

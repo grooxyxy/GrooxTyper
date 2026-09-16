@@ -1,21 +1,21 @@
 # GrooxTyper
 
 Editor terjemahan manga on-device (Android): deteksi teks ML Kit, deteksi balon
-teks on-device via model YOLO detect (bubble, 2 kelas),
+teks on-device via model YOLO detect end-to-end (bubble, 1 kelas),
 inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Fitur utama
 
 - **Bubble Detector (inferensi nyata, on-device)** — model
-  `assets/models/bd.onnx` (YOLO detect 2 kelas,
-  input 640x640, single output (1,6,8400)) dieksekusi langsung di perangkat
-  memakai **ONNX Runtime Mobile**
+  `assets/models/bd.onnx` (YOLO end-to-end NMS-free, 1 kelas text,
+  input 640x640, single output (1,300,6) = x1,y1,x2,y2,score,cls) dieksekusi
+  langsung di perangkat memakai **ONNX Runtime Mobile**
   (`com.microsoft.onnxruntime:onnxruntime-android`). Decode Kotlin:
-  letterbox → argmax kelas → NMS global → box dalam koordinat kanvas
-  (mask=null untuk varian detect). Kompatibel mundur dengan checkpoint seg
-  legacy (37ch + protos) bila model lama dipakai. Untuk kanvas jangkung,
-  gambar dipotong jadi tile persegi ber-overlap 15% dengan NMS global untuk
-  menghapus duplikat di sambungan tile. Bila session ONNX gagal dimuat,
+  letterbox → threshold skor → box dalam koordinat kanvas
+  (mask=null, tanpa NMS karena head sudah one-to-one). Kompatibel mundur
+  dengan varian detect klasik (1,6,8400) dan seg legacy (37ch + protos).
+  Untuk kanvas jangkung, gambar dipotong jadi tile persegi ber-overlap 30%
+  dengan NMS global untuk menghapus duplikat di sambungan tile. Bila session ONNX gagal dimuat,
   otomatis fallback ke heuristik putih tersaturasi-rendah ber-outline gelap.
 - **Mask Bentuk Teks** — Otsu biner sesungguhnya per region teks + deteksi
   polaritas otomatis (teks gelap / teks terang di latar gelap) + dilatasi 1px
@@ -64,8 +64,8 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Konversi model (detect)
 
-Model aktif bubble detector adalah YOLO detect 2-class, imgsz 640,
-task detect. Contoh export bila melatih ulang via Ultralytics:
+Model aktif bubble detector adalah YOLO end-to-end NMS-free 1-class
+(text), dilatih 1280 dijalankan 640, task detect. Contoh export bila melatih ulang via Ultralytics:
 
 ```bash
 pip install ultralytics onnx onnxruntime
