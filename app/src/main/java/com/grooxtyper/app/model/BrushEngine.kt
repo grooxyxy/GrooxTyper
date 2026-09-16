@@ -109,6 +109,14 @@ class BrushEngine {
     // Stroke smoothing state
     private var lastSmoothedPoint: Offset? = null
     private var velocityHistory = mutableListOf<Float>()
+    // Prediksi Ink-style: ekstrapolasi titik berikut dari kecepatan agar
+    // sapuan 720x16000 terasa responsif walau event touch jarang (low-latency
+    // front-buffered idea dari androidx.graphics.lowlatency).
+    private var lastVelocity = Offset.Zero
+    // Tile-dirty 64px ala MyPaint TiledSurface: hanya tile tersentuh yang
+    // ditandai untuk composite inkremental (hemat vs render 46MB penuh).
+    private val dirtyTiles = LinkedHashSet<Long>()
+    private var dirtyTileBounds = RectF()
 
     // Titik hasil smoothing segmen sebelumnya — untuk interpolasi kuadratik
     // antar segmen (menghilangkan sudut "patah" saat jari bergerak cepat
@@ -142,12 +150,57 @@ class BrushEngine {
         lastSmoothedPoint = null
         prevCurvePoint = null
         velocityHistory.clear()
+        lastVelocity = Offset.Zero
+        dirtyTiles.clear()
+        dirtyTileBounds.setEmpty()
     }
 
     fun endStroke() {
         lastSmoothedPoint = null
         prevCurvePoint = null
         velocityHistory.clear()
+        lastVelocity = Offset.Zero
+    }
+
+    /** Prediksi titik berikut dari kecepatan (Ink prediction, murah, tanpa API baru). */
+    fun predictNext(current: Offset, previous: Offset?): Offset {
+        if (previous == null) return current
+        val v = Offset(current.x - previous.x, current.y - previous.y)
+        lastVelocity = Offset(
+            lastVelocity.x * 0.6f + v.x * 0.4f,
+            lastVelocity.y * 0.6f + v.y * 0.4f
+        )
+        return Offset(current.x + lastVelocity.x * 0.35f, current.y + lastVelocity.y * 0.35f)
+    }
+
+    /** Tandai tile 64px tersentuh (MyPaint) + gabungkan bounds kotor. */
+    fun markDirtyTiles(l: Float, t: Float, r: Float, b: Float) {
+        val tile = 64
+        val x0 = (l / tile).toInt().coerceAtLeast(0)
+        val y0 = (t / tile).toInt().coerceAtLeast(0)
+        val x1 = (r / tile).toInt().coerceAtLeast(x0)
+        val y1 = (b / tile).toInt().coerceAtLeast(y0)
+        for (ty in y0..y1) for (tx in x0..x1) {
+            dirtyTiles.add((tx.toLong() shl 32) or ty.toLong())
+        }
+        if (dirtyTileBounds.isEmpty) dirtyTileBounds.set(l, t, r, b)
+        else dirtyTileBounds.union(l, t, r, b)
+        if (dirtyTiles.size > 4096) {
+            dirtyTiles.clear()
+            dirtyTiles.add((x0.toLong() shl 32) or y0.toLong())
+        }
+    }
+
+    fun consumeDirtyTiles(): Set<Long> {
+        val out = dirtyTiles.toSet()
+        dirtyTiles.clear()
+        return out
+    }
+
+    fun consumeDirtyBounds(): RectF {
+        val out = RectF(dirtyTileBounds)
+        dirtyTileBounds.setEmpty()
+        return out
     }
 
     private fun smoothPoint(current: Offset, previous: Offset?, enabled: Boolean): Offset {
@@ -373,6 +426,8 @@ class BrushEngine {
             layer.markDirty()
             return
         }
+        // MyPaint 64px tiles: catat tile kotor untuk composite inkremental.
+        markDirtyTiles(cl, ct, cr, cb)
         canvas.save()
         canvas.clipRect(cl, ct, cr, cb)
 

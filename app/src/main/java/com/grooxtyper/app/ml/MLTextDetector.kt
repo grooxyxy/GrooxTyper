@@ -438,6 +438,183 @@ class MLTextDetector {
     }
 
     /**
+     * Mask bentuk teks untuk satu region: Sauvola adaptif primer (tahan bg tak rata,
+     * ref scikit-image Niblack/Sauvola + SWT window adaptif), fallback Otsu jarak warna.
+     * Mengembalikan bitmap ARGB sebesar [w x h] (putih = teks).
+     */
+    private fun buildTextShapeMask(
+        source: Bitmap, left: Int, top: Int, w: Int, h: Int
+    ): Bitmap? {
+        // Primer: Sauvola integral-image (cepat, O(1)/px, hemat di 720x16000).
+        try {
+            buildTextShapeMaskSauvola(source, left, top, w, h)?.let { return it }
+        } catch (e: Exception) { e.printStackTrace() }
+        return buildTextShapeMaskOtsu(source, left, top, w, h)
+    }
+
+    /**
+     * Sauvola lokal via integral images (hidouciyoucef/method-SAUVOLA,
+     * wahabaftab integral-images, Yuyang-Du-NTU C++/OpenCV, SauvolaNet MWS):
+     * T = m*(1+k*(s/R-1)), k=0.2, R=128, window adaptif SWT (Modified Sauvola:
+     * window dari estimasi stroke, bukan fixed) + polaritas otomatis + clip polygon di pemanggil.
+     */
+    private fun buildTextShapeMaskSauvola(
+        source: Bitmap, left: Int, top: Int, w: Int, h: Int
+    ): Bitmap? {
+        return try {
+            if (w <= 4 || h <= 4 || w * h > 4_000_000) return null
+            val pixels = IntArray(w * h)
+            source.getPixels(pixels, 0, w, left, top, w, h)
+            val gray = DoubleArray(w * h)
+            var gMean = 0.0
+            var gCount = 0
+            for (i in pixels.indices) {
+                val p = pixels[i]
+                if ((p ushr 24) < 16) { gray[i] = -1.0; continue }
+                val g = 0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF)
+                gray[i] = g
+                gMean += g
+                gCount++
+            }
+            if (gCount < 32) return null
+            gMean /= gCount
+            // Estimasi latar dari bingkai (median approx via mean bingkai, cepat).
+            var bSum = 0.0
+            var bN = 0
+            for (x in 0 until w) {
+                for (y in intArrayOf(0, h - 1)) {
+                    val g = gray[y * w + x]
+                    if (g >= 0) { bSum += g; bN++ }
+                }
+            }
+            for (y in 0 until h) {
+                for (x in intArrayOf(0, w - 1)) {
+                    val g = gray[y * w + x]
+                    if (g >= 0) { bSum += g; bN++ }
+                }
+            }
+            if (bN < 8) return null
+            val bMean = bSum / bN
+            // Polaritas otomatis: latar terang -> tinta gelap (pixel < T), sebaliknya pixel > T.
+            val darkInk = bMean >= gMean
+            // Window adaptif SWT: proporsional tinggi region (stroke ~ h/8), ganjil, 15..51.
+            var win = (h / 6).coerceIn(15, 51)
+            if (win % 2 == 0) win += 1
+            val half = win / 2
+            val k = 0.2
+            val R = 128.0
+            // Integral images sum + sumSq.
+            val iw = w + 1
+            val ih = h + 1
+            val intSum = DoubleArray(iw * ih)
+            val intSq = DoubleArray(iw * ih)
+            for (y in 0 until h) {
+                var rowS = 0.0
+                var rowQ = 0.0
+                for (x in 0 until w) {
+                    var g = gray[y * w + x]
+                    if (g < 0) g = bMean
+                    rowS += g
+                    rowQ += g * g
+                    val idx = (y + 1) * iw + (x + 1)
+                    intSum[idx] = intSum[y * iw + (x + 1)] + rowS
+                    intSq[idx] = intSq[y * iw + (x + 1)] + rowQ
+                }
+            }
+            fun rectStats(x0: Int, y0: Int, x1: Int, y1: Int): Pair<Double, Double> {
+                val xa = x0.coerceIn(0, w - 1)
+                val ya = y0.coerceIn(0, h - 1)
+                val xb = x1.coerceIn(0, w - 1)
+                val yb = y1.coerceIn(0, h - 1)
+                val l = minOf(xa, xb); val r = maxOf(xa, xb)
+                val t = minOf(ya, yb); val b = maxOf(ya, yb)
+                val n = ((r - l + 1) * (b - t + 1)).toDouble().coerceAtLeast(1.0)
+                val s = intSum[(b + 1) * iw + (r + 1)] - intSum[t * iw + (r + 1)] - intSum[(b + 1) * iw + l] + intSum[t * iw + l]
+                val q = intSq[(b + 1) * iw + (r + 1)] - intSq[t * iw + (r + 1)] - intSq[(b + 1) * iw + l] + intSq[t * iw + l]
+                val m = s / n
+                var v = q / n - m * m
+                if (v < 0) v = 0.0
+                return m to kotlin.math.sqrt(v)
+            }
+            val bin = BooleanArray(w * h)
+            var ink = 0
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val i = y * w + x
+                    val g = gray[i]
+                    if (g < 0) continue
+                    val (m, s) = rectStats(x - half, y - half, x + half, y + half)
+                    val t = m * (1.0 + k * (s / R - 1.0))
+                    val isInk = if (darkInk) g < t else g > t
+                    if (isInk) { bin[i] = true; ink++ }
+                }
+            }
+            val frac = ink / gCount.toFloat()
+            // SWT/MSER filter: fraksi tinta wajar untuk glyph (buang noise/flat).
+            if (frac < 0.01f || frac > 0.65f) return null
+            // Dilatasi 1px (anti-alias) + buang komponen <12px (MSER stability, naik dari 8).
+            var cur = bin
+            repeat(1) {
+                val nxt = BooleanArray(w * h)
+                for (y in 0 until h) for (x in 0 until w) {
+                    if (cur[y * w + x]) {
+                        for (dy in -1..1) for (dx in -1..1) {
+                            val xx = x + dx; val yy = y + dy
+                            if (xx in 0 until w && yy in 0 until h) nxt[yy * w + xx] = true
+                        }
+                    }
+                }
+                cur = nxt
+            }
+            val label = IntArray(w * h) { -1 }
+            val stack = IntArray(w * h)
+            var comp = 0
+            for (i in cur.indices) {
+                if (!cur[i] || label[i] != -1) continue
+                var sp = 0
+                stack[sp++] = i
+                label[i] = comp
+                var area = 0
+                var minX = w; var minY = h; var maxX = -1; var maxY = -1
+                while (sp > 0) {
+                    val p = stack[--sp]
+                    val x = p % w; val y = p / w
+                    area++
+                    if (x < minX) minX = x
+                    if (y < minY) minY = y
+                    if (x > maxX) maxX = x
+                    if (y > maxY) maxY = y
+                    if (x > 0) { val n = p - 1; if (cur[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (x < w - 1) { val n = p + 1; if (cur[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (y > 0) { val n = p - w; if (cur[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                    if (y < h - 1) { val n = p + w; if (cur[n] && label[n] == -1) { label[n] = comp; stack[sp++] = n } }
+                }
+                // SWT filter: buang sangat kecil + sangat pipih tak wajar untuk huruf.
+                val bw = maxX - minX + 1
+                val bh = maxY - minY + 1
+                val aspect = bw.toFloat() / bh.coerceAtLeast(1).toFloat()
+                if (area < 12 || aspect < 0.05f || aspect > 20f) {
+                    for (yy in minY..maxY) for (xx in minX..maxX) {
+                        if (label[yy * w + xx] == comp) cur[yy * w + xx] = false
+                    }
+                }
+                comp++
+            }
+            var kept = 0
+            for (b in cur) if (b) kept++
+            if (kept < 12) return null
+            val maskPixels = IntArray(w * h)
+            for (i in cur.indices) if (cur[i]) maskPixels[i] = -1
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(maskPixels, 0, w, 0, 0, w, h)
+            bmp
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /**
      * Mask bentuk teks untuk satu region: estimasi warna latar dari bingkai
      * tepi box, Otsu di atas histogram JARAK WARNA (Chebyshev) dari latar,
      * dilatasi 3 iterasi, dan pembersihan komponen kecil (noise).
@@ -446,7 +623,7 @@ class MLTextDetector {
      * masih cukup beda dari latar. Null bila box praktis datar.
      * Mengembalikan bitmap ARGB sebesar [w x h] (putih = teks).
      */
-    private fun buildTextShapeMask(
+    private fun buildTextShapeMaskOtsu(
         source: Bitmap, left: Int, top: Int, w: Int, h: Int
     ): Bitmap? {
         return try {
