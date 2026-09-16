@@ -6,6 +6,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.grooxtyper.app.native.NativeEngine
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Manajer inpainting (Telea native C++).
