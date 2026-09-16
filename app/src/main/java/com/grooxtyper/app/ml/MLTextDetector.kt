@@ -15,6 +15,7 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -51,84 +52,128 @@ class MLTextDetector {
         MLScript.KOREAN to TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
     )
 
-    /** Deteksi teks dengan recognizer per script terpilih, lalu gabung + hapus duplikat. */
+    private companion object {
+        /** Sisi terpanjang input yang aman untuk satu kali proses ML Kit. */
+        const val MAX_INPUT_SIDE = 2048
+        /** Tinggi strip (piksel sumber) untuk kanvas jangkung. */
+        const val STRIP_SRC = 1000
+        /** Overlap antar strip agar baris di sambungan tidak terpotong. */
+        const val STRIP_OVERLAP_SRC = 140
+    }
+
+    /**
+     * Deteksi teks ML Kit v2 MULTI-PASS agar hasil jauh lebih lengkap:
+     * pass 1 resolusi asli + pass 2 upscale 2x (teks kecil/tipis baru
+     * terbaca setelah diperbesar). Hasil digabung, dedupe
+     * containment-aware, lalu fragmen baris yang terpisah digabung ulang.
+     */
     suspend fun detectTextRegions(
         bitmap: Bitmap,
         scripts: Set<MLScript> = setOf(MLScript.LATIN)
     ): List<DetectedTextRegion> {
-        if (scripts.isEmpty()) return emptyList()
-        // Kanvas jangkung (mis. 720x16000): ML Kit dibatasi ukuran input,
-        // jadi potong jadi strip horizontal ber-overlap lalu gabung.
-        if (bitmap.height > 2048 && bitmap.height > bitmap.width * 2) {
-            return detectTiled(bitmap, scripts)
-        }
-        val all = mutableListOf<DetectedTextRegion>()
-        for (script in scripts) {
-            val client = clients[script] ?: continue
-            try {
-                all += detectWith(client, bitmap, script)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        return dedupe(all)
+        if (scripts.isEmpty() || bitmap.width <= 0 || bitmap.height <= 0) return emptyList()
+        val base = detectScaled(bitmap, scripts, scale = 1f)
+        val hiRes = detectScaled(bitmap, scripts, scale = 2f)
+        val merged = dedupe(base + hiRes)
+        return mergeFragmentedLines(merged)
     }
 
     /**
-     * Deteksi per strip untuk gambar jangkung (mis. 720x16000):
-     * strip 1800px dengan overlap 200px agar baris di sambungan tidak
-     * terpotong, koordinat di-offset ke global lalu dedupe.
+     * Satu pass deteksi pada skala [scale] (1f = asli, 2f = upscale 2x).
+     * Bila hasil upscale melebihi [MAX_INPUT_SIDE], gambar dipotong jadi
+     * strip horizontal ber-overlap (dalam koordinat sumber) lalu koordinat
+     * tiap strip dipetakan balik ke kanvas penuh.
      */
-    private suspend fun detectTiled(
+    private suspend fun detectScaled(
         bitmap: Bitmap,
-        scripts: Set<MLScript>
+        scripts: Set<MLScript>,
+        scale: Float
     ): List<DetectedTextRegion> {
+        val scaledH = bitmap.height * scale
+        if (scaledH <= MAX_INPUT_SIDE) {
+            val work = scaledCopy(bitmap, scale) ?: return emptyList()
+            try {
+                val found = mutableListOf<DetectedTextRegion>()
+                for (script in scripts) {
+                    val client = clients[script] ?: continue
+                    try {
+                        found += detectWith(client, work, script)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                }
+                return found.map { scaleBack(it, scale, 0) }
+            } finally {
+                if (work !== bitmap) runCatching { work.recycle() }
+            }
+        }
+        // Kanvas jangkung (mis. webtoon 720x16000): strip ber-overlap.
         val w = bitmap.width
         val h = bitmap.height
-        val stripH = 1800
-        val overlap = 200
-        val step = stripH - overlap
+        val step = STRIP_SRC - STRIP_OVERLAP_SRC
         val all = mutableListOf<DetectedTextRegion>()
         var top = 0
         while (top < h) {
-            val bottom = min(h, top + stripH)
-            val curTop = max(0, bottom - stripH).let { if (bottom >= h) it else top }
+            val bottom = min(h, top + STRIP_SRC)
+            val curTop = if (bottom >= h) max(0, bottom - STRIP_SRC) else top
             val curH = bottom - curTop
             if (curH <= 0) break
-            val crop = try {
-                Bitmap.createBitmap(bitmap, 0, curTop, w, curH)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-            if (crop != null) {
-                try {
+            var crop: Bitmap? = null
+            var work: Bitmap? = null
+            try {
+                crop = Bitmap.createBitmap(bitmap, 0, curTop, w, curH)
+                work = scaledCopy(crop, scale)
+                if (work != null) {
                     for (script in scripts) {
                         val client = clients[script] ?: continue
                         try {
-                            val found = detectWith(client, crop, script)
-                            for (r in found) {
-                                val b = r.boundingBox
-                                val shifted = Rect(
-                                    b.left, b.top + curTop, b.right, b.bottom + curTop
-                                )
-                                val shiftedCorners = r.cornerPoints?.map { p ->
-                                    android.graphics.Point(p.x, p.y + curTop)
-                                }?.toTypedArray()
-                                all.add(r.copy(boundingBox = shifted, cornerPoints = shiftedCorners))
-                            }
+                            val found = detectWith(client, work, script)
+                            for (r in found) all.add(scaleBack(r, scale, curTop))
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }
                     }
-                } finally {
-                    runCatching { crop.recycle() }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                if (work != null && work !== crop) runCatching { work.recycle() }
+                runCatching { crop?.recycle() }
             }
             if (bottom >= h) break
             top += step
         }
-        return dedupe(all)
+        return all
+    }
+
+    /** Salin bitmap pada skala tertentu; skala 1f mengembalikan sumber. */
+    private fun scaledCopy(src: Bitmap, scale: Float): Bitmap? {
+        if (scale == 1f) return src
+        val w = (src.width * scale).toInt().coerceAtLeast(1)
+        val h = (src.height * scale).toInt().coerceAtLeast(1)
+        return try {
+            Bitmap.createScaledBitmap(src, w, h, true)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /** Petakan hasil pada gambar berskala [scale] balik ke koordinat sumber. */
+    private fun scaleBack(r: DetectedTextRegion, scale: Float, offsetY: Int): DetectedTextRegion {
+        if (scale == 1f && offsetY == 0) return r
+        val b = r.boundingBox
+        val inv = 1f / scale
+        val box = Rect(
+            (b.left * inv).toInt(),
+            (b.top * inv).toInt() + offsetY,
+            (b.right * inv).toInt(),
+            (b.bottom * inv).toInt() + offsetY
+        )
+        val corners = r.cornerPoints?.map { p ->
+            android.graphics.Point((p.x * inv).toInt(), (p.y * inv).toInt() + offsetY)
+        }?.toTypedArray()
+        return r.copy(boundingBox = box, cornerPoints = corners)
     }
 
     private suspend fun detectWith(
@@ -162,13 +207,89 @@ class MLTextDetector {
             }
     }
 
-    /** Buang prediksi ganda antar-script (IoU tinggi → simpan teks terpanjang). */
+    /**
+     * Buang prediksi ganda antar-pass/antar-script: duplikat bila IoU > 0.45
+     * ATAU salah satu box > 70% termuat di dalam yang lain (pass upscale
+     * sering menghasilkan box sedikit berbeda ukuran). Simpan teks terpanjang.
+     */
     private fun dedupe(regions: List<DetectedTextRegion>): List<DetectedTextRegion> {
         val out = mutableListOf<DetectedTextRegion>()
         for (r in regions.sortedByDescending { it.text.length }) {
-            if (out.none { iou(it.boundingBox, r.boundingBox) > 0.6f }) out.add(r)
+            val dup = out.any { o ->
+                iou(o.boundingBox, r.boundingBox) > 0.45f ||
+                    containment(o.boundingBox, r.boundingBox) > 0.7f
+            }
+            if (!dup) out.add(r)
         }
         return out
+    }
+
+    /** Seberapa besar box yang lebih kecil termuat di dalam box lain (0..1). */
+    private fun containment(a: Rect, b: Rect): Float {
+        val ix = max(0, min(a.right, b.right) - max(a.left, b.left))
+        val iy = max(0, min(a.bottom, b.bottom) - max(a.top, b.top))
+        val inter = ix * iy
+        val smaller = min(a.width() * a.height(), b.width() * b.height())
+        return if (smaller <= 0) 0f else inter.toFloat() / smaller
+    }
+
+    /**
+     * Gabung fragmen baris yang terpisah (mis. kata dalam satu baris bubble
+     * terbaca sebagai dua line): syaratnya script sama, tinggi mirip, garis
+     * tengah vertikal sejajar, celah horizontal < ~1,1x tinggi baris, dan
+     * kedua box berbentuk horizontal (kolom teks vertikal tidak digabung).
+     */
+    private fun mergeFragmentedLines(regions: List<DetectedTextRegion>): List<DetectedTextRegion> {
+        val items = regions.toMutableList()
+        var merged = true
+        while (merged) {
+            merged = false
+            var done = false
+            for (i in items.indices) {
+                if (done) break
+                for (j in i + 1 until items.size) {
+                    val m = tryMergeLine(items[i], items[j])
+                    if (m != null) {
+                        items[i] = m
+                        items.removeAt(j)
+                        merged = true
+                        done = true
+                        break
+                    }
+                }
+            }
+        }
+        return items.sortedWith(compareBy({ it.boundingBox.top }, { it.boundingBox.left }))
+    }
+
+    private fun tryMergeLine(a: DetectedTextRegion, b: DetectedTextRegion): DetectedTextRegion? {
+        if (a.script != b.script) return null
+        val ra = a.boundingBox
+        val rb = b.boundingBox
+        val hA = ra.height()
+        val hB = rb.height()
+        if (hA <= 0 || hB <= 0) return null
+        // Hanya baris horizontal; teks vertikal (kolom) jangan digabung.
+        if (ra.width() < hA || rb.width() < hB) return null
+        val minH = min(hA, hB)
+        val maxH = max(hA, hB)
+        if (maxH > minH * 2.2f) return null
+        if (abs(ra.centerY() - rb.centerY()) > minH * 0.45f) return null
+        val gap = max(rb.left - ra.right, ra.left - rb.right)
+        if (gap > minH * 1.1f) return null
+        // Tumpang tindih dalam berarti bukan fragmen — urusan dedupe.
+        if (gap < -min(ra.width(), rb.width()) / 2) return null
+        val (leftR, rightR) = if (ra.left <= rb.left) a to b else b to a
+        val joined = DetectedTextRegion(
+            text = leftR.text + " " + rightR.text,
+            boundingBox = Rect(
+                min(ra.left, rb.left), min(ra.top, rb.top),
+                max(ra.right, rb.right), max(ra.bottom, rb.bottom)
+            ),
+            cornerPoints = null,
+            script = a.script
+        )
+        return joined
     }
 
     private fun iou(a: Rect, b: Rect): Float {

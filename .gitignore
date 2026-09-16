@@ -19,10 +19,6 @@ local.properties
 *.so
 obj/
 
-# Model PP-OCR (.onnx puluhan MB) diunduh saat build di GitHub Action,
-# bukan di-commit. Dict teks (.txt, KB) ikut ter-commit di bawahnya.
-app/src/main/assets/models/ppocr/*.onnx
-
 # Model bubble 40MB (koharu ONNX) tidak di-commit agar repo ramping & push
 # cepat; runtime fallback ke heuristik bila aset absen (build tetap hijau).
 app/src/main/assets/models/koharu/*.onnx

@@ -109,8 +109,6 @@ import com.grooxtyper.app.ml.DetectedTextRegion
 import com.grooxtyper.app.ml.MLMaskType
 import com.grooxtyper.app.ml.MLScript
 import com.grooxtyper.app.ml.MLTextDetector
-import com.grooxtyper.app.ml.PpocrDetector
-import com.grooxtyper.app.ml.TextEngine
 import com.grooxtyper.app.ml.BubbleDetector
 import com.grooxtyper.app.ml.BubbleModel
 import com.grooxtyper.app.ml.readingOrder
@@ -367,8 +365,6 @@ fun CanvasEditorScreen(
     val fontRegistry = remember { FontRegistry(context) }
     val inpaintingManager = remember { InpaintingManager() }
     val mlTextDetector = remember { MLTextDetector() }
-    // PP-OCR v6 small (ORT, model .onnx diunduh saat build ke assets).
-    val ppocrDetector = remember { PpocrDetector(context) }
     val undoRedoManager = remember { UndoRedoManager() }
     val exportManager = remember { FileExportManager(context) }
     val viewState = remember { CanvasViewState(canvasWidth, canvasHeight) }
@@ -738,7 +734,6 @@ fun CanvasEditorScreen(
     var selectedMaskType by remember { mutableStateOf(MLMaskType.MASK_KOTAK) }
     var makeEditableText by remember { mutableStateOf(true) }
     var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
-    var textEngine by remember { mutableStateOf(TextEngine.ML_KIT) }
     var mlDetecting by remember { mutableStateOf(false) }
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
 
@@ -978,41 +973,29 @@ fun CanvasEditorScreen(
         return applyPrefixStyleTo(box)
     }
 
-    var ppocrError by remember { mutableStateOf<String?>(null) }
+    var mlDetectError by remember { mutableStateOf<String?>(null) }
 
     fun runMLDetection() {
         scope.launch {
             val active = layerManager.getActiveLayer()
             if (active != null) {
                 mlDetecting = true
-                ppocrError = null
-                val wantPpocr = textEngine == TextEngine.PPOCR_V6
-                val ppocrReady = ppocrDetector.isAvailable()
-                android.util.Log.i("RunML", "wantPpocr=$wantPpocr ready=$ppocrReady status=${ppocrDetector.modelStatus()} dump=${ppocrDetector.debugAssetDump()}")
+                mlDetectError = null
+                android.util.Log.i("RunML", "ML Kit v2 detect scripts=$mlScripts size=${active.getBitmap().width}x${active.getBitmap().height}")
                 detectedTextRegions = try {
-                    if (wantPpocr) {
-                        if (ppocrReady) {
-                            val r = ppocrDetector.detect(active.getBitmap(), mlScripts)
-                            if (r.isEmpty()) {
-                                android.util.Log.w("RunML", "PPOCR empty -> fallback MLKit")
-                                ppocrError = "PP-OCR tidak menemukan teks (0 box) — fallback ke ML Kit. Cek logcat PpocrDetector."
-                                mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
-                            } else r
-                        } else {
-                            ppocrError = "Model PP-OCR belum ada (${ppocrDetector.modelStatus()}) — pakai ML Kit. Build CI harus hijau."
-                            android.util.Log.w("RunML", "PPOCR not available, fallback MLKit")
-                            mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
-                        }
-                    } else {
-                        mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                    val r = mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                    if (r.isEmpty()) {
+                        mlDetectError = "ML Kit tidak menemukan teks — coba perbesar gambar atau pilih bahasa lain."
+                        android.util.Log.w("RunML", "ML Kit 0 region")
                     }
+                    r
                 } catch (e: Exception) {
                     e.printStackTrace()
                     android.util.Log.e("RunML", "detect exception", e)
-                    ppocrError = "Error deteksi: ${e.message}"
+                    mlDetectError = "Error deteksi: ${e.message}"
                     emptyList()
                 } catch (e: OutOfMemoryError) {
-                    ppocrError = "OOM deteksi — coba gambar lebih kecil / tutup app lain"
+                    mlDetectError = "OOM deteksi — coba gambar lebih kecil / tutup app lain"
                     emptyList()
                 }
                 mlDetecting = false
@@ -2992,46 +2975,18 @@ fun CanvasEditorScreen(
                             color = Color.LightGray, fontSize = 13.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text("Mesin deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            TextEngine.values().forEach { engine ->
-                                val on = textEngine == engine
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(if (on) Accent else PanelBg)
-                                        .clickable { textEngine = engine }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(engine.displayName, color = Color.White, fontSize = 11.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
-                                }
-                            }
-                        }
+                        Text("Mesin deteksi: ML Kit v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
-                            if (textEngine == TextEngine.PPOCR_V6) {
-                                val st = ppocrDetector.modelStatus()
-                                if (ppocrDetector.isAvailable()) "PP-OCR siap ($st). Korea⊃Inggris • China⊃Inggris."
-                                else "Model belum ikut ter-build ($st). Jalankan (otomatis fallback ML Kit)."
-                            } else {
-                                "ML Kit bawaan, tanpa file tambahan."
-                            },
-                            color = if (textEngine == TextEngine.PPOCR_V6 && !ppocrDetector.isAvailable()) Color(0xFFFF6B6B) else Color.Gray, fontSize = 11.sp
+                            "ML Kit bawaan (on-device, multi-pass + upscale untuk teks kecil), tanpa file tambahan.",
+                            color = Color.Gray, fontSize = 11.sp
                         )
-                        if (ppocrError != null) {
+                        if (mlDetectError != null) {
                             Spacer(modifier = Modifier.height(4.dp))
-                            Text(ppocrError!!, color = Color(0xFFFFCC00), fontSize = 11.sp)
-                            Text("Logcat: adb logcat -s PpocrDetector,RunML", color = Color.Gray, fontSize = 10.sp)
+                            Text(mlDetectError!!, color = Color(0xFFFFCC00), fontSize = 11.sp)
+                            Text("Logcat: adb logcat -s MLTextDetector,RunML", color = Color.Gray, fontSize = 10.sp)
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text(
-                            "PP-OCR: Jepang tak didukung (pakai ML Kit untuk Jepang).",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
