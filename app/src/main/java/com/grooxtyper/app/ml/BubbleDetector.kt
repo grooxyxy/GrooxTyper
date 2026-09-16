@@ -18,13 +18,16 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BEST1_ONNX -> `models/best1.onnx` (YOLOv11n-seg, hasil konversi dari
- * checkpoint `best1.pt`). Model DIEKSEKUSI LANGSUNG di perangkat via
- * ONNX Runtime Mobile: 1 kelas ("balloon"), input 640x640, output deteksi
- * (1,37,8400) + prototipe mask (1,32,160,160).
+ * BEST1_ONNX -> `models/best1.onnx` (YOLO detect, 2 kelas balloon/other,
+ * input 640x640, single output (1,6,8400)). Model DIEKSEKUSI LANGSUNG di
+ * perangkat via ONNX Runtime Mobile.
  *
- * `best1.pt` tetap disertakan di assets sebagai referensi / arsip checkpoint
- * latih, tapi tidak dipakai saat runtime.
+ * Kompatibel mundur: bila ONNX mengembalikan 2 output (det + protos seg
+ * legacy 37ch), dipakai jalur seg + mask. Bila 1 output (detect), dipakai
+ * jalur detect tanpa mask (mask=null).
+ *
+ * `best1.pt` (checkpoint seg lama) tetap disertakan sebagai arsip bila ada,
+ * tapi tidak dipakai saat runtime.
  */
 enum class BubbleModel(
     val displayName: String,
@@ -32,8 +35,8 @@ enum class BubbleModel(
     val asset: String
 ) {
     BEST1_ONNX(
-        "best1.onnx • YOLOv11n-seg (on-device)",
-        "Inferensi nyata ONNX Runtime, input 640x640, kelas balloon",
+        "best1.onnx • YOLO detect balloon/other (on-device)",
+        "Inferensi nyata ONNX Runtime, input 640x640, kelas balloon + other",
         "models/best1.onnx"
     )
 }
@@ -41,9 +44,9 @@ enum class BubbleModel(
 data class DetectedBubble(
     val boundingBox: RectF,
     val score: Float,
-    /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null). */
+    /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null; null untuk model detect). */
     val mask: Bitmap? = null,
-    /** Id kelas model (bila tersedia): 0 = balloon. */
+    /** Id kelas model: 0 = balloon, 1 = other (model detect baru). -1 = tak diketahui/heuristik. */
     val classId: Int = -1
 )
 
@@ -56,7 +59,11 @@ object YoloBubbleModel {
 /**
  * Detektor balon teks manga on-device.
  *
- * Jalur utama: inferensi ONNX (YOLOv11n-seg) via ONNX Runtime Mobile.
+ * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
+ * - Model baru: YOLO detect 2-class (balloon/other), input 640x640,
+ *   output tunggal (1,6,8400) = 4 box + 2 skor kelas, tanpa mask.
+ * - Legacy: YOLOv11n-seg 1-class, output (1,37,8400) + protos (1,32,160,160)
+ *   dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
  * 720px ber-overlap 15%; setiap tile di-letterbox ke 640x640, dijalankan
  * lewat model, lalu duplikat di sambungan tile dibuang via NMS global.
@@ -71,7 +78,8 @@ class BubbleDetector {
         private const val INPUT_SIZE = 640
         private const val NUM_MASK_COEF = 32
         private const val PROTO_SIZE = 160
-        private const val NUM_CHANNELS = 4 + 1 + NUM_MASK_COEF // box + 1 kelas + coef = 37
+        // Legacy seg: box(4) + 1 kelas + 32 koef = 37 kanal.
+        private const val NUM_CHANNELS_SEG = 4 + 1 + NUM_MASK_COEF
         private const val CONF_THRESH = 0.25f
         private const val IOU_THRESH = 0.45f
         private const val MAX_DETECTIONS = 150
@@ -148,9 +156,18 @@ class BubbleDetector {
         val coef: FloatArray
     )
 
+    private data class RawBox(
+        val x1: Float, val y1: Float, val x2: Float, val y2: Float,
+        val score: Float,
+        val classId: Int
+    )
+
     /**
      * Inferensi satu bitmap ukuran bebas: letterbox ke 640x640, decode
-     * output YOLOv11n-seg, kembalikan deteksi dalam koordinat bitmap asli.
+     * output YOLO, kembalikan deteksi dalam koordinat bitmap asli.
+     * Mendukung dua varian:
+     * - detect 2-class baru: 1 output (1,6,8400) atau (1,8400,6), tanpa mask.
+     * - seg legacy: 2 output (1,37,8400) + (1,32,160,160) dengan mask.
      */
     private suspend fun runOnnx(session: OrtSession, src: Bitmap): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
@@ -196,9 +213,28 @@ class BubbleDetector {
                     longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
                 )
                 results = session.run(mapOf(session.inputNames.first() to inputTensor))
-                val out0 = results[0].value as Array<Array<FloatArray>> // (1,37,8400)
-                val out1 = results[1].value as Array<Array<Array<FloatArray>>> // (1,32,160,160)
-                decodeSeg(out0[0], out1[0], src.width, src.height, scale, padX, padY)
+                val res = results ?: return@withLock emptyList<DetectedBubble>()
+                // Jalur seg legacy bila ada 2 output.
+                if (res.size() >= 2) {
+                    try {
+                        val out0 = res[0].value as Array<Array<FloatArray>> // (1,37,8400)
+                        val out1 = res[1].value as Array<Array<Array<FloatArray>>> // (1,32,160,160)
+                        // Pastikan kanal seg agar tidak salah decode model detect.
+                        if (out0[0].size == NUM_CHANNELS_SEG) {
+                            return@withLock decodeSeg(out0[0], out1[0], src.width, src.height, scale, padX, padY)
+                        }
+                    } catch (e: Exception) {
+                        // Jatuh ke jalur detect di bawah.
+                    }
+                }
+                // Jalur detect: 1 output (1,C,N) atau (1,N,C), C = 4 + numClasses.
+                val rawVal = res[0].value
+                val mat: Array<FloatArray>? = extractBatchMatrix(rawVal)
+                if (mat != null) {
+                    decodeDetect(mat, src.width, src.height, scale, padX, padY)
+                } else {
+                    emptyList()
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
@@ -210,10 +246,109 @@ class BubbleDetector {
     }
 
     /**
-     * Decode output YOLOv11n-seg: preds (37, 8400) + protos (32,160,160).
+     * Ambil matriks 2D batch-0 dari output ONNX 3D (1,C,N) atau (1,N,C).
+     * Mengembalikan null bila bentuk tak dikenali.
+     */
+    private fun extractBatchMatrix(rawVal: Any?): Array<FloatArray>? {
+        return try {
+            @Suppress("UNCHECKED_CAST")
+            val batch = (rawVal as Array<*>)[0] as? Array<FloatArray> ?: return null
+            if (batch.isEmpty() || batch[0].isEmpty()) return null
+            batch
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Decode output YOLO detect: matriks (C,N) atau (N,C) dengan
+     * C = 4 box (cx,cy,w,h relatif 640) + numClasses skor.
+     * Model baru: C=6 (balloon=0, other=1). Mask=null (box-only).
+     */
+    private fun decodeDetect(
+        mat: Array<FloatArray>,
+        origW: Int, origH: Int,
+        scale: Float, padX: Float, padY: Float
+    ): List<DetectedBubble> {
+        val d0 = mat.size
+        if (d0 == 0) return emptyList()
+        val d1 = mat[0].size
+        if (d1 == 0) return emptyList()
+        // Tentukan layout: (C,N) bila d0 kecil & d1 besar, (N,C) sebaliknya.
+        val isChannelFirst = if (d0 in 5..10 && d1 > 100) true
+        else if (d1 in 5..10 && d0 > 100) false
+        else d0 <= d1 // fallback: kanal lebih sedikit dari anchor
+        val numChannels: Int
+        val numAnchors: Int
+        fun get(c: Int, a: Int): Float = if (isChannelFirst) mat[c][a] else mat[a][c]
+        if (isChannelFirst) {
+            numChannels = d0
+            numAnchors = d1
+        } else {
+            numChannels = d1
+            numAnchors = d0
+        }
+        if (numChannels < 5 || numAnchors <= 0) return emptyList()
+        val numClasses = numChannels - 4
+        if (numClasses <= 0) return emptyList()
+
+        val raw = ArrayList<RawBox>(64)
+        for (a in 0 until numAnchors) {
+            var bestScore = Float.NEGATIVE_INFINITY
+            var bestCls = 0
+            for (c in 0 until numClasses) {
+                val s = get(4 + c, a)
+                if (s > bestScore) {
+                    bestScore = s
+                    bestCls = c
+                }
+            }
+            if (bestScore < CONF_THRESH) continue
+            val cx = get(0, a)
+            val cy = get(1, a)
+            val w = get(2, a)
+            val h = get(3, a)
+            if (w <= 0f || h <= 0f) continue
+            val x1 = (cx - w / 2f - padX) / scale
+            val y1 = (cy - h / 2f - padY) / scale
+            val x2 = (cx + w / 2f - padX) / scale
+            val y2 = (cy + h / 2f - padY) / scale
+            raw.add(RawBox(x1, y1, x2, y2, bestScore, bestCls))
+        }
+        if (raw.isEmpty()) return emptyList()
+
+        // NMS global (abaikan kelas agar duplikat balloon/other menyatu).
+        val kept = ArrayList<RawBox>()
+        for (d in raw.sortedByDescending { it.score }) {
+            var dup = false
+            for (k in kept) {
+                if (iou(d.x1, d.y1, d.x2, d.y2, k.x1, k.y1, k.x2, k.y2) > IOU_THRESH) {
+                    dup = true; break
+                }
+            }
+            if (!dup) kept.add(d)
+        }
+
+        val out = ArrayList<DetectedBubble>(kept.size)
+        for (d in kept) {
+            val box = RectF(
+                d.x1.coerceIn(0f, origW.toFloat()),
+                d.y1.coerceIn(0f, origH.toFloat()),
+                d.x2.coerceIn(0f, origW.toFloat()),
+                d.y2.coerceIn(0f, origH.toFloat())
+            )
+            if (box.width() < 8f || box.height() < 8f) continue
+            out.add(DetectedBubble(box, d.score, null, d.classId))
+        }
+        return out
+    }
+
+    /**
+     * Decode legacy YOLOv11n-seg: preds (37, 8400) + protos (32,160,160).
      * 37 kanal = 4 box (cx,cy,w,h relatif 640) + 1 skor kelas + 32 koefisien mask.
      * Mask diproses HANYA untuk deteksi terbaik per region (hemat memori/CPU):
      * protos x koefisien -> sigmoid -> crop ke box -> resize ke koordinat asli.
+     * Dipertahankan untuk kompatibilitas mundur; model baru memakai decodeDetect.
      */
     private fun decodeSeg(
         preds: Array<FloatArray>,

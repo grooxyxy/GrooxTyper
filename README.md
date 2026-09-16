@@ -1,22 +1,22 @@
 # GrooxTyper
 
 Editor terjemahan manga on-device (Android): deteksi teks ML Kit, deteksi balon
-teks on-device via model YOLOv11n-seg (`best1.onnx`, dikonversi dari
-`best1.pt`), inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
+teks on-device via model YOLO detect (`best1.onnx`, 2 kelas balloon/other),
+inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Fitur utama
 
 - **Bubble Detector (inferensi nyata, on-device)** — model
-  `assets/models/best1.onnx` (YOLOv11n-seg, 1 kelas `balloon`, input 640x640)
-  dieksekusi langsung di perangkat memakai **ONNX Runtime Mobile**
-  (`com.microsoft.onnxruntime:onnxruntime-android`). Output deteksi
-  (1,37,8400) + prototipe mask (1,32,160,160) didecode penuh di Kotlin:
-  letterbox → NMS → sigmoid(protos·koefisien) → mask segmentasi ALPHA_8 per
-  bubble dalam koordinat kanvas. Untuk kanvas jangkung, gambar dipotong jadi
-  tile persegi ber-overlap 15% dengan NMS global untuk menghapus duplikat di
-  sambungan tile. Checkpoint latih `best1.pt` tetap disertakan sebagai
-  referensi/arsip; bila session ONNX gagal dimuat, otomatis fallback ke
-  heuristik putih tersaturasi-rendah ber-outline gelap.
+  `assets/models/best1.onnx` (YOLO detect, 2 kelas `balloon`/`other`,
+  input 640x640, single output (1,6,8400)) dieksekusi langsung di perangkat
+  memakai **ONNX Runtime Mobile**
+  (`com.microsoft.onnxruntime:onnxruntime-android`). Decode Kotlin:
+  letterbox → argmax kelas → NMS global → box dalam koordinat kanvas
+  (mask=null untuk varian detect). Kompatibel mundur dengan checkpoint seg
+  legacy (37ch + protos) bila model lama dipakai. Untuk kanvas jangkung,
+  gambar dipotong jadi tile persegi ber-overlap 15% dengan NMS global untuk
+  menghapus duplikat di sambungan tile. Bila session ONNX gagal dimuat,
+  otomatis fallback ke heuristik putih tersaturasi-rendah ber-outline gelap.
 - **Mask Bentuk Teks** — Otsu biner sesungguhnya per region teks + deteksi
   polaritas otomatis (teks gelap / teks terang di latar gelap) + dilatasi 1px
   agar anti-alias tepi stroke ikut tertutup + pembersihan noise komponen
@@ -62,11 +62,14 @@ teks on-device via model YOLOv11n-seg (`best1.onnx`, dikonversi dari
 5. Tips anti-lag: 1 drawing layer (fast-path blit ~50px vs render 46MB),
    kecilkan size <32px bila patah, hindari teks/blend menumpuk di area sapuan.
 
-## Konversi model (best1.pt → best1.onnx)
+## Konversi model (detect)
+
+Model aktif `best1.onnx` adalah YOLO detect 2-class (balloon/other), imgsz 640,
+task detect. Contoh export bila melatih ulang via Ultralytics:
 
 ```bash
 pip install ultralytics onnx onnxruntime
-python -c "from ultralytics import YOLO; YOLO('app/src/main/assets/models/best1.pt').export(format='onnx', imgsz=640, opset=17, simplify=True)"
+python -c "from ultralytics import YOLO; YOLO('best.pt').export(format='onnx', imgsz=640, opset=17, simplify=True)"
 # hasil: app/src/main/assets/models/best1.onnx
 ```
 
