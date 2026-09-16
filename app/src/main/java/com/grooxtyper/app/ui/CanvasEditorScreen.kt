@@ -2304,8 +2304,8 @@ fun CanvasEditorScreen(
                         when (inpaintingManager.healMode) {
                             com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Content-Aware: seimbang (pengganti PS)."
                             com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure: garis manga tetap tajam."
-                            com.grooptyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
-                            com.grooptyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga Seamless: garis + screentone (riset Xie SIGGRAPH21, terbaik)."
+                            com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
+                            com.grooxtyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga Seamless: garis + screentone (riset Xie SIGGRAPH21, terbaik)."
                         },
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
