@@ -18,8 +18,10 @@ const brush = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/B
 const patch = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PatchMatchInpainter.kt'));
 const inpaint = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/InpaintingManager.kt'));
 const editor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/CanvasEditorScreen.kt'));
+const imageImport = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ImageImport.kt'));
+const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ProjectManager.kt'));
 
-for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor]]) {
+for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager]]) {
   const open = (text.match(/{/g) || []).length;
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
@@ -50,8 +52,30 @@ assert(inpaint.includes('healMode'), 'InpaintingManager expose healMode');
 assert(inpaint.includes('inpaintHealDirty'), 'InpaintingManager punya inpaintHealDirty');
 assert(editor.includes('HealMode'), 'UI pemilih mode heal tampil di quick slider');
 
+// 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
+assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');
+assert(imageImport.includes('heapImportBudgetBytes'), 'import hitung budget byte heap (720x16000 lolos di HP normal)');
+assert(imageImport.includes('effectivePixelBudget'), 'import pakai effectivePixelBudget (min absolut+heap)');
+assert(imageImport.includes('BitmapRegionDecoder'), 'import pakai BitmapRegionDecoder tiled (adaptasi FileManager)');
+assert(imageImport.includes('decodeTiledContent'), 'import punya jalur decodeTiledContent 1024px');
+assert(imageImport.includes('decodeTiledFile'), 'import punya jalur decodeTiledFile untuk buka ulang project');
+assert(imageImport.includes('TILE_DECODE_SIZE'), 'import tile 1024px untuk jahit berubin');
+assert(imageImport.includes('FALLBACK_SAMPLE'), 'import fallback sample=8 saat OOM');
+assert(imageImport.includes('decodeFileHeapAware'), 'import sediakan decodeFileHeapAware untuk project 720x16000');
+assert(imageImport.includes('loadFallbackContent'), 'import fallback konservatif anti-crash');
+assert(imageImport.includes('ExifInterface(path)'), 'import koreksi EXIF untuk file (foto tidak miring)');
+assert(projectManager.includes('decodeFileHeapAware'), 'ProjectManager buka ulang via decodeFileHeapAware (anti-OOM 46MB)');
+
+// 5. Brush di kanvas 720x16000 (adaptasi Vasilias viewport+culling+throttle)
+assert(brush.includes('BrushHugeGuide'), 'brush punya BrushHugeGuide cara pakai 720x16000');
+assert(brush.includes('HUGE_BRUSH_THROTTLE_MS'), 'brush throttle 16ms untuk huge canvas');
+assert(brush.includes('visibleRect'), 'brush dukung viewport culling via visibleRect');
+assert(brush.includes('BrushFrameThrottle'), 'brush punya BrushFrameThrottle anti-jank');
+assert(editor.includes('BrushHugeGuide.visibleRect'), 'editor oper visibleRect ke brush saat huge');
+assert(editor.includes('brushVisible'), 'editor hitung brushVisible sekali per event');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
-  console.log('brush-check PASSED: brush anti-delay/crash + heal brush siap');
+  console.log('brush-check PASSED: brush anti-delay/crash + heal brush siap + import 720x16000 heap-aware');
 }

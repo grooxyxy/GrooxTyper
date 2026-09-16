@@ -95,7 +95,20 @@ class ProjectManager(private val context: Context) {
     fun loadProjectBitmap(imagePath: String): Bitmap? {
         val f = File(imagePath)
         if (!f.exists()) return null
-        return BitmapFactory.decodeFile(f.absolutePath)
+        // Heap-aware + tiled (mendukung 720x16000 tanpa OOM mentah).
+        // Fallback ke decode mentah bila helper gagal (kompatibilitas file lama).
+        return try {
+            ImageImport.decodeFileHeapAware(f.absolutePath)
+                ?: BitmapFactory.decodeFile(f.absolutePath)
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            try {
+                ImageImport.decodeFileSampled(f.absolutePath, ImageImport.MAX_THUMB_DIM)
+            } catch (_: Exception) { null }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
     }
 
     fun deleteProject(id: String) {

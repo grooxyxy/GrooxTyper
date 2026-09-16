@@ -3,13 +3,16 @@ package com.grooxtyper.app.model
 import android.content.ContentResolver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapRegionDecoder
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -21,6 +24,21 @@ import kotlin.math.roundToInt
  *   sisi terpanjang) sehingga 720x16000 (11,5MP) lolos sample=1.
  * - Koreksi orientasi EXIF (foto portrait tidak miring).
  * - Stream selalu ditutup.
+ *
+ * Perbaikan import gambar besar (diadaptasi dari VasiliasTyper
+ * `engine/FileManager.kt` + `engine/BitmapSafety.kt` dengan modifikasi
+ * GrooxTyper):
+ * - Budget heap-aware ([canvasPixelBudget]/[heapImportBudgetBytes]) agar
+ *   720x16000 tetap full-res di HP normal (>=256MB heap) tapi otomatis
+ *   downsample aman di HP low-end (tidak OOM).
+ * - Jalur [BitmapRegionDecoder] tiled 1024px bila sample>4: hindari satu
+ *   alokasi monster, tiap tile di-downscale sendiri (lebih tajam daripada
+ *   inSampleSize besar sekali tembak).
+ * - Second-stage progressive halving bila hasil decode masih di atas budget.
+ * - Modifikasi vs Vasilias: tetap sinkron (pemanggil sudah
+ *   withContext(Dispatchers.IO)), EXIF tetap diterapkan setelah stitch,
+ *   stream decoder TIDAK ditutup prematur via `use` (bug Vasilias), dan
+ *   batas absolut Groox 32MP/16384 dipertahankan.
  */
 object ImageImport {
     /** Batas dimensi kanvas baru dari gambar import (mendukung 720x16000). */
@@ -35,6 +53,33 @@ object ImageImport {
     const val MAX_IMPORT_PIXELS = 32_000_000L
     /** Batas absolut sisi decode (mencegah alokasi absurd). */
     const val MAX_IMPORT_DIM = 16384
+    /** Ukuran tile sumber untuk decode berubin (diambil dari Vasilias, 1024px). */
+    const val TILE_DECODE_SIZE = 1024
+    /** Sample darurat bila OOM (sama seperti fallback Vasilias). */
+    const val FALLBACK_SAMPLE = 8
+
+    // ── Budget heap-aware (adaptasi BitmapSafety Vasilias) ──────────────
+    // Vasilias: MAX_CANVAS 12MP, divisor 24, min 2MP. Modifikasi Groox:
+    // butuh 11,5MP lolos di HP normal → divisor 12, min 8MP, max 32MP.
+    // 512MB heap → 32MP (128MB), 256MB → ~21MP (85MB, 720x16000 lolos),
+    // 128MB → 8MP (32MB, 720x16000 fallback sample=2, tidak OOM).
+
+    /** Budget piksel kanvas adaptif heap (tidak pernah melebihi [MAX_CANVAS_PIXELS]). */
+    fun canvasPixelBudget(maxMemoryBytes: Long = Runtime.getRuntime().maxMemory()): Int {
+        val heapBased = (maxMemoryBytes / 12L).coerceAtLeast(8_000_000L).coerceAtMost(MAX_CANVAS_PIXELS)
+        return heapBased.toInt()
+    }
+
+    /** Budget byte untuk satu bitmap import (ARGB_8888 = 4 byte/px). */
+    fun heapImportBudgetBytes(maxMemoryBytes: Long = Runtime.getRuntime().maxMemory()): Long {
+        return canvasPixelBudget(maxMemoryBytes).toLong() * 4L
+    }
+
+    /** Budget piksel efektif = min(mintaan, absolut 32MP, budget heap). */
+    fun effectivePixelBudget(requestedMaxPixels: Long): Long {
+        val heapPixels = canvasPixelBudget().toLong()
+        return min(requestedMaxPixels.coerceAtLeast(1L), min(MAX_IMPORT_PIXELS, heapPixels))
+    }
 
     fun decodeContentUri(
         resolver: ContentResolver,
@@ -60,28 +105,165 @@ object ImageImport {
             val srcW = if (rotated) bounds.outHeight else bounds.outWidth
             val srcH = if (rotated) bounds.outWidth else bounds.outHeight
 
-            // Sampling menjaga total piksel (bukan sisi max) + batas absolut.
+            // Budget heap-aware: 720x16000 (11,5MP) lolos sample=1 di HP normal,
+            // otomatis sample=2 di HP low-end (tidak OOM).
+            val budget = max(1L, effectivePixelBudget(maxPixels))
             var sample = 1
-            val budget = max(1L, maxPixels)
+            val rawW = bounds.outWidth
+            val rawH = bounds.outHeight
             while (srcW.toLong() * srcH / (sample.toLong() * sample) > budget ||
                 max(srcW, srcH) / sample > MAX_IMPORT_DIM
             ) sample *= 2
 
-            val opts = BitmapFactory.Options().apply {
-                inSampleSize = sample
-                inPreferredConfig = Bitmap.Config.ARGB_8888
+            val decoded: Bitmap = if (sample > 4) {
+                // Gambar sangat besar: jahit tile native 1024px via RegionDecoder
+                // (diadaptasi dari FileManager.decodeTiled Vasilias).
+                val targetW = max(1, rawW / sample)
+                val targetH = max(1, rawH / sample)
+                decodeTiledContent(resolver, uri, rawW, rawH, targetW, targetH)
+                    ?: return loadFallbackContent(resolver, uri)
+            } else {
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                resolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it, null, opts)
+                } ?: return null
             }
-            val decoded = resolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, opts)
-            } ?: return null
-            applyExifOrientation(decoded, orientation)
+            // Second-stage: bila masih di atas budget heap (mis. EXIF swap),
+            // halving progresif (tajam, sama seperti Vasilias progressiveScaleDown
+            // tapi memakai scaleDownHighQuality Groox agar tanpa kode ganda).
+            val heapBudget = heapImportBudgetBytes()
+            val decodedBytes = decoded.width.toLong() * decoded.height.toLong() * 4L
+            val shrunk = if (decodedBytes > heapBudget) {
+                val scale = kotlin.math.sqrt(heapBudget.toDouble() / decodedBytes.toDouble()).toFloat()
+                val tw = max(1, (decoded.width * scale).toInt())
+                val th = max(1, (decoded.height * scale).toInt())
+                try {
+                    val out = scaleDownHighQuality(decoded, tw, th)
+                    if (out !== decoded) decoded.recycle()
+                    out
+                } catch (e: OutOfMemoryError) {
+                    e.printStackTrace()
+                    decoded
+                }
+            } else decoded
+            applyExifOrientation(shrunk, orientation)
         } catch (e: Exception) {
             e.printStackTrace()
             null
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
-            null
+            try {
+                loadFallbackContent(resolver, uri)
+            } catch (_: Exception) { null }
         }
+    }
+
+    /**
+     * Decode berubin via BitmapRegionDecoder (adaptasi FileManager.decodeTiled).
+     * Modifikasi: stream decoder tetap terbuka selama tiling (Vasilias menutup
+     * via `use` sebelum decode → rawan gagal di sebagian ROM), EXIF diterapkan
+     * pemanggil setelah stitch, dan OOM per-tile dilewati aman.
+     */
+    private fun decodeTiledContent(
+        resolver: ContentResolver,
+        uri: Uri,
+        rawW: Int, rawH: Int,
+        targetW: Int, targetH: Int
+    ): Bitmap? {
+        var stream: java.io.InputStream? = null
+        var decoder: BitmapRegionDecoder? = null
+        try {
+            stream = resolver.openInputStream(uri) ?: return null
+            decoder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                BitmapRegionDecoder.newInstance(stream)
+            } else {
+                @Suppress("DEPRECATION")
+                BitmapRegionDecoder.newInstance(stream, false)
+            } ?: return null
+            // Stream boleh ditutup setelah decoder terbentuk untuk file-based;
+            // untuk content-uri pertahankan hingga selesai? newInstance(InputStream)
+            // pada AOSP menyalin data, jadi aman ditutup — tapi tiling segera.
+            val result = try {
+                Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return null
+            }
+            val canvas = Canvas(result)
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
+                isFilterBitmap = true; isDither = true
+            }
+            val tileSize = TILE_DECODE_SIZE
+            val opts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            var y = 0
+            while (y < rawH) {
+                var x = 0
+                while (x < rawW) {
+                    val x2 = min(x + tileSize, rawW)
+                    val y2 = min(y + tileSize, rawH)
+                    val tileBmp = try {
+                        decoder.decodeRegion(Rect(x, y, x2, y2), opts)
+                    } catch (e: Exception) {
+                        e.printStackTrace(); null
+                    } catch (e: OutOfMemoryError) {
+                        e.printStackTrace(); null
+                    }
+                    if (tileBmp != null) {
+                        try {
+                            val dstX1 = (x.toLong() * targetW / rawW).toInt()
+                            val dstY1 = (y.toLong() * targetH / rawH).toInt()
+                            val dstX2 = (x2.toLong() * targetW / rawW).toInt().coerceAtMost(targetW)
+                            val dstY2 = (y2.toLong() * targetH / rawH).toInt().coerceAtMost(targetH)
+                            val dstW = (dstX2 - dstX1).coerceAtLeast(1)
+                            val dstH = (dstY2 - dstY1).coerceAtLeast(1)
+                            val scaled = if (tileBmp.width == dstW && tileBmp.height == dstH) {
+                                tileBmp
+                            } else {
+                                Bitmap.createScaledBitmap(tileBmp, dstW, dstH, true)
+                            }
+                            canvas.drawBitmap(scaled, dstX1.toFloat(), dstY1.toFloat(), paint)
+                            if (scaled !== tileBmp) runCatching { scaled.recycle() }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } catch (e: OutOfMemoryError) {
+                            e.printStackTrace()
+                        } finally {
+                            runCatching { tileBmp.recycle() }
+                        }
+                    }
+                    x += tileSize
+                }
+                y += tileSize
+            }
+            return result
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return null
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            return null
+        } finally {
+            runCatching { decoder?.recycle() }
+            runCatching { stream?.close() }
+        }
+    }
+
+    /** Fallback konservatif sample=8 bila OOM (sama seperti Vasilias loadFallback). */
+    private fun loadFallbackContent(resolver: ContentResolver, uri: Uri): Bitmap? {
+        return try {
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = FALLBACK_SAMPLE
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            resolver.openInputStream(uri)?.use {
+                BitmapFactory.decodeStream(it, null, opts)
+            }
+        } catch (_: OutOfMemoryError) { null } catch (_: Exception) { null }
     }
 
     fun decodeFileSampled(path: String, maxDimension: Int): Bitmap? {
@@ -92,17 +274,145 @@ object ImageImport {
             var sample = 1
             val cap = max(1, maxDimension)
             while (bounds.outWidth / sample > cap || bounds.outHeight / sample > cap) sample *= 2
+            // Hormati juga budget heap agar thumbnail 720x16000 tidak OOM di low-end.
+            val budget = effectivePixelBudget(MAX_IMPORT_PIXELS)
+            while (bounds.outWidth.toLong() * bounds.outHeight / (sample.toLong() * sample) > budget) sample *= 2
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            BitmapFactory.decodeFile(path, opts)
+            val raw = BitmapFactory.decodeFile(path, opts) ?: return null
+            // Koreksi EXIF untuk file (sebelumnya diabaikan → foto portrait miring).
+            try {
+                val exif = ExifInterface(path)
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+                )
+                applyExifOrientation(raw, orientation)
+            } catch (_: Exception) { raw }
         } catch (e: Exception) {
             e.printStackTrace()
             null
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
             null
+        }
+    }
+
+    /**
+     * Decode file full-res heap-aware (untuk buka ulang project 720x16000).
+     * Dipakai [com.grooxtyper.app.model.ProjectManager.loadProjectBitmap]
+     * agar tidak OOM mentah via BitmapFactory.decodeFile.
+     */
+    fun decodeFileHeapAware(path: String, maxPixels: Long = MAX_IMPORT_PIXELS): Bitmap? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            val rawW = bounds.outWidth
+            val rawH = bounds.outHeight
+            var orientation = ExifInterface.ORIENTATION_NORMAL
+            try {
+                orientation = ExifInterface(path).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+                )
+            } catch (_: Exception) { }
+            val rotated = orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+                orientation == ExifInterface.ORIENTATION_ROTATE_270 ||
+                orientation == ExifInterface.ORIENTATION_TRANSPOSE ||
+                orientation == ExifInterface.ORIENTATION_TRANSVERSE
+            val srcW = if (rotated) rawH else rawW
+            val srcH = if (rotated) rawW else rawH
+            val budget = max(1L, effectivePixelBudget(maxPixels))
+            var sample = 1
+            while (srcW.toLong() * srcH / (sample.toLong() * sample) > budget ||
+                max(srcW, srcH) / sample > MAX_IMPORT_DIM
+            ) sample *= 2
+            val decoded: Bitmap = if (sample > 4) {
+                decodeTiledFile(path, rawW, rawH, max(1, rawW / sample), max(1, rawH / sample))
+                    ?: run {
+                        val opts = BitmapFactory.Options().apply {
+                            inSampleSize = FALLBACK_SAMPLE
+                            inPreferredConfig = Bitmap.Config.ARGB_8888
+                        }
+                        BitmapFactory.decodeFile(path, opts) ?: return null
+                    }
+            } else {
+                val opts = BitmapFactory.Options().apply {
+                    inSampleSize = sample
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                BitmapFactory.decodeFile(path, opts) ?: return null
+            }
+            applyExifOrientation(decoded, orientation)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun decodeTiledFile(
+        path: String, rawW: Int, rawH: Int, targetW: Int, targetH: Int
+    ): Bitmap? {
+        var decoder: BitmapRegionDecoder? = null
+        try {
+            decoder = BitmapRegionDecoder.newInstance(path, false) ?: return null
+            val result = try {
+                Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace(); return null
+            }
+            val canvas = Canvas(result)
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG).apply {
+                isFilterBitmap = true; isDither = true
+            }
+            val tileSize = TILE_DECODE_SIZE
+            val opts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            var y = 0
+            while (y < rawH) {
+                var x = 0
+                while (x < rawW) {
+                    val x2 = min(x + tileSize, rawW)
+                    val y2 = min(y + tileSize, rawH)
+                    val tileBmp = try {
+                        decoder.decodeRegion(Rect(x, y, x2, y2), opts)
+                    } catch (e: Exception) { null } catch (e: OutOfMemoryError) { null }
+                    if (tileBmp != null) {
+                        try {
+                            val dstX1 = (x.toLong() * targetW / rawW).toInt()
+                            val dstY1 = (y.toLong() * targetH / rawH).toInt()
+                            val dstX2 = (x2.toLong() * targetW / rawW).toInt().coerceAtMost(targetW)
+                            val dstY2 = (y2.toLong() * targetH / rawH).toInt().coerceAtMost(targetH)
+                            val dstW = (dstX2 - dstX1).coerceAtLeast(1)
+                            val dstH = (dstY2 - dstY1).coerceAtLeast(1)
+                            val scaled = if (tileBmp.width == dstW && tileBmp.height == dstH) tileBmp
+                            else Bitmap.createScaledBitmap(tileBmp, dstW, dstH, true)
+                            canvas.drawBitmap(scaled, dstX1.toFloat(), dstY1.toFloat(), paint)
+                            if (scaled !== tileBmp) runCatching { scaled.recycle() }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        } catch (e: OutOfMemoryError) {
+                            e.printStackTrace()
+                        } finally {
+                            runCatching { tileBmp.recycle() }
+                        }
+                    }
+                    x += tileSize
+                }
+                y += tileSize
+            }
+            return result
+        } catch (e: Exception) {
+            e.printStackTrace(); return null
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace(); return null
+        } finally {
+            runCatching { decoder?.recycle() }
         }
     }
 
@@ -160,19 +470,22 @@ object ImageImport {
 
     /**
      * Dimensi kanvas untuk gambar import TANPA resize bila muat:
-     * kembalikan ukuran asli (w,h) selama total piksel <= [MAX_CANVAS_PIXELS]
-     * dan sisi panjang <= [MAX_CANVAS_LONG]. Hanya bila melebihi budget
-     * dilakukan downscale proporsional minimal (aspek tetap).
-     * Dijamin mendukung 720x16000 full-res (11,5MP).
+     * kembalikan ukuran asli (w,h) selama total piksel <= budget efektif
+     * (min 32MP absolut, budget heap) dan sisi panjang <= [MAX_CANVAS_LONG].
+     * Hanya bila melebihi budget dilakukan downscale proporsional minimal
+     * (aspek tetap). Dijamin mendukung 720x16000 full-res (11,5MP) di HP
+     * normal; di HP low-end menyesuaikan heap (adaptasi
+     * BitmapSafety.fitWithinMaxPixels Vasilias dengan batas Groox).
      */
     fun fitImportDimensions(w: Int, h: Int): Pair<Int, Int> {
         if (w <= 0 || h <= 0) return 512 to 512
         val pixels = w.toLong() * h.toLong()
         val longSide = max(w, h)
-        if (pixels <= MAX_CANVAS_PIXELS && longSide <= MAX_CANVAS_LONG) {
+        val effectiveBudget = min(MAX_CANVAS_PIXELS, canvasPixelBudget().toLong())
+        if (pixels <= effectiveBudget && longSide <= MAX_CANVAS_LONG) {
             return w to h
         }
-        val scaleByPixels = kotlin.math.sqrt(MAX_CANVAS_PIXELS / pixels.toDouble()).toFloat()
+        val scaleByPixels = kotlin.math.sqrt(effectiveBudget / pixels.toDouble()).toFloat()
         val scaleByLong = MAX_CANVAS_LONG / longSide.toFloat()
         val s = min(1f, min(scaleByPixels, scaleByLong))
         return max(1, (w * s).toInt()) to max(1, (h * s).toInt())

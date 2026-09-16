@@ -115,6 +115,7 @@ import com.grooxtyper.app.ml.BubbleDetector
 import com.grooxtyper.app.ml.BubbleModel
 import com.grooxtyper.app.ml.readingOrder
 import com.grooxtyper.app.model.BrushEngine
+import com.grooxtyper.app.model.BrushHugeGuide
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
 import com.grooxtyper.app.model.DrawingLayer
@@ -1739,6 +1740,21 @@ fun CanvasEditorScreen(
                                             }
                                             movePts.add(touchCanvasPos)
                                             if (strokeLayer == null) strokeLayer = target
+                                            // Viewport culling brush di kanvas jangkung (adaptasi
+                                            // Vasilias viewportRect): hitung jendela terlihat
+                                            // sekali per event, oper ke engine agar segmen
+                                            // off-screen dilewati tanpa raster.
+                                            val brushVisible = if (isHugeCanvas) {
+                                                runCatching {
+                                                    BrushHugeGuide.visibleRect(
+                                                        viewportSize.width.toFloat().coerceAtLeast(1f),
+                                                        viewportSize.height.toFloat().coerceAtLeast(1f),
+                                                        viewState.scale,
+                                                        viewState.offsetX,
+                                                        viewState.offsetY
+                                                    )
+                                                }.getOrNull()
+                                            } else null
                                             var needFullRefresh = false
                                             var didBlit = false
                                             for (pt in movePts) {
@@ -1751,7 +1767,7 @@ fun CanvasEditorScreen(
                                                 val dist = (cpt - prev).getDistance()
                                                 strokeLength += dist
                                                 val progress = if (strokeLength > 0f) (strokeLength / 500f).coerceIn(0f, 1f) else 0f
-                                                brushEngine.strokeSegmentOnLayer(target, prev, cpt, progress)
+                                                brushEngine.strokeSegmentOnLayer(target, prev, cpt, progress, brushVisible)
                                                 // Batch: tunda recompose per titik (deferRefresh)
                                                 // agar 1 touch event = 1 recompose, bukan N.
                                                 if (!blitLayerToComposite(target, prev, cpt, deferRefresh = true)) {

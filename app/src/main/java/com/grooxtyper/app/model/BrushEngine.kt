@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.RectF
+import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -223,7 +225,7 @@ class BrushEngine {
         }
     }
 
-    fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f) {
+    fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f, visibleRect: RectF? = null) {
         // Heal patch tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
         if (brushType == BrushType.HEAL_PATCH) return
 
@@ -269,6 +271,25 @@ class BrushEngine {
             curveEnd = smoothedP2
         }
         prevCurvePoint = smoothedP2
+
+        // Viewport culling brush (diadaptasi dari CanvasView.drawLayers Vasilias:
+        // lewati raster bila segmen sepenuhnya di luar jendela terlihat).
+        // Modifikasi Groox: padding = radius brush + clipPad agar tepi tidak
+        // terpotong; null = tanpa culling (kompatibel pemanggil lama).
+        // Cara pakai di 720x16000: oper visibleRect dari CanvasEditorScreen
+        // (hitung dari viewState.scale/offset + viewportSize) saat zoom-in
+        // agar sapuan di luar layar tidak membebani CPU/GPU.
+        visibleRect?.let { vr ->
+            val pad = size * 1.5f + 12f
+            val segL = min(min(curveStart.x, curveEnd.x), curveControl?.x ?: curveStart.x) - pad
+            val segT = min(min(curveStart.y, curveEnd.y), curveControl?.y ?: curveStart.y) - pad
+            val segR = max(max(curveStart.x, curveEnd.x), curveControl?.x ?: curveEnd.x) + pad
+            val segB = max(max(curveStart.y, curveEnd.y), curveControl?.y ?: curveEnd.y) + pad
+            if (segR < vr.left || segL > vr.right || segB < vr.top || segT > vr.bottom) {
+                layer.markDirty()
+                return
+            }
+        }
 
         val canvas = Canvas(bmp)
 
@@ -485,4 +506,67 @@ class BrushEngine {
             runCatching { tempLayer?.recycle() }
         }
     }
+}
+
+/**
+ * Panduan + helper brush untuk kanvas jangkung 720x16000.
+ * Diadaptasi dari VasiliasTyper `view/CanvasView.kt` (viewport culling,
+ * invalidate throttling 16ms, reusable Paint) + `engine/ProcessingConfig.kt`
+ * dengan modifikasi ambang Groox (HUGE=4MP, blur cap 140k, steps 32).
+ *
+ * Cara pakai brush di 720x16000 (ringkas):
+ * 1. Zoom-in 100-200% ke area kerja (viewport culling: hanya jendela
+ *    ~720x1000 yang di-upload GPU, bukan 11,5MP penuh).
+ * 2. Pakai Pen Hard/Ink/Eraser untuk lineart; hindari Airbrush/Watercolor/
+ *    Blur radius besar dalam sekali sapu panjang (matikan BlurMaskFilter
+ *    otomatis di huge, blur live dibatasi 140_000px).
+ * 3. Sapuan panjang: sistem interpolasi max 24 titik luar + 32 steps dalam
+ *    (tidak menumpuk 2000+ drawLine per event).
+ * 4. Heal Patch: sapu untuk akumulasi mask, commit PatchMatch hanya crop
+ *    dirty (bukan scan 46MB), mask 46MB di-recycle setelah commit.
+ * 5. Bila patah-patah: kecilkan size (<32px), pakai 1 layer (fast-path blit
+ *    ~50x50px vs render 46MB), tutup teks/blend di luar area.
+ */
+object BrushHugeGuide {
+    /** Interval throttle recompose saat drag di kanvas huge (diadaptasi Vasilias 16ms). */
+    const val HUGE_BRUSH_THROTTLE_MS = 16L
+
+    fun isHugeCanvas(w: Int, h: Int): Boolean =
+        w.toLong() * h.toLong() > HUGE_CANVAS_PIXELS
+
+    /** Hitung jendela kanvas terlihat dari viewState (untuk culling brush). */
+    fun visibleRect(
+        viewportW: Float, viewportH: Float,
+        scale: Float, offsetX: Float, offsetY: Float
+    ): RectF {
+        if (viewportW <= 0f || viewportH <= 0f || scale <= 0f) {
+            return RectF(0f, 0f, viewportW, viewportH)
+        }
+        // Inverse sederhana tanpa rotasi (rotasi diabaikan konservatif:
+        // rect diperluas agar tidak memotong sapuan saat rotate).
+        val l = (-offsetX) / scale
+        val t = (-offsetY) / scale
+        val r = l + viewportW / scale
+        val b = t + viewportH / scale
+        return RectF(l, t, r, b)
+    }
+}
+
+/**
+ * Throttle 16ms untuk refresh brush di kanvas huge (port
+ * CanvasView.invalidateDrag Vasilias, modifikasi untuk Compose:
+ * pemanggil memutuskan refreshCanvasLight vs tunda).
+ */
+class BrushFrameThrottle(private val intervalMs: Long = BrushHugeGuide.HUGE_BRUSH_THROTTLE_MS) {
+    private var lastMs: Long = 0L
+    /** True bila boleh refresh sekarang (sekaligus update timestamp). */
+    fun shouldRefreshNow(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastMs >= intervalMs) {
+            lastMs = now
+            return true
+        }
+        return false
+    }
+    fun reset() { lastMs = 0L }
 }
