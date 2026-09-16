@@ -908,6 +908,12 @@ fun CanvasEditorScreen(
     fun runBubbleDetection() {
         if (bubbleDetecting) return
         scope.launch {
+            val appCtx = context.applicationContext
+            // Tanpa fallback: pastikan model ONNX termuat dulu agar gagal selalu terlihat.
+            if (!bubbleDetector.ensureLoaded(appCtx, bubbleModel.asset)) {
+                healError = "Model bubble gagal dimuat: ${bubbleDetector.lastError ?: "unknown"}"
+                return@launch
+            }
             val snap = runCatching {
                 compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
             }.getOrNull()
@@ -922,7 +928,7 @@ fun CanvasEditorScreen(
                 val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
                 detectedBubbles = found
                 if (found.isEmpty()) {
-                    healError = "Bubble tak ditemukan — coba turunkan ambang / area lebih dekat"
+                    healError = "Model ONNX jalan tapi bubble tak ditemukan — coba area lebih dekat"
                 }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()

@@ -43,7 +43,7 @@ data class DetectedBubble(
     val score: Float,
     /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null; null untuk model detect). */
     val mask: Bitmap? = null,
-    /** Id kelas model: 0 = text (model e2e baru). -1 = tak diketahui/heuristik. */
+    /** Id kelas model: 0 = text. -1 = tak diketahui. */
     val classId: Int = -1
 )
 
@@ -65,8 +65,8 @@ object YoloBubbleModel {
  * lewat model, lalu duplikat di sambungan tile dibuang via NMS global.
  *
  * Bila session ONNX gagal dibuat (asset hilang / runtime tidak tersedia),
- * otomatis fallback ke heuristik putih-tersaturasi-rendah ber-outline gelap
- * agar fitur tetap hidup.
+ * deteksi GAGAL dengan error (tanpa fallback) agar kegagalan model
+ * selalu terlihat, bukan disamarkan hasil heuristik.
  */
 class BubbleDetector {
 
@@ -88,9 +88,28 @@ class BubbleDetector {
     private val sessionMutex = Mutex()
     private val inferMutex = Mutex()
 
+    /** Alasan kegagalan pemuatan model terakhir (null bila belum ada / sukses). */
+    @Volatile
+    var lastError: String? = null
+        private set
+
+    /**
+     * Pastikan session ONNX termuat. True bila siap inferensi; false + [lastError]
+     * terisi bila asset hilang/rusak atau runtime tak tersedia. Tanpa fallback.
+     */
+    suspend fun ensureLoaded(context: Context, asset: String): Boolean {
+        if (ortSession != null) return true
+        val session = ensureSession(context, asset)
+        if (session == null && lastError == null) {
+            lastError = "Session ONNX null tanpa detail"
+        }
+        return session != null
+    }
+
     /**
      * Jalankan opsi terpilih. [appContext] WAJIB diisi agar asset ONNX bisa
-     * dimuat; bila null atau session gagal dibuat, dipakai jalur heuristik.
+     * dimuat; bila null atau session gagal dibuat, kembalikan daftar kosong
+     * dan isi [lastError]. TANPA fallback heuristik.
      */
     suspend fun detect(
         bitmap: Bitmap,
@@ -99,9 +118,16 @@ class BubbleDetector {
     ): List<DetectedBubble> =
         withContext(Dispatchers.Default) {
             try {
-                val session = appContext?.let { ensureSession(it, model.asset) }
+                if (appContext == null) {
+                    lastError = "Context null: asset ONNX tak bisa dibuka"
+                    android.util.Log.e("Bubble", lastError!!)
+                    return@withContext emptyList<DetectedBubble>()
+                }
+                val session = ensureSession(appContext, model.asset)
                 if (session == null) {
-                    return@withContext detectHeuristic(bitmap, model)
+                    if (lastError == null) lastError = "Session ONNX null tanpa detail"
+                    android.util.Log.e("Bubble", lastError!!)
+                    return@withContext emptyList<DetectedBubble>()
                 }
                 val longSide = max(bitmap.width, bitmap.height)
                 val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
@@ -135,14 +161,26 @@ class BubbleDetector {
             ortSession?.let { return@withLock it }
             try {
                 val bytes = context.assets.open(asset).use { it.readBytes() }
+                if (bytes.isEmpty()) {
+                    lastError = "Asset $asset kosong (0 byte)"
+                    android.util.Log.e("Bubble", lastError!!)
+                    return@withLock null
+                }
+                android.util.Log.i("Bubble", "Memuat model ${bytes.size} byte dari $asset")
                 val env = OrtEnvironment.getEnvironment()
                 val opts = OrtSession.SessionOptions().apply {
                     setIntraOpNumThreads(4)
                     setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT)
                 }
-                env.createSession(bytes, opts).also { ortSession = it }
+                env.createSession(bytes, opts).also {
+                    ortSession = it
+                    lastError = null
+                    android.util.Log.i("Bubble", "Session ONNX siap: in=${it.inputNames} out=${it.outputNames}")
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
+                lastError = "Gagal muat $asset: ${e.message ?: e.javaClass.simpleName}"
+                android.util.Log.e("Bubble", lastError!!)
                 null
             }
         }
@@ -548,214 +586,6 @@ class BubbleDetector {
         return nms(out, IOU_THRESH)
             .sortedByDescending { it.score }
             .take(TALL_MAX_DETECTIONS)
-    }
-
-    // ------------------------------------------------------------------
-    // Jalur heuristik (fallback bila ONNX tidak tersedia)
-    // ------------------------------------------------------------------
-
-    private fun detectHeuristic(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
-        val longSide = max(bitmap.width, bitmap.height)
-        val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
-        val aspect = longSide / shortSide.toFloat()
-        if (aspect >= 3f || longSide >= 2000) {
-            return detectTallHeuristic(bitmap, model)
-        }
-        val (maxDim, thresh, cap) = rawParams(model)
-        return detectAtScaleHeuristic(bitmap, maxDim, thresh)
-            .sortedByDescending { it.score }
-            .take(cap)
-    }
-
-    /** Parameter mentah per opsi model (untuk jalur heuristik). */
-    private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
-        return when (model) {
-            BubbleModel.BUBBLE -> Triple(1024, 220, 80)
-        }
-    }
-
-    /**
-     * Deteksi strip mentah untuk gambar jangkung/lebar ekstrem
-     * (mis. 720x16000): potong sepanjang sumbu panjang jadi jendela
-     * persegi (sisi = sisi pendek) dengan overlap 15%.
-     */
-    private fun detectTallHeuristic(bitmap: Bitmap, model: BubbleModel): List<DetectedBubble> {
-        val w = bitmap.width
-        val h = bitmap.height
-        if (w <= 0 || h <= 0) return emptyList()
-        val vertical = h >= w
-        val shortSide = min(w, h)
-        val longSide = max(w, h)
-        val win = shortSide.coerceAtLeast(256)
-        val step = max(64, (win * 0.85f).toInt())
-        val (maxDim, thresh, _) = rawParams(model)
-        val out = mutableListOf<DetectedBubble>()
-        var offset = 0
-        while (offset < longSide) {
-            val end = min(offset + win, longSide)
-            val start = max(0, end - win)
-            val crop = try {
-                if (vertical) Bitmap.createBitmap(bitmap, 0, start, w, end - start)
-                else Bitmap.createBitmap(bitmap, start, 0, end - start, h)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
-            if (crop != null) {
-                try {
-                    val found = detectAtScaleHeuristic(crop, maxDim, thresh)
-                    for (b in found) {
-                        val r = b.boundingBox
-                        val shifted = if (vertical) {
-                            RectF(r.left, r.top + start, r.right, r.bottom + start)
-                        } else {
-                            RectF(r.left + start, r.top, r.right + start, r.bottom)
-                        }
-                        out.add(DetectedBubble(shifted, b.score))
-                    }
-                } finally {
-                    runCatching { crop.recycle() }
-                }
-            }
-            if (end >= longSide) break
-            offset += step
-            if (offset >= longSide) break
-        }
-        return nms(out, iouThresh = 0.45f)
-            .sortedByDescending { it.score }
-            .take(150)
-    }
-
-    private fun detectAtScaleHeuristic(src: Bitmap, maxDim: Int, whiteThresh: Int): List<DetectedBubble> {
-        if (src.width <= 0 || src.height <= 0) return emptyList()
-        val s = min(1f, maxDim / max(src.width, src.height).toFloat())
-        val w = max(32, (src.width * s).toInt())
-        val h = max(32, (src.height * s).toInt())
-        val small = Bitmap.createScaledBitmap(src, w, h, true)
-        try {
-            val px = IntArray(w * h)
-            small.getPixels(px, 0, w, 0, 0, w, h)
-            val white = BooleanArray(w * h)
-            for (i in px.indices) {
-                val p = px[i]
-                if ((p ushr 24) < 16) continue
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                val sat = max(max(r, g), b) - min(min(r, g), b)
-                white[i] = (0.299 * r + 0.587 * g + 0.114 * b) >= whiteThresh && sat <= 40
-            }
-
-            val label = IntArray(w * h) { -1 }
-            val stack = IntArray(w * h)
-            val out = mutableListOf<DetectedBubble>()
-            var cur = 0
-            for (i in white.indices) {
-                if (!white[i] || label[i] != -1) continue
-                var sp = 0
-                stack[sp++] = i
-                label[i] = cur
-                var minX = w
-                var minY = h
-                var maxX = -1
-                var maxY = -1
-                var area = 0
-                var touchesBorder = false
-                while (sp > 0) {
-                    val p = stack[--sp]
-                    val x = p % w
-                    val y = p / w
-                    area++
-                    if (x < minX) minX = x
-                    if (y < minY) minY = y
-                    if (x > maxX) maxX = x
-                    if (y > maxY) maxY = y
-                    if (x == 0 || y == 0 || x == w - 1 || y == h - 1) touchesBorder = true
-                    if (x > 0) {
-                        val n = p - 1
-                        if (white[n] && label[n] == -1) {
-                            label[n] = cur
-                            stack[sp++] = n
-                        }
-                    }
-                    if (x < w - 1) {
-                        val n = p + 1
-                        if (white[n] && label[n] == -1) {
-                            label[n] = cur
-                            stack[sp++] = n
-                        }
-                    }
-                    if (y > 0) {
-                        val n = p - w
-                        if (white[n] && label[n] == -1) {
-                            label[n] = cur
-                            stack[sp++] = n
-                        }
-                    }
-                    if (y < h - 1) {
-                        val n = p + w
-                        if (white[n] && label[n] == -1) {
-                            label[n] = cur
-                            stack[sp++] = n
-                        }
-                    }
-                }
-                if (!touchesBorder) {
-                    val bw = maxX - minX + 1
-                    val bh = maxY - minY + 1
-                    val areaFrac = area.toFloat() / (w * h)
-                    val aspect = bw.toFloat() / bh
-                    val fill = area.toFloat() / (bw * bh)
-                    if (areaFrac in 0.0015f..0.35f &&
-                        aspect in 0.35f..3.0f &&
-                        fill in 0.45f..0.97f &&
-                        min(bw, bh) >= 20
-                    ) {
-                        // Filter ala bubble: area putih dengan OUTLINE
-                        // GELAP mengelilingi DAN berisi teks gelap.
-                        val ring = max(2, min(bw, bh) / 12)
-                        var ringTotal = 0
-                        var ringDark = 0
-                        var innerTotal = 0
-                        var innerDark = 0
-                        for (yy in minY..maxY) {
-                            val rowOff = yy * w
-                            val nearY = yy - minY < ring || maxY - yy < ring
-                            for (xx in minX..maxX) {
-                                val p = px[rowOff + xx]
-                                val r = (p shr 16) and 0xFF
-                                val g = (p shr 8) and 0xFF
-                                val b = p and 0xFF
-                                val luma = 0.299 * r + 0.587 * g + 0.114 * b
-                                if (nearY || xx - minX < ring || maxX - xx < ring) {
-                                    ringTotal++
-                                    if (luma < 110) ringDark++
-                                } else {
-                                    innerTotal++
-                                    if (luma < 120) innerDark++
-                                }
-                            }
-                        }
-                        val borderDarkFrac = ringDark / max(1, ringTotal).toFloat()
-                        val innerDarkFrac = innerDark / max(1, innerTotal).toFloat()
-                        if (borderDarkFrac >= 0.22f && innerDarkFrac in 0.003f..0.45f) {
-                            val fillScore = (1f - abs(fill - 0.785f) * 1.5f).coerceIn(0.05f, 1f)
-                            val score = (fillScore * 0.6f + borderDarkFrac * 0.4f).coerceIn(0.05f, 1f)
-                            out.add(
-                                DetectedBubble(
-                                    RectF(minX / s, minY / s, (maxX + 1) / s, (maxY + 1) / s),
-                                    score
-                                )
-                            )
-                        }
-                    }
-                }
-                cur++
-            }
-            return out
-        } finally {
-            small.recycle()
-        }
     }
 
     // ------------------------------------------------------------------

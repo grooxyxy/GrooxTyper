@@ -25,19 +25,30 @@ import kotlin.math.min
 import kotlin.math.pow
 
 enum class BrushType(val displayName: String, val category: String) {
-    // Pen
+    // Pen (ala ibisPaint: pena garis tegas untuk lineart manga)
     PEN_HARD("Pen (Hard)", "Pen"),
     PEN_SOFT("Pen (Soft)", "Pen"),
+    DIP_HARD("Dip Pen Hard", "Pen"),
+    DIP_SOFT("Dip Pen Soft", "Pen"),
+    FELT_HARD("Felt Tip Hard", "Pen"),
+    FELT_SOFT("Felt Tip Soft", "Pen"),
+    BALLPOINT("Ballpoint", "Pen"),
+    G_PEN("G Pen", "Pen"),
     PENCIL("Pencil", "Pen"),
     INK("Ink", "Pen"),
     // Paint
     WATERCOLOR("Watercolor", "Paint"),
     OIL("Oil", "Paint"),
     MARKER("Marker", "Paint"),
+    FLAT("Flat Brush", "Paint"),
+    ROUND("Round Brush", "Paint"),
+    CRAYON("Crayon", "Paint"),
     // Air
     AIRBRUSH("Airbrush", "Air"),
+    AIR_FAN("Fan Brush", "Air"),
     // Erase
     ERASER("Eraser", "Erase"),
+    ERASER_SOFT("Soft Eraser", "Erase"),
     BLUR("Blur", "Erase"),
     // Heal
     HEAL_PATCH("Heal Patch", "Heal")
@@ -279,6 +290,34 @@ class BrushEngine {
                 if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.15f), BlurMaskFilter.Blur.NORMAL)
                 paint.strokeCap = Paint.Cap.ROUND
             }
+            BrushType.DIP_HARD -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+            }
+            BrushType.DIP_SOFT -> {
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.12f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+            }
+            BrushType.FELT_HARD -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 230).toInt().coerceIn(0, 255)
+            }
+            BrushType.FELT_SOFT -> {
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.18f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 220).toInt().coerceIn(0, 255)
+            }
+            BrushType.BALLPOINT -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.strokeWidth = size * 0.7f
+            }
+            BrushType.G_PEN -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+            }
             BrushType.PENCIL -> {
                 if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.08f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 200).toInt().coerceIn(0, 255)
@@ -302,11 +341,38 @@ class BrushEngine {
                 paint.strokeJoin = Paint.Join.MITER
                 paint.alpha = (this@BrushEngine.opacity * 180).toInt().coerceIn(0, 255)
             }
+            BrushType.FLAT -> {
+                paint.strokeCap = Paint.Cap.SQUARE
+                paint.strokeJoin = Paint.Join.BEVEL
+                paint.alpha = (this@BrushEngine.opacity * 200).toInt().coerceIn(0, 255)
+            }
+            BrushType.ROUND -> {
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.12f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 210).toInt().coerceIn(0, 255)
+            }
+            BrushType.CRAYON -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 150).toInt().coerceIn(0, 255)
+            }
             BrushType.AIRBRUSH -> {
                 if (!isHuge) paint.maskFilter = BlurMaskFilter(max(3f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 100).toInt().coerceIn(0, 255)
             }
+            BrushType.AIR_FAN -> {
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(3f, size * 0.5f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeWidth = size * 1.5f
+                paint.alpha = (this@BrushEngine.opacity * 70).toInt().coerceIn(0, 255)
+            }
             BrushType.ERASER -> {
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+            }
+            BrushType.ERASER_SOFT -> {
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(2f, size * 0.3f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
             }
             BrushType.BLUR -> {
@@ -325,14 +391,17 @@ class BrushEngine {
 
     // ibisPaint-style: dip pen pressure simulation based on velocity.
     // Lowpass eksponensial ala MyPaint agar lebar tak bergetar per-event.
-    private fun getVelocityFactor(distance: Float): Float {
+    // G Pen memakai rentang lebih lebar (dinamika manga tegas).
+    private fun getVelocityFactor(distance: Float, wide: Boolean = false): Float {
         velocityEma += 0.35f * (distance - velocityEma)
         val v = velocityEma
+        val lo = if (wide) 0.4f else 0.6f
+        val hi = if (wide) 1.6f else 1.3f
         // Slower = thicker, faster = thinner (like real ink pen)
         return when {
-            v < 2f -> 1.3f
-            v > 15f -> 0.6f
-            else -> (1.3f - (v - 2f) * 0.05f).coerceIn(0.6f, 1.3f)
+            v < 2f -> hi
+            v > 15f -> lo
+            else -> (hi - (v - 2f) * (hi - lo) / 13f).coerceIn(lo, hi)
         }
     }
 
@@ -433,6 +502,8 @@ class BrushEngine {
         if (brushType == BrushType.INK || brushType == BrushType.PEN_SOFT) {
             val velocityFactor = getVelocityFactor(distance)
             paint.strokeWidth = size * velocityFactor
+        } else if (brushType == BrushType.G_PEN) {
+            paint.strokeWidth = size * getVelocityFactor(distance, wide = true)
         }
 
         // Force fade / taper
@@ -567,6 +638,25 @@ class BrushEngine {
                 }
                 paint.alpha = baseAlpha
                 paint.strokeWidth = baseWidth
+            }
+        } else if (brushType == BrushType.AIR_FAN) {
+            // Fan: 3 garis menyebar (kipas) dengan alpha rendah per helai.
+            // Huge: single-pass agar hemat drawCall di 720x16000.
+            if (isHuge) {
+                canvas.drawLine(x1, y1, x2, y2, paint)
+            } else {
+                val baseAlpha = paint.alpha
+                val baseWidth = paint.strokeWidth
+                val fanPaint = Paint(paint).apply { alpha = (baseAlpha / 3).coerceIn(1, 255) }
+                val spread = baseWidth * 0.35f
+                val dx = x2 - x1
+                val dy = y2 - y1
+                val len = kotlin.math.hypot(dx, dy).coerceAtLeast(1f)
+                val nx = -dy / len * spread
+                val ny = dx / len * spread
+                canvas.drawLine(x1, y1, x2, y2, fanPaint)
+                canvas.drawLine(x1 + nx, y1 + ny, x2 + nx, y2 + ny, fanPaint)
+                canvas.drawLine(x1 - nx, y1 - ny, x2 - nx, y2 - ny, fanPaint)
             }
         } else if (brushType == BrushType.OIL) {
             // Oil: draw core + edge highlight (highlight dipakai ulang per segmen).
