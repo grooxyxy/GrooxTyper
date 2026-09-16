@@ -157,7 +157,7 @@ class InpaintingManager {
      * Pad adaptif 96 (dari Vasilias CONTEXT_PAD) agar patch punya sumber luas
      * dan tidak noise.
      */
-    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF) {
+    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF): Boolean {
         try {
             val l = dirty.left.toInt().coerceIn(0, src.width - 1)
             val t = dirty.top.toInt().coerceIn(0, src.height - 1)
@@ -175,9 +175,10 @@ class InpaintingManager {
                     (cy + 256).toFloat().coerceAtMost(src.height.toFloat())
                 )
                 if (safe.width() >= 8f && safe.height() >= 8f) {
-                    inpaintHealDirty(src, mask, safe)
+                    return inpaintHealDirty(src, mask, safe)
                 }
-                return
+                android.util.Log.w("Inpaint", "heal: dirty terlalu kecil, skip")
+                return false
             }
             // Crop sempit di sekitar sapuan + padding adaptif (Vasilias 96-256)
             // Teks manga 12-30px, butuh konteks minimal 96 agar patch menemukan
@@ -191,7 +192,10 @@ class InpaintingManager {
             val cb = minOf(src.height, b + adaptivePad)
             val cw = cr - cl
             val ch = cb - ct
-            if (cw <= 8 || ch <= 8) return
+            if (cw <= 8 || ch <= 8) {
+                android.util.Log.w("Inpaint", "heal: crop terlalu kecil ${cw}x${ch}, skip")
+                return false
+            }
             // Dilatasi mask 1px di dalam crop saja (anti-halo tepi teks).
             if (dilateMask) {
                 val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
@@ -212,8 +216,13 @@ class InpaintingManager {
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                     try {
                         // PatchMatch sekarang multi-scale + guide + constraint (fix noise)
-                        PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
+                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
+                        if (!ok) {
+                            android.util.Log.w("Inpaint", "heal: PatchMatch skip (mask/ROI kosong)")
+                            return false
+                        }
                         android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                        return true
                     } finally {
                         runCatching { srcCrop.recycle() }
                         runCatching { maskCrop.recycle() }
@@ -231,23 +240,27 @@ class InpaintingManager {
                             try { NativeEngine.nativeInpaintTelea(srcCrop2, argb2, 5.0) }
                             finally { if (tmp2) runCatching { argb2.recycle() } }
                             android.graphics.Canvas(src).drawBitmap(srcCrop2, cl.toFloat(), ct.toFloat(), null)
+                            return true
                         } finally {
                             runCatching { srcCrop2.recycle() }
                             runCatching { maskCrop2.recycle() }
                         }
-                    } catch (_: Exception) {} catch (_: OutOfMemoryError) {}
+                    } catch (_: Exception) { return false } catch (_: OutOfMemoryError) { return false }
                 } catch (e: Exception) {
                     e.printStackTrace()
                     inpaintBitmapDirect(src, mask)
+                    return true
                 }
             } else {
                 inpaintBitmapDirect(src, mask)
+                return true
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            try { inpaintBitmapDirect(src, mask) } catch (_: Exception) {}
+            try { inpaintBitmapDirect(src, mask); return true } catch (_: Exception) { return false }
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
+            return false
         }
     }
 

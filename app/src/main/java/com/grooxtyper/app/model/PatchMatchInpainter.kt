@@ -52,10 +52,10 @@ object PatchMatchInpainter {
      * [mode] memilih strategi patch agar melampaui Photoshop untuk manga.
      * Implementasi sekarang multi-scale + guide + constraint (fix noise).
      */
-    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.CONTENT_AWARE) {
+    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.CONTENT_AWARE): Boolean {
         val w = src.width
         val h = src.height
-        if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return
+        if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return false
         // Scan mask untuk bounds hemat memori (strip 512, bukan 46MB sekaligus)
         var minX = w; var minY = h; var maxX = -1; var maxY = -1
         val tmp = IntArray(w * min(512, h))
@@ -79,7 +79,10 @@ object PatchMatchInpainter {
             }
             y0 += sh
         }
-        if (maxX < 0) return
+        if (maxX < 0) {
+            android.util.Log.w("PatchMatch", "inpaint: mask kosong, skip")
+            return false
+        }
         // Adaptive pad seperti Vasilias: stroke lebar butuh konteks lebih luas
         val bw = maxX - minX + 1
         val bh = maxY - minY + 1
@@ -94,7 +97,10 @@ object PatchMatchInpainter {
         val ry = (minY - pad).coerceIn(0, h - 1)
         val rw = ((maxX + pad).coerceAtMost(w - 1) - rx + 1).coerceAtLeast(1)
         val rh = ((maxY + pad).coerceAtMost(h - 1) - ry + 1).coerceAtLeast(1)
-        if (rw <= 8 || rh <= 8) return
+        if (rw <= 8 || rh <= 8) {
+            android.util.Log.w("PatchMatch", "inpaint: ROI terlalu kecil ${rw}x${rh}, skip")
+            return false
+        }
 
         // Guard OOM: bila ROI raksasa (>2M) downscale 0.5 dulu (seperti sebelumnya)
         var scale = 1f
@@ -105,8 +111,8 @@ object PatchMatchInpainter {
             workW = max(16, (rw * scale).toInt())
             workH = max(16, (rh * scale).toInt())
         }
-        var srcCrop = try { Bitmap.createBitmap(src, rx, ry, rw, rh) } catch (e: OutOfMemoryError) { return } catch (e: Exception) { return }
-        var maskCrop = try { Bitmap.createBitmap(mask, rx, ry, rw, rh) } catch (e: Exception) { srcCrop.recycle(); return }
+        var srcCrop = try { Bitmap.createBitmap(src, rx, ry, rw, rh) } catch (e: OutOfMemoryError) { android.util.Log.w("PatchMatch", "inpaint: OOM srcCrop"); return false } catch (e: Exception) { return false }
+        var maskCrop = try { Bitmap.createBitmap(mask, rx, ry, rw, rh) } catch (e: Exception) { srcCrop.recycle(); return false }
         if (scale != 1f) {
             val sW = Bitmap.createScaledBitmap(srcCrop, workW, workH, true)
             val mW = Bitmap.createScaledBitmap(maskCrop, workW, workH, true)
@@ -117,7 +123,8 @@ object PatchMatchInpainter {
             // Build Region dari maskCrop untuk pipeline Vasilias (lebih akurat)
             val region = bitmapMaskToRegion(maskCrop)
             if (region.isEmpty) {
-                srcCrop.recycle(); maskCrop.recycle(); return
+                android.util.Log.w("PatchMatch", "inpaint: region kosong, skip")
+                srcCrop.recycle(); maskCrop.recycle(); return false
             }
             // Panggil pipeline multi-scale Vasilias yang anti-noise
             val result = if (feather) {
@@ -134,10 +141,14 @@ object PatchMatchInpainter {
             } else result
             Canvas(src).drawBitmap(toBlit, rx.toFloat(), ry.toFloat(), null)
             toBlit.recycle()
+            return true
         } catch (e: Exception) {
             e.printStackTrace()
+            android.util.Log.w("PatchMatch", "inpaint gagal: $e")
+            return false
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
+            return false
         } finally {
             runCatching { srcCrop.recycle() }
             runCatching { maskCrop.recycle() }
