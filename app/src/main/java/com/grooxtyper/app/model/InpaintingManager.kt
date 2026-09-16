@@ -30,8 +30,8 @@ class InpaintingManager {
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
     // patch. Default CONTENT_AWARE (pengganti PS Content-Aware Fill).
     // mutableState agar pemilih mode di quick slider langsung recompose.
-    var healMode by mutableStateOf(HealMode.CONTENT_AWARE)
-    var healFeather by mutableStateOf(true)
+    var healMode: HealMode by mutableStateOf(HealMode.CONTENT_AWARE)
+    var healFeather: Boolean by mutableStateOf(true)
 
     fun inpaintLayerArea(
         layer: DrawingLayer,

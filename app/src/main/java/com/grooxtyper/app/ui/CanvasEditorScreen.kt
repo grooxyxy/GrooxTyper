@@ -120,6 +120,8 @@ import com.grooxtyper.app.model.CanvasViewState
 import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
+import com.grooxtyper.app.model.HealMode
+import com.grooxtyper.app.model.InpaintMode
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.ImageImport
 import com.grooxtyper.app.model.FontRegistry
@@ -2192,7 +2194,7 @@ fun CanvasEditorScreen(
                     ) {
                         Spacer(modifier = Modifier.width(38.dp))
                         Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
-                        com.grooxtyper.app.model.HealMode.values().forEach { hm ->
+                        for (hm in com.grooxtyper.app.model.HealMode.values()) {
                             val sel = inpaintingManager.healMode == hm
                             Box(
                                 modifier = Modifier
@@ -3060,14 +3062,14 @@ fun CanvasEditorScreen(
                             horizontalArrangement = Arrangement.SpaceAround
                         ) {
                             Button(
-                                onClick = { inpaintingManager.mode = com.grooptyper.app.model.InpaintMode.PATCH_MATCH },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooptyper.app.model.InpaintMode.PATCH_MATCH) Accent else PanelBg)
+                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.PATCH_MATCH },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.PATCH_MATCH) Accent else PanelBg)
                             ) {
                                 Text("PatchMatch", color = Color.White, fontSize = 11.sp)
                             }
                             Button(
-                                onClick = { inpaintingManager.mode = com.grooptyper.app.model.InpaintMode.TELEA },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooptyper.app.model.InpaintMode.TELEA) Accent else PanelBg)
+                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.TELEA },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.TELEA) Accent else PanelBg)
                             ) {
                                 Text("Telea", color = Color.White, fontSize = 11.sp)
                             }

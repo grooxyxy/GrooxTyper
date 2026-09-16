@@ -1,4 +1,4 @@
-package com.grooptyper.app.model
+package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
