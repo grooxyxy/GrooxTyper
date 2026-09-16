@@ -670,8 +670,8 @@ fun CanvasEditorScreen(
     // Image layer terpilih + mode handle (cermin TextBox).
     var selectedImageId by remember { mutableStateOf<String?>(null) }
     var imageHandleMode by remember { mutableStateOf(ImageHandleMode.NONE) }
-    val selectedImage: com.grooxtyper.app.model.ImageLayer?
-        get() = selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
+    fun selectedImage(): com.grooxtyper.app.model.ImageLayer? =
+        selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
 
     var showColorPicker by remember { mutableStateOf(false) }
     var showLayersPanel by remember { mutableStateOf(false) }
@@ -1709,7 +1709,7 @@ fun CanvasEditorScreen(
                                     } else if (activeTool == ActiveTool.IMAGE) {
                                         val grip = 32f / viewState.scale
                                         if (lastCanvasPoint == null) {
-                                            val current = selectedImage
+                                            val current = selectedImage()
                                             val handle = current?.let { imageHandleAt(it, touchCanvasPos, grip) }
                                                 ?: ImageHandleMode.NONE
                                             if (handle != ImageHandleMode.NONE && current != null) {
@@ -1730,7 +1730,7 @@ fun CanvasEditorScreen(
                                                 }
                                             }
                                         } else {
-                                            selectedImage?.let { img ->
+                                            selectedImage()?.let { img ->
                                                 when (imageHandleMode) {
                                                     ImageHandleMode.BODY -> {
                                                         val delta = touchCanvasPos - lastCanvasPoint!!
@@ -2326,7 +2326,7 @@ fun CanvasEditorScreen(
                 }
 
                 // Bingkai seleksi image layer + handle SCALE (sudut) + ROTATE (atas).
-                selectedImage?.let { img ->
+                selectedImage()?.let { img ->
                     if (!img.bitmap.isRecycled) {
                         val native = drawContext.canvas.nativeCanvas
                         val b = img.bounds()
@@ -2748,7 +2748,7 @@ fun CanvasEditorScreen(
         }
 
         // Panel properti image layer terpilih: resize px + rotate + opacity.
-        selectedImage?.let { img ->
+        selectedImage()?.let { img ->
             val imgBaseline = remember(img.id) { com.grooxtyper.app.model.ImageTransform.of(img) }
             fun commitImgBaseline() {
                 if (imgBaseline != com.grooxtyper.app.model.ImageTransform.of(img)) {
