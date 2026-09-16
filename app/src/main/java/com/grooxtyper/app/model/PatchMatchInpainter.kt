@@ -47,6 +47,12 @@ object PatchMatchInpainter {
     // Groox legacy patch size 7 (HALF=3) selaras dengan PATCH_RADIUS 3
     private const val HALF = PATCH_RADIUS
 
+    // Adaptif cepat untuk manga besar: ROI>500k pakai iters/level rendah (hemat ~6x).
+    private var curIters = ITERS
+    private var curCompletion = COMPLETION_ITERS
+    private var curLevels = MAX_PYRAMID_LEVELS
+    private var curCoarse = COARSE_EDGE
+
     /**
      * Inpaint [src] di area [mask] (putih = lubang). Hasil ditulis balik ke [src].
      * [mask] dan [src] harus seukuran kanvas. Hanya area crop yang diproses.
@@ -99,6 +105,7 @@ object PatchMatchInpainter {
         val ry = (minY - pad).coerceIn(0, h - 1)
         val rw = ((maxX + pad).coerceAtMost(w - 1) - rx + 1).coerceAtLeast(1)
         val rh = ((maxY + pad).coerceAtMost(h - 1) - ry + 1).coerceAtLeast(1)
+        if (rw.toLong() * rh > 500000L) { curIters = 2; curCompletion = 1; curLevels = 2; curCoarse = 160 } else { curIters = ITERS; curCompletion = COMPLETION_ITERS; curLevels = MAX_PYRAMID_LEVELS; curCoarse = COARSE_EDGE }
         if (rw <= 8 || rh <= 8) {
             android.util.Log.w("PatchMatch", "inpaint: ROI terlalu kecil ${rw}x${rh}, skip")
             return false
@@ -108,8 +115,8 @@ object PatchMatchInpainter {
         var scale = 1f
         var workW = rw
         var workH = rh
-        if (rw.toLong() * rh > 2_000_000L) {
-            scale = 0.5f
+        if (rw.toLong() * rh > 1000000L) {
+            scale = 0.33f
             workW = max(16, (rw * scale).toInt())
             workH = max(16, (rh * scale).toInt())
         }
@@ -263,7 +270,7 @@ object PatchMatchInpainter {
         val descending = mutableListOf(Level(width, height))
         var levelWidth = width
         var levelHeight = height
-        while (descending.size < MAX_PYRAMID_LEVELS && min(levelWidth, levelHeight) > COARSE_EDGE) {
+        while (descending.size < curLevels && min(levelWidth, levelHeight) > curCoarse) {
             levelWidth = max(PATCH_RADIUS * 2 + 3, (levelWidth + 1) / 2)
             levelHeight = max(PATCH_RADIUS * 2 + 3, (levelHeight + 1) / 2)
             descending += Level(levelWidth, levelHeight)
@@ -295,7 +302,7 @@ object PatchMatchInpainter {
             val levelStart = index / levels.size.toFloat()
             var iterationGuide = guide
             var completed = levelPixels
-            for (completionIteration in 0 until COMPLETION_ITERS) {
+            for (completionIteration in 0 until curCompletion) {
                 val before = iterationGuide
                 completed = patchMatchInpaint(
                     levelPixels,
@@ -305,7 +312,7 @@ object PatchMatchInpainter {
                     iterationGuide
                 ) { localProgress ->
                     val iterationProgress =
-                        (completionIteration + localProgress) / COMPLETION_ITERS.toFloat()
+                        (completionIteration + localProgress) / curCompletion.toFloat()
                     onProgress?.invoke(
                         0.05f + 0.93f * (levelStart + iterationProgress / levels.size.toFloat())
                     )
@@ -360,7 +367,7 @@ object PatchMatchInpainter {
         }
 
         val maxRadius = max(w, h)
-        for (iter in 0 until ITERS) {
+        for (iter in 0 until curIters) {
             val forward = (iter % 2 == 0)
             if (forward) {
                 for (y in 0 until h) {
@@ -372,7 +379,7 @@ object PatchMatchInpainter {
                             sourceConstraints, targetConstraints, constrainedSources
                         )
                     }
-                    onProgress?.invoke(0.08f + 0.72f * (iter + (y + 1f) / h) / ITERS)
+                    onProgress?.invoke(0.08f + 0.72f * (iter + (y + 1f) / h) / curIters)
                 }
             } else {
                 for (y in h - 1 downTo 0) {
@@ -384,7 +391,7 @@ object PatchMatchInpainter {
                             sourceConstraints, targetConstraints, constrainedSources
                         )
                     }
-                    onProgress?.invoke(0.08f + 0.72f * (iter + (h - y) / h.toFloat()) / ITERS)
+                    onProgress?.invoke(0.08f + 0.72f * (iter + (h - y) / h.toFloat()) / curIters)
                 }
             }
         }

@@ -495,11 +495,15 @@ fun CanvasEditorScreen(
                     )
                 }.getOrNull()
             }
-            withContext(Dispatchers.IO) {
-                runCatching { projectManager.saveArtwork(projectId, base) }
+            val saved = withContext(Dispatchers.IO) {
+                // Hormati hasil atomik: bila PNG gagal (OOM/kill), jangan tandai tersimpan
+                // agar auto-save berikutnya mencoba lagi, bukan menganggap setengah file valid.
+                val artOk = runCatching { projectManager.saveArtwork(projectId, base) }.getOrDefault(false)
                 runCatching { projectManager.saveTexts(projectId, textsJson) }
                 preview?.let { pv -> runCatching { projectManager.savePreview(projectId, pv) } }
+                artOk
             }
+            if (!saved) return false
             lastSavedVersion = dv
             true
         } catch (e: OutOfMemoryError) {
@@ -882,7 +886,7 @@ fun CanvasEditorScreen(
     val bubbleDetector = remember { BubbleDetector() }
     var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
     var showBubbleDialog by remember { mutableStateOf(false) }
-    var bubbleModel by remember { mutableStateOf(BubbleModel.BEST1_ONNX) }
+    var bubbleModel by remember { mutableStateOf(BubbleModel.BUBBLE) }
     var bubbleDetecting by remember { mutableStateOf(false) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).

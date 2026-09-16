@@ -244,11 +244,11 @@ class InpaintingManager {
                 }
             }
             if (mode == InpaintMode.PATCH_MATCH) {
-                // Hybrid otomatis (Telea vs PatchMatch, insight OpenCV anphiriel):
-                // tipis/kecil (<48px, <8k px) -> Telea cepat + garis halus;
-                // luas/bertekstur -> PatchMatch manga-aware.
+                // Hybrid otomatis (Telea vs PatchMatch, insight OpenCV anphiriel + manga 720x16000):
+                // teks manga tipikal (lebar sapuan <80px atau area <150k) -> Telea isophote cepat;
+                // luas/bertekstur -> PatchMatch manga-aware adaptif.
                 val dirtyArea = bw.toLong() * bh.toLong()
-                val isThin = max(bw, bh) < 48 || dirtyArea < 8000L
+                val isThin = max(bw, bh) < 80 || dirtyArea < 150000L
                 if (isThin) {
                     try {
                         val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)

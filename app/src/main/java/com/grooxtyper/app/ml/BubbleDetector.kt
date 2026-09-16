@@ -18,26 +18,23 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BEST1_ONNX -> `models/best1.onnx` (YOLO detect, 2 kelas balloon/other,
+ * BUBBLE -> `models/bd.onnx` (YOLO detect 2 kelas text_bubble/text_free,
  * input 640x640, single output (1,6,8400)). Model DIEKSEKUSI LANGSUNG di
- * perangkat via ONNX Runtime Mobile.
+ * perangkat via ONNX Runtime Mobile. Nama file disamarkan agar tak terekspos di APK.
  *
  * Kompatibel mundur: bila ONNX mengembalikan 2 output (det + protos seg
  * legacy 37ch), dipakai jalur seg + mask. Bila 1 output (detect), dipakai
  * jalur detect tanpa mask (mask=null).
- *
- * `best1.pt` (checkpoint seg lama) tetap disertakan sebagai arsip bila ada,
- * tapi tidak dipakai saat runtime.
  */
 enum class BubbleModel(
     val displayName: String,
     val desc: String,
     val asset: String
 ) {
-    BEST1_ONNX(
-        "best1.onnx • YOLO detect balloon/other (on-device)",
-        "Inferensi nyata ONNX Runtime, input 640x640, kelas balloon + other",
-        "models/best1.onnx"
+    BUBBLE(
+        "Bubble Detector • on-device",
+        "Inferensi nyata ONNX Runtime, input 640x640",
+        "models/bd.onnx"
     )
 }
 
@@ -46,23 +43,22 @@ data class DetectedBubble(
     val score: Float,
     /** Mask segmentasi per bubble dalam koordinat kanvas penuh (boleh null; null untuk model detect). */
     val mask: Bitmap? = null,
-    /** Id kelas model: 0 = balloon, 1 = other (model detect baru). -1 = tak diketahui/heuristik. */
+    /** Id kelas model: 0 = text_bubble, 1 = text_free. -1 = tak diketahui/heuristik. */
     val classId: Int = -1
 )
 
-/** Asset model bubble yang tersedia di `assets/models/`. */
+/** Asset model bubble yang tersedia di `assets/models/` (nama disamarkan). */
 object YoloBubbleModel {
-    const val SEG_ASSET = "models/best1.onnx"
-    const val PT_REFERENCE_ASSET = "models/best1.pt"
+    const val SEG_ASSET = "models/bd.onnx"
 }
 
 /**
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model baru: YOLO detect 2-class (balloon/other), input 640x640,
+ * - Model aktif: YOLO detect 2-class (text_bubble/text_free), input 640x640,
  *   output tunggal (1,6,8400) = 4 box + 2 skor kelas, tanpa mask.
- * - Legacy: YOLOv11n-seg 1-class, output (1,37,8400) + protos (1,32,160,160)
+ * - Legacy: YOLO seg 1-class, output (1,37,8400) + protos (1,32,160,160)
  *   dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
  * 720px ber-overlap 15%; setiap tile di-letterbox ke 640x640, dijalankan
@@ -263,7 +259,7 @@ class BubbleDetector {
     /**
      * Decode output YOLO detect: matriks (C,N) atau (N,C) dengan
      * C = 4 box (cx,cy,w,h relatif 640) + numClasses skor.
-     * Model baru: C=6 (balloon=0, other=1). Mask=null (box-only).
+     * Model aktif: C=6 (text_bubble=0, text_free=1). Mask=null (box-only).
      */
     private fun decodeDetect(
         mat: Array<FloatArray>,
@@ -317,7 +313,7 @@ class BubbleDetector {
         }
         if (raw.isEmpty()) return emptyList()
 
-        // NMS global (abaikan kelas agar duplikat balloon/other menyatu).
+        // NMS global (abaikan kelas agar duplikat text_bubble/text_free menyatu).
         val kept = ArrayList<RawBox>()
         for (d in raw.sortedByDescending { it.score }) {
             var dup = false
@@ -531,7 +527,7 @@ class BubbleDetector {
     /** Parameter mentah per opsi model (untuk jalur heuristik). */
     private fun rawParams(model: BubbleModel): Triple<Int, Int, Int> {
         return when (model) {
-            BubbleModel.BEST1_ONNX -> Triple(1024, 220, 80)
+            BubbleModel.BUBBLE -> Triple(1024, 220, 80)
         }
     }
 
@@ -672,7 +668,7 @@ class BubbleDetector {
                         fill in 0.45f..0.97f &&
                         min(bw, bh) >= 20
                     ) {
-                        // Filter ala kelas 'balloon': area putih dengan OUTLINE
+                        // Filter ala bubble: area putih dengan OUTLINE
                         // GELAP mengelilingi DAN berisi teks gelap.
                         val ring = max(2, min(bw, bh) / 12)
                         var ringTotal = 0

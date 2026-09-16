@@ -24,6 +24,10 @@ class ProjectManager(private val context: Context) {
         if (!projectsDir.exists()) {
             projectsDir.mkdirs()
         }
+        // Bersihkan sisa .tmp dari save yang terbunuh (kill/OOM) agar tak dibaca sebagai project.
+        runCatching {
+            projectsDir.listFiles { f -> f.isFile && f.name.endsWith(".tmp") }?.forEach { runCatching { it.delete() } }
+        }
     }
 
     fun loadProjects(): List<SavedProject> {
@@ -53,16 +57,51 @@ class ProjectManager(private val context: Context) {
     /**
      * Simpan gambar tanpa mengubah judul/dimensi yang sudah ada
      * (dipakai auto-save agar tidak menimpa judul proyek).
+     * Atomik via tmp+rename agar 720x16000 tak truncated setengah-transparan
+     * bila apk dibunuh saat compress PNG multi-detik.
      */
-    fun saveArtwork(id: String, bitmap: Bitmap) {
+    fun saveArtwork(id: String, bitmap: Bitmap): Boolean {
         val existing = getProject(id)
         if (existing == null) {
-            saveProject(id, "GrooxTyper Artwork", bitmap.width, bitmap.height, bitmap)
-            return
+            return saveProject(id, "GrooxTyper Artwork", bitmap.width, bitmap.height, bitmap)
         }
-        try {
-            java.io.File(existing.imagePath).outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+        return try {
+            val target = java.io.File(existing.imagePath)
+            val tmp = java.io.File(target.parent, target.name + ".tmp")
+            var ok = false
+            try {
+                tmp.outputStream().use { out ->
+                    ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    out.flush()
+                }
+                if (!ok) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+                // Verifikasi minimal: tmp harus ada + lebih besar dari header PNG.
+                if (!tmp.exists() || tmp.length() < 100L) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+                if (!tmp.renameTo(target)) {
+                    // Fallback: salin manual bila rename beda volume (jarang).
+                    try {
+                        tmp.copyTo(target, overwrite = true)
+                        runCatching { tmp.delete() }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        runCatching { tmp.delete() }
+                        return false
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runCatching { tmp.delete() }
+                return false
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                runCatching { tmp.delete() }
+                return false
             }
             val current = loadProjects().toMutableList()
             val idx = current.indexOfFirst { it.id == id }
@@ -70,16 +109,45 @@ class ProjectManager(private val context: Context) {
                 current[idx] = current[idx].copy(lastModified = System.currentTimeMillis())
                 persistProjects(current)
             }
+            true
         } catch (e: Exception) {
             e.printStackTrace()
+            false
         }
     }
 
-    fun saveProject(id: String, title: String, width: Int, height: Int, bitmap: Bitmap) {
-        try {
+    fun saveProject(id: String, title: String, width: Int, height: Int, bitmap: Bitmap): Boolean {
+        return try {
             val imageFile = File(projectsDir, "proj_$id.png")
-            imageFile.outputStream().use { out ->
-                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            val tmp = File(projectsDir, "proj_${id}.png.tmp")
+            var ok = false
+            try {
+                tmp.outputStream().use { out ->
+                    ok = bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    out.flush()
+                }
+                if (!ok || !tmp.exists() || tmp.length() < 100L) {
+                    runCatching { tmp.delete() }
+                    return false
+                }
+                if (!tmp.renameTo(imageFile)) {
+                    try {
+                        tmp.copyTo(imageFile, overwrite = true)
+                        runCatching { tmp.delete() }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        runCatching { tmp.delete() }
+                        return false
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                runCatching { tmp.delete() }
+                return false
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                runCatching { tmp.delete() }
+                return false
             }
 
             val currentProjects = loadProjects().toMutableList()
@@ -87,8 +155,10 @@ class ProjectManager(private val context: Context) {
             currentProjects.add(0, SavedProject(id, title, width, height, System.currentTimeMillis(), imageFile.absolutePath))
 
             persistProjects(currentProjects)
+            true
         } catch (e: Exception) {
             e.printStackTrace()
+            false
         }
     }
 

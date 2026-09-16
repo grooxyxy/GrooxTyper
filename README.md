@@ -1,13 +1,13 @@
 # GrooxTyper
 
 Editor terjemahan manga on-device (Android): deteksi teks ML Kit, deteksi balon
-teks on-device via model YOLO detect (`best1.onnx`, 2 kelas balloon/other),
+teks on-device via model YOLO detect (bubble, 2 kelas),
 inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Fitur utama
 
 - **Bubble Detector (inferensi nyata, on-device)** — model
-  `assets/models/best1.onnx` (YOLO detect, 2 kelas `balloon`/`other`,
+  `assets/models/bd.onnx` (YOLO detect 2 kelas,
   input 640x640, single output (1,6,8400)) dieksekusi langsung di perangkat
   memakai **ONNX Runtime Mobile**
   (`com.microsoft.onnxruntime:onnxruntime-android`). Decode Kotlin:
@@ -64,13 +64,13 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Konversi model (detect)
 
-Model aktif `best1.onnx` adalah YOLO detect 2-class (balloon/other), imgsz 640,
+Model aktif bubble detector adalah YOLO detect 2-class, imgsz 640,
 task detect. Contoh export bila melatih ulang via Ultralytics:
 
 ```bash
 pip install ultralytics onnx onnxruntime
 python -c "from ultralytics import YOLO; YOLO('best.pt').export(format='onnx', imgsz=640, opset=17, simplify=True)"
-# hasil: app/src/main/assets/models/best1.onnx
+# hasil: app/src/main/assets/models/bd.onnx (nama disamarkan)
 ```
 
 ## Build

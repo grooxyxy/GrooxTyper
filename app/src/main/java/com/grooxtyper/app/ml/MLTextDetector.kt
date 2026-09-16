@@ -434,8 +434,182 @@ class MLTextDetector {
                 }
             }
         }
+        if (maskType == MLMaskType.MASK_BENTUK_TEKS && regions.isNotEmpty()) {
+            try {
+                return refineMaskWithTextlines(maskBitmap, regions, canvasWidth, canvasHeight)
+            } catch (e: Exception) { e.printStackTrace() }
+        }
         return maskBitmap
     }
+
+    private fun refineMaskWithTextlines(
+        rawMask: Bitmap, regions: List<DetectedTextRegion>, canvasWidth: Int, canvasHeight: Int,
+        keepThreshold: Float = 1e-2f, kernelSize: Int = 3
+    ): Bitmap {
+        val w = rawMask.width
+        val h = rawMask.height
+        if (w <= 0 || h <= 0 || regions.isEmpty()) return rawMask
+        val px = IntArray(w * h)
+        try { rawMask.getPixels(px, 0, w, 0, 0, w, h) } catch (e: Exception) { return rawMask }
+        val isMask = BooleanArray(w * h) { (px[it] ushr 24) > 30 }
+        for (r in regions) {
+            val b = r.boundingBox
+            val l = b.left.coerceIn(0, w - 1); val t = b.top.coerceIn(0, h - 1)
+            val rr = b.right.coerceIn(0, w - 1); val bb = b.bottom.coerceIn(0, h - 1)
+            for (x in l..rr) { isMask[t * w + x] = false; isMask[bb * w + x] = false }
+            for (y in t..bb) { isMask[y * w + l] = false; isMask[y * w + rr] = false }
+        }
+        val label = IntArray(w * h) { -1 }
+        val ccLeft = mutableListOf<Int>(); val ccTop = mutableListOf<Int>()
+        val ccRight = mutableListOf<Int>(); val ccBottom = mutableListOf<Int>()
+        val ccArea = mutableListOf<Int>()
+        var nComp = 0
+        for (i in isMask.indices) {
+            if (!isMask[i] || label[i] != -1) continue
+            val dq = ArrayDeque<Int>()
+            dq.addLast(i); label[i] = nComp
+            var minX = w; var minY = h; var maxX = -1; var maxY = -1; var area = 0
+            while (dq.isNotEmpty()) {
+                val cur = dq.removeLast()
+                val x = cur % w; val y = cur / w
+                area++
+                if (x < minX) minX = x; if (y < minY) minY = y
+                if (x > maxX) maxX = x; if (y > maxY) maxY = y
+                if (x > 0) { val n = cur - 1; if (isMask[n] && label[n] == -1) { label[n] = nComp; dq.addLast(n) } }
+                if (x < w - 1) { val n = cur + 1; if (isMask[n] && label[n] == -1) { label[n] = nComp; dq.addLast(n) } }
+                if (y > 0) { val n = cur - w; if (isMask[n] && label[n] == -1) { label[n] = nComp; dq.addLast(n) } }
+                if (y < h - 1) { val n = cur + w; if (isMask[n] && label[n] == -1) { label[n] = nComp; dq.addLast(n) } }
+                if (dq.size > 200000) break
+            }
+            ccLeft.add(minX); ccTop.add(minY); ccRight.add(maxX); ccBottom.add(maxY); ccArea.add(area)
+            nComp++
+            if (nComp > 5000) break
+        }
+        if (nComp == 0) return rawMask
+        val m = regions.size
+        val fontSize = IntArray(m) { idx2 ->
+            val b = regions[idx2].boundingBox
+            maxOf(8, minOf(b.width(), b.height()))
+        }
+        val keep = BooleanArray(nComp) { false }
+        val assign = IntArray(nComp) { -1 }
+        for (c in 0 until nComp) {
+            val area1 = ccArea[c]
+            if (area1 <= 9) continue
+            val x1 = ccLeft[c]; val y1 = ccTop[c]
+            val w1 = ccRight[c] - x1 + 1; val h1 = ccBottom[c] - y1 + 1
+            var best = 0; var bestRatio = -1f
+            val ratios = FloatArray(m); val dists = FloatArray(m)
+            for (t in 0 until m) {
+                val b = regions[t].boundingBox
+                val area2 = maxOf(1, b.width() * b.height()).toFloat()
+                val ox = maxOf(0, minOf(x1 + w1, b.right) - maxOf(x1, b.left))
+                val oy = maxOf(0, minOf(y1 + h1, b.bottom) - maxOf(y1, b.top))
+                val ov = (ox * oy).toFloat()
+                val ratio = ov / minOf(area1.toFloat(), area2)
+                ratios[t] = ratio
+                dists[t] = rectDistance(x1.toFloat(), y1.toFloat(), (x1 + w1).toFloat(), (y1 + h1).toFloat(), b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat())
+                if (ratio > bestRatio) { bestRatio = ratio; best = t }
+            }
+            val polyArea = maxOf(1, regions[best].boundingBox.width() * regions[best].boundingBox.height()).toFloat()
+            if (area1 >= polyArea) continue
+            var avg = best
+            if (ratios[best] <= keepThreshold) {
+                var nd = 0; var ndv = Float.MAX_VALUE
+                for (t in 0 until m) if (dists[t] < ndv) { ndv = dists[t]; nd = t }
+                avg = nd
+                val unit = maxOf(minOf(fontSize[avg], w1, h1), 10).toFloat()
+                if (dists[avg] >= 0.5f * unit) continue
+            }
+            assign[c] = avg
+            keep[c] = true
+        }
+        if (!keep.any { it }) return rawMask
+        val out = IntArray(w * h) { 0 }
+        for (t in 0 until m) {
+            var rx0 = w; var ry0 = h; var rx1 = -1; var ry1 = -1
+            var any = false
+            for (c in 0 until nComp) {
+                if (!keep[c] || assign[c] != t) continue
+                any = true
+                if (ccLeft[c] < rx0) rx0 = ccLeft[c]
+                if (ccTop[c] < ry0) ry0 = ccTop[c]
+                if (ccRight[c] > rx1) rx1 = ccRight[c]
+                if (ccBottom[c] > ry1) ry1 = ccBottom[c]
+            }
+            if (!any) continue
+            val textSize = minOf(rx1 - rx0 + 1, ry1 - ry0 + 1, fontSize[t])
+            val ext = (textSize * 0.1f).toInt()
+            val x1 = maxOf(0, rx0 - ext); val y1 = maxOf(0, ry0 - ext)
+            val x2 = minOf(w - 1, rx1 + ext); val y2 = minOf(h - 1, ry1 + ext)
+            val rw = x2 - x1 + 1; val rh = y2 - y1 + 1
+            if (rw <= 0 || rh <= 0) continue
+            val region = BooleanArray(rw * rh)
+            for (c in 0 until nComp) {
+                if (!keep[c] || assign[c] != t) continue
+                for (y in ccTop[c]..ccBottom[c]) {
+                    if (y < y1 || y > y2) continue
+                    val row = y * w
+                    for (x in ccLeft[c]..ccRight[c]) {
+                        if (x < x1 || x > x2) continue
+                        if (label[row + x] == c) region[(y - y1) * rw + (x - x1)] = true
+                    }
+                }
+            }
+            var dilateSize = maxOf(((textSize * 0.3f).toInt() / 2) * 2 + 1, 3)
+            if (dilateSize % 2 == 0) dilateSize += 1
+            val rad = dilateSize / 2
+            val dil = region.copyOf()
+            for (y in 0 until rh) for (x in 0 until rw) {
+                if (!region[y * rw + x]) continue
+                for (dy in -rad..rad) for (dx in -rad..rad) {
+                    if (dx * dx + dy * dy > rad * rad) continue
+                    val xx = x + dx; val yy = y + dy
+                    if (xx in 0 until rw && yy in 0 until rh) dil[yy * rw + xx] = true
+                }
+            }
+            for (y in 0 until rh) for (x in 0 until rw) {
+                if (dil[y * rw + x]) out[(y1 + y) * w + (x1 + x)] = -1
+            }
+        }
+        val fr = kernelSize / 2
+        val finalPx = IntArray(w * h)
+        for (y in 0 until h) for (x in 0 until w) {
+            if (out[y * w + x] == 0) continue
+            for (dy in -fr..fr) for (dx in -fr..fr) {
+                if (dx * dx + dy * dy > fr * fr) continue
+                val xx = x + dx; val yy = y + dy
+                if (xx in 0 until w && yy in 0 until h) finalPx[yy * w + xx] = -1
+            }
+        }
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        try { bmp.setPixels(finalPx, 0, w, 0, 0, w, h) } catch (e: Exception) { return rawMask }
+        try { if (!rawMask.isRecycled) rawMask.recycle() } catch (e: Exception) {}
+        return bmp
+    }
+
+    private fun rectDistance(x1: Float, y1: Float, x1b: Float, y1b: Float, x2: Float, y2: Float, x2b: Float, y2b: Float): Float {
+        val left = x2b < x1
+        val right = x1b < x2
+        val bottom = y2b < y1
+        val top = y1b < y2
+        fun dist(ax: Float, ay: Float, bx: Float, by: Float): Float {
+            val dx = ax - bx; val dy = ay - by
+            return kotlin.math.sqrt(dx * dx + dy * dy)
+        }
+        return when {
+            top && left -> dist(x1, y1b, x2b, y2)
+            left && bottom -> dist(x1, y1, x2b, y2b)
+            bottom && right -> dist(x1b, y1, x2, y2b)
+            right && top -> dist(x1b, y1b, x2, y2)
+            left -> x1 - x2b
+            right -> x2 - x1b
+            bottom -> y1 - y2b
+            top -> y2 - y1b
+            else -> 0f
+        }
+    }
+
 
     /**
      * Mask bentuk teks untuk satu region: Sauvola adaptif primer (tahan bg tak rata,

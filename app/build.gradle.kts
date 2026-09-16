@@ -106,7 +106,7 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1")
 
-    // ONNX Runtime Mobile: inferensi model bubble best1.onnx (YOLO detect balloon/other) on-device
+    // ONNX Runtime Mobile: inferensi model bubble (YOLO detect) on-device
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
 
     // Coroutines
