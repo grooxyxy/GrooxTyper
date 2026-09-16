@@ -55,8 +55,13 @@ class PpocrDetector(context: android.content.Context) {
         appContext.assets.list(PpocrFiles.ASSET_DIR)?.toSet() ?: emptySet()
     }.getOrElse { emptySet() }
 
+    fun debugAssetDump(): String = runCatching {
+        val names = assetNames()
+        "assets/${PpocrFiles.ASSET_DIR}: ${if (names.isEmpty()) "<kosong>" else names.sorted().joinToString(", ")} | det=${hasAsset(PpocrFiles.DET)}"
+    }.getOrElse { "asset dump gagal: $it" }
+
     private fun hasAsset(name: String): Boolean = runCatching {
-        appContext.assets.open(PpocrFiles.asset(name)).use { it.read() != -1 }
+        appContext.assets.open(PpocrFiles.asset(name)).use { it.available() > 0 || it.read() != -1 }
     }.getOrElse { false }
 
     private val inferMutex = Mutex()
@@ -163,19 +168,43 @@ class PpocrDetector(context: android.content.Context) {
 
     suspend fun detect(bitmap: Bitmap, scripts: Set<MLScript>): List<DetectedTextRegion> =
         withContext(Dispatchers.Default) {
-            if (!isAvailable() || scripts.isEmpty()) return@withContext emptyList()
+            if (scripts.isEmpty()) return@withContext emptyList()
+            if (!isAvailable()) {
+                android.util.Log.w("PpocrDetector", "PPOCR not available: ${debugAssetDump()} | isAvailable=${isAvailable()} availLangs=${availableLangs()}")
+                return@withContext emptyList()
+            }
             val avail = availableLangs()
-            val lang = chooseLang(scripts, avail) ?: return@withContext emptyList()
-            val det = ensureDet() ?: return@withContext emptyList()
-            val rec = ensureRec(lang) ?: return@withContext emptyList()
-            val dict = loadDict(lang) ?: return@withContext emptyList()
+            val lang = chooseLang(scripts, avail)
+            if (lang == null) {
+                android.util.Log.w("PpocrDetector", "PPOCR chooseLang null: scripts=$scripts avail=$avail")
+                return@withContext emptyList()
+            }
+            val det = ensureDet()
+            if (det == null) {
+                android.util.Log.e("PpocrDetector", "PPOCR ensureDet failed: ${debugAssetDump()}")
+                return@withContext emptyList()
+            }
+            val rec = ensureRec(lang)
+            if (rec == null) {
+                android.util.Log.e("PpocrDetector", "PPOCR ensureRec $lang failed")
+                return@withContext emptyList()
+            }
+            val dict = loadDict(lang)
+            if (dict == null) {
+                android.util.Log.e("PpocrDetector", "PPOCR loadDict $lang failed")
+                return@withContext emptyList()
+            }
             try {
+                android.util.Log.i("PpocrDetector", "PPOCR start det lang=$lang scripts=$scripts avail=$avail bitmap=${bitmap.width}x${bitmap.height}")
                 val boxes = detectBoxesTiled(det, bitmap)
+                android.util.Log.i("PpocrDetector", "PPOCR boxes raw=${boxes.size}")
                 val kept = dedupeBoxes(boxes)
+                android.util.Log.i("PpocrDetector", "PPOCR boxes kept=${kept.size}")
                 val out = mutableListOf<DetectedTextRegion>()
                 for (b in kept) {
                     val (text, score) = recognize(rec, bitmap, b, dict)
-                    if (text.isBlank() || score < 0.4f) continue
+                    android.util.Log.d("PpocrDetector", "PPOCR rec box $b -> '$text' score=$score")
+                    if (text.isBlank() || score < 0.35f) continue
                     out.add(
                         DetectedTextRegion(
                             text = text,
@@ -187,9 +216,14 @@ class PpocrDetector(context: android.content.Context) {
                         )
                     )
                 }
+                android.util.Log.i("PpocrDetector", "PPOCR done out=${out.size}")
                 out
             } catch (e: Exception) {
+                android.util.Log.e("PpocrDetector", "PPOCR detect exception", e)
                 e.printStackTrace()
+                emptyList()
+            } catch (e: OutOfMemoryError) {
+                android.util.Log.e("PpocrDetector", "PPOCR OOM", e)
                 emptyList()
             }
         }

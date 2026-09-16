@@ -16,7 +16,14 @@ import com.grooxtyper.app.native.NativeEngine
  * - Komponen yang bersentuhan diagregasi per strip agar tile tidak overlap
  *   ganda.
  */
+enum class InpaintMode(val displayName: String) {
+    TELEA("Telea (cepat)"),
+    PATCH_MATCH("PatchMatch (bagus)")
+}
+
 class InpaintingManager {
+
+    var mode: InpaintMode = InpaintMode.PATCH_MATCH
 
     fun inpaintLayerArea(
         layer: DrawingLayer,
@@ -24,6 +31,20 @@ class InpaintingManager {
         inpaintRadius: Double = 5.0
     ) {
         val srcBitmap = layer.getBitmap()
+        if (mode == InpaintMode.PATCH_MATCH) {
+            // PatchMatch lebih bagus untuk manga (tekstur garis) — fallback ke Telea bila gagal
+            try {
+                PatchMatchInpainter.inpaint(srcBitmap, maskBitmap, feather = true)
+                layer.tileMap.importFromBitmap(srcBitmap)
+                layer.markDirty()
+                return
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.util.Log.w("Inpaint", "PatchMatch gagal, fallback Telea: $e")
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+            }
+        }
         val w = srcBitmap.width
         val h = srcBitmap.height
         val pixels = w.toLong() * h.toLong()
@@ -34,6 +55,20 @@ class InpaintingManager {
         }
         layer.tileMap.importFromBitmap(srcBitmap)
         layer.markDirty()
+    }
+
+    /** Dipakai brush heal interaktif: tanpa tileMap sync per dab */
+    fun inpaintBitmapDirect(src: Bitmap, mask: Bitmap) {
+        try {
+            if (mode == InpaintMode.PATCH_MATCH) {
+                PatchMatchInpainter.inpaint(src, mask, feather = true)
+            } else {
+                NativeEngine.nativeInpaintTelea(src, mask, 5.0)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            try { NativeEngine.nativeInpaintTelea(src, mask, 5.0) } catch (_: Exception) {}
+        }
     }
 
     /**

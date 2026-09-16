@@ -35,7 +35,9 @@ enum class BrushType(val displayName: String, val category: String) {
     AIRBRUSH("Airbrush", "Air"),
     // Erase
     ERASER("Eraser", "Erase"),
-    BLUR("Blur", "Erase")
+    BLUR("Blur", "Erase"),
+    // Heal
+    HEAL_PATCH("Heal Patch", "Heal")
 }
 
 enum class RulerType {
@@ -138,8 +140,8 @@ class BrushEngine {
         )
     }
 
-    private fun createBasePaint(): Paint {
-        val key = 31 * (31 * (31 * brushType.ordinal + size.toBits()) + color) + opacity.toBits()
+    private fun createBasePaint(isHuge: Boolean = false): Paint {
+        val key = 31 * (31 * (31 * brushType.ordinal + size.toBits()) + color) + opacity.toBits() + (if (isHuge) 1 else 0)
         cachedPaint?.let { if (cachedPaintKey == key) return Paint(it) }
         val paint = Paint().apply {
             isAntiAlias = true
@@ -152,17 +154,20 @@ class BrushEngine {
             alpha = (this@BrushEngine.opacity * 255).toInt().coerceIn(0, 255)
         }
 
+        // Huge canvas (>4MP) : hindari BlurMaskFilter yang bikin rasterisasi
+        // 46MB melebar → delay & OOM. Fallback ke hard edge di path jumbo.
+
         when (brushType) {
             BrushType.PEN_HARD -> {
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
             }
             BrushType.PEN_SOFT -> {
-                paint.maskFilter = BlurMaskFilter(max(1f, size * 0.15f), BlurMaskFilter.Blur.NORMAL)
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.15f), BlurMaskFilter.Blur.NORMAL)
                 paint.strokeCap = Paint.Cap.ROUND
             }
             BrushType.PENCIL -> {
-                paint.maskFilter = BlurMaskFilter(max(1f, size * 0.08f), BlurMaskFilter.Blur.NORMAL)
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.08f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 200).toInt().coerceIn(0, 255)
             }
             BrushType.INK -> {
@@ -170,14 +175,14 @@ class BrushEngine {
                 paint.strokeJoin = Paint.Join.ROUND
             }
             BrushType.WATERCOLOR -> {
-                paint.maskFilter = BlurMaskFilter(max(2f, size * 0.25f), BlurMaskFilter.Blur.NORMAL)
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(2f, size * 0.25f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 120).toInt().coerceIn(0, 255)
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_OVER)
             }
             BrushType.OIL -> {
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
-                paint.maskFilter = BlurMaskFilter(max(1f, size * 0.1f), BlurMaskFilter.Blur.NORMAL)
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.1f), BlurMaskFilter.Blur.NORMAL)
             }
             BrushType.MARKER -> {
                 paint.strokeCap = Paint.Cap.SQUARE
@@ -185,7 +190,7 @@ class BrushEngine {
                 paint.alpha = (this@BrushEngine.opacity * 180).toInt().coerceIn(0, 255)
             }
             BrushType.AIRBRUSH -> {
-                paint.maskFilter = BlurMaskFilter(max(3f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(3f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 100).toInt().coerceIn(0, 255)
             }
             BrushType.ERASER -> {
@@ -193,6 +198,11 @@ class BrushEngine {
             }
             BrushType.BLUR -> {
                 // Handled separately
+            }
+            BrushType.HEAL_PATCH -> {
+                // Ditangani di CanvasEditorScreen via PatchMatch, bukan draw langsung
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                paint.alpha = 0
             }
         }
         cachedPaint = Paint(paint)
@@ -214,12 +224,25 @@ class BrushEngine {
     }
 
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f) {
+        // Heal patch tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
+        if (brushType == BrushType.HEAL_PATCH) return
+
+        val bmp = layer.getPersistentBitmap()
+        val isHuge = bmp.width.toLong() * bmp.height > HUGE_CANVAS_PIXELS
+        // Huge: kurangi smoothing & velocity agar hemat CPU
+        if (isHuge) stabilizer.isEnabled = false
+
         val smoothedP1 = smoothPoint(rulerGuide.snapPoint(p1), lastSmoothedPoint)
         val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1)
         lastSmoothedPoint = smoothedP2
 
         if (brushType == BrushType.BLUR) {
-            applyBlurStroke(layer, smoothedP1, smoothedP2)
+            // Huge: blur per segmen sangat mahal (4 alokasi bitmap per dab) → throttle
+            if (isHuge && hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y) > 80f) {
+                // skip blur intermediate jika lompatan besar, tunggu pen lift
+            } else {
+                applyBlurStroke(layer, smoothedP1, smoothedP2)
+            }
             prevCurvePoint = smoothedP2
             return
         }
@@ -243,10 +266,9 @@ class BrushEngine {
         }
         prevCurvePoint = smoothedP2
 
-        val bmp = layer.getPersistentBitmap()
         val canvas = Canvas(bmp)
 
-        val paint = createBasePaint()
+        val paint = createBasePaint(isHuge)
         if (layer.isAlphaLocked) {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
@@ -282,13 +304,14 @@ class BrushEngine {
         }
 
         // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.
-        // Spacing ~20% dari diameter brush menjamin overlap antar stamp.
-        val spacing = max(1.5f, paint.strokeWidth * 0.2f)
+        // Huge: spacing lebih renggang + cap steps lebih kecil → hemat drawCall
+        val spacing = if (isHuge) max(3f, paint.strokeWidth * 0.35f) else max(1.5f, paint.strokeWidth * 0.2f)
         // Panjang jalur: chord + deviasi kurva bila smoothing kuadratik aktif.
         val pathLen = if (curveControl != null) {
             distance + hypot(curveControl.x - curveStart.x, curveControl.y - curveStart.y) * 0.5f
         } else distance
-        val steps = ceil((pathLen / spacing).toDouble()).toInt().coerceIn(1, 512)
+        val maxSteps = if (isHuge) 64 else 256
+        val steps = ceil((pathLen / spacing).toDouble()).toInt().coerceIn(1, maxSteps)
 
         // Batasi rasterisasi ke dirty rect segmen. Tanpa clip, pada kanvas
         // 720x16000 mask-filter blur meraster area jauh lebih besar dari

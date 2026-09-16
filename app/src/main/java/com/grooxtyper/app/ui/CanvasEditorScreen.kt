@@ -152,6 +152,7 @@ enum class ActiveTool {
     PAN,
     BRUSH,
     ERASER,
+    INPAINT,
     LASSO,
     SELECT_BOX,
     TEXT,
@@ -638,6 +639,28 @@ fun CanvasEditorScreen(
     var exportResult by remember { mutableStateOf<String?>(null) }
     var showLassoMenu by remember { mutableStateOf(false) }
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    // Inpaint PatchMatch brush: mask akumulasi selama stroke
+    var inpaintMask by remember { mutableStateOf<Bitmap?>(null) }
+    var inpaintMaskCanvas by remember { mutableStateOf<android.graphics.Canvas?>(null) }
+    var inpaintDirty by remember { mutableStateOf<RectF?>(null) }
+    fun ensureInpaintMask(): Pair<Bitmap, android.graphics.Canvas> {
+        var bmp = inpaintMask
+        var cv = inpaintMaskCanvas
+        if (bmp == null || bmp.isRecycled || bmp.width != canvasWidth || bmp.height != canvasHeight) {
+            bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
+            cv = android.graphics.Canvas(bmp)
+            inpaintMask = bmp
+            inpaintMaskCanvas = cv
+            inpaintDirty = null
+        }
+        return bmp to cv!!
+    }
+    fun clearInpaintMask() {
+        inpaintMask?.let { bm ->
+            android.graphics.Canvas(bm).drawColor(AndroidColor.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
+        }
+        inpaintDirty = null
+    }
 
     var showQuickSlider by remember { mutableStateOf(true) }
 
@@ -886,20 +909,41 @@ fun CanvasEditorScreen(
         return applyPrefixStyleTo(box)
     }
 
+    var ppocrError by remember { mutableStateOf<String?>(null) }
+
     fun runMLDetection() {
         scope.launch {
             val active = layerManager.getActiveLayer()
             if (active != null) {
                 mlDetecting = true
+                ppocrError = null
+                val wantPpocr = textEngine == TextEngine.PPOCR_V6
+                val ppocrReady = ppocrDetector.isAvailable()
+                android.util.Log.i("RunML", "wantPpocr=$wantPpocr ready=$ppocrReady status=${ppocrDetector.modelStatus()} dump=${ppocrDetector.debugAssetDump()}")
                 detectedTextRegions = try {
-                    if (textEngine == TextEngine.PPOCR_V6 && ppocrDetector.isAvailable()) {
-                        ppocrDetector.detect(active.getBitmap(), mlScripts)
+                    if (wantPpocr) {
+                        if (ppocrReady) {
+                            val r = ppocrDetector.detect(active.getBitmap(), mlScripts)
+                            if (r.isEmpty()) {
+                                android.util.Log.w("RunML", "PPOCR empty -> fallback MLKit")
+                                ppocrError = "PP-OCR tidak menemukan teks (0 box) — fallback ke ML Kit. Cek logcat PpocrDetector."
+                                mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                            } else r
+                        } else {
+                            ppocrError = "Model PP-OCR belum ada (${ppocrDetector.modelStatus()}) — pakai ML Kit. Build CI harus hijau."
+                            android.util.Log.w("RunML", "PPOCR not available, fallback MLKit")
+                            mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                        }
                     } else {
-                        // Termasuk fallback bila model PP-OCR belum ada di perangkat.
                         mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
+                    android.util.Log.e("RunML", "detect exception", e)
+                    ppocrError = "Error deteksi: ${e.message}"
+                    emptyList()
+                } catch (e: OutOfMemoryError) {
+                    ppocrError = "OOM deteksi — coba gambar lebih kecil / tutup app lain"
                     emptyList()
                 }
                 mlDetecting = false
@@ -1519,6 +1563,41 @@ fun CanvasEditorScreen(
                                             boxCurrent = touchCanvasPos
                                         }
                                         refreshComposite()
+                                    } else if (activeTool == ActiveTool.INPAINT) {
+                                        if (lastCanvasPoint == null) {
+                                            val activeLayer = layerManager.ensureDrawingLayer()
+                                            strokeLayer = activeLayer
+                                            pressId++
+                                            pressStartScreen = change.position
+                                            pressMoved = false
+                                            undoRedoManager.saveSnapshot(activeLayer)
+                                            brushEngine.beginStroke()
+                                            val (bmp, cv) = ensureInpaintMask()
+                                            val p = android.graphics.Paint().apply {
+                                                isAntiAlias = true; style = android.graphics.Paint.Style.FILL
+                                                color = AndroidColor.WHITE
+                                            }
+                                            cv.drawCircle(touchCanvasPos.x, touchCanvasPos.y, brushEngine.size / 2f, p)
+                                            val r = brushEngine.size
+                                            val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
+                                            inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                            refreshCanvasState++
+                                        } else {
+                                            val (bmp, cv) = ensureInpaintMask()
+                                            val p = android.graphics.Paint().apply {
+                                                isAntiAlias = true; style = android.graphics.Paint.Style.STROKE
+                                                strokeCap = android.graphics.Paint.Cap.ROUND
+                                                strokeJoin = android.graphics.Paint.Join.ROUND
+                                                strokeWidth = brushEngine.size; color = AndroidColor.WHITE
+                                            }
+                                            val prev = lastCanvasPoint!!
+                                            cv.drawLine(prev.x, prev.y, touchCanvasPos.x, touchCanvasPos.y, p)
+                                            val r = brushEngine.size
+                                            val rect = RectF(minOf(prev.x, touchCanvasPos.x) - r, minOf(prev.y, touchCanvasPos.y) - r, maxOf(prev.x, touchCanvasPos.x) + r, maxOf(prev.y, touchCanvasPos.y) + r)
+                                            inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
+                                            if ((change.position - pressStartScreen).getDistance() > 16f) pressMoved = true
+                                            refreshCanvasState++
+                                        }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
                                         if (colorPickActive) {
                                             // Mode tahan-jari: ambil warna, jangan melukis.
@@ -1598,9 +1677,37 @@ fun CanvasEditorScreen(
                                 } else {
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
+                                    val wasInpaint = activeTool == ActiveTool.INPAINT
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
+                                    // Commit heal PatchMatch jika ada mask
+                                    if (wasInpaint && inpaintMask != null && inpaintDirty != null) {
+                                        val maskToUse = inpaintMask
+                                        val dirty = inpaintDirty
+                                        val targetLayer = layerManager.getActiveLayer()
+                                        if (maskToUse != null && dirty != null && targetLayer != null) {
+                                            scope.launch(Dispatchers.Default) {
+                                                try {
+                                                    val l = dirty.left.toInt().coerceIn(0, canvasWidth)
+                                                    val t = dirty.top.toInt().coerceIn(0, canvasHeight)
+                                                    val r = dirty.right.toInt().coerceIn(0, canvasWidth)
+                                                    val b = dirty.bottom.toInt().coerceIn(0, canvasHeight)
+                                                    if (r > l && b > t) {
+                                                        inpaintingManager.inpaintBitmapDirect(targetLayer.getPersistentBitmap(), maskToUse)
+                                                        targetLayer.markDirty()
+                                                        withContext(Dispatchers.Main) { refreshComposite() }
+                                                    }
+                                                } catch (e: Exception) { e.printStackTrace() } catch (e: OutOfMemoryError) { e.printStackTrace() }
+                                                finally {
+                                                    clearInpaintMask()
+                                                    withContext(Dispatchers.Main) { refreshCanvasState++ }
+                                                }
+                                            }
+                                        } else {
+                                            clearInpaintMask()
+                                        }
+                                    }
                                     colorPickActive = false
                                     pressId++
                                     twoFingerActive = false
@@ -1717,6 +1824,39 @@ fun CanvasEditorScreen(
                     // batas tekstur GPU + tetap tajam saat zoom-out.
                     drawCheckerTiled(nativeMain, canvasWidth, canvasHeight, checkerTile)
                     drawTallBitmap(nativeMain, compositeBitmap, filteredPaint)
+                }
+
+                // Overlay mask inpaint (pink) — viewport culled, di atas komposit tapi di bawah teks
+                if (inpaintMask != null && activeTool == ActiveTool.INPAINT) {
+                    val maskBmp = inpaintMask
+                    if (maskBmp != null && !maskBmp.isRecycled) {
+                        val maskPaint = android.graphics.Paint().apply {
+                            // Tint putih mask jadi pink semi-transparan
+                            colorFilter = android.graphics.PorterDuffColorFilter(
+                                android.graphics.Color.parseColor("#FF4081"),
+                                android.graphics.PorterDuff.Mode.SRC_IN
+                            )
+                            alpha = 140
+                        }
+                        if (viewState.rotation == 0f) {
+                            val vw2 = viewportSize.width.toFloat().coerceAtLeast(1f)
+                            val vh2 = viewportSize.height.toFloat().coerceAtLeast(1f)
+                            val pivX2 = viewState.pivotFracX * vw2
+                            val pivY2 = viewState.pivotFracY * vh2
+                            val sc2 = viewState.scale.coerceAtLeast(0.05f)
+                            val xa2 = ((0f - pivX2 - viewState.offsetX) / sc2) + pivX2
+                            val ya2 = ((0f - pivY2 - viewState.offsetY) / sc2) + pivY2
+                            val xb2 = ((vw2 - pivX2 - viewState.offsetX) / sc2) + pivX2
+                            val yb2 = ((vh2 - pivY2 - viewState.offsetY) / sc2) + pivY2
+                            val visL2 = minOf(xa2, xb2).coerceIn(0f, canvasWidth.toFloat())
+                            val visT2 = minOf(ya2, yb2).coerceIn(0f, canvasHeight.toFloat())
+                            val visR2 = maxOf(xa2, xb2).coerceIn(0f, canvasWidth.toFloat())
+                            val visB2 = maxOf(ya2, yb2).coerceIn(0f, canvasHeight.toFloat())
+                            drawVisibleBitmap(nativeMain, maskBmp, visL2, visT2, visR2, visB2, maskPaint)
+                        } else {
+                            drawTallBitmap(nativeMain, maskBmp, maskPaint)
+                        }
+                    }
                 }
 
                 layerManager.visibleTextLayers().forEach { textLayer ->
@@ -1857,21 +1997,29 @@ fun CanvasEditorScreen(
             }
 
             // Brush cursor overlay
-            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.EYEDROPPER)) {
+            if (cursorPosition != null && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.INPAINT || activeTool == ActiveTool.EYEDROPPER)) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cursorRadius = (brushEngine.size * viewState.scale) / 2f
+                    val col = when (activeTool) {
+                        ActiveTool.ERASER -> Color.Red
+                        ActiveTool.INPAINT -> Color(0xFFFF4081)
+                        else -> Color.White
+                    }
                     drawCircle(
-                        color = if (activeTool == ActiveTool.ERASER) Color.Red else Color.White,
+                        color = col,
                         radius = cursorRadius.coerceAtLeast(6f),
                         center = cursorPosition!!,
                         style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
                     )
+                    if (activeTool == ActiveTool.INPAINT) {
+                        drawCircle(color = Color(0x66FF4081), radius = cursorRadius.coerceAtLeast(6f), center = cursorPosition!!)
+                    }
                 }
             }
         }
 
         // Quick sliders (bottom, ala ibisPaint X)
-        if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER)) {
+        if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.INPAINT)) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -2312,6 +2460,16 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Accent else Color.White)
             }
 
+            // Inpaint PatchMatch (heal) — brush yg menghapus objek & isi tekstur sekitar
+            IconButton(onClick = {
+                activeTool = ActiveTool.INPAINT
+                showBrushSettings = false
+                brushEngine.brushType = BrushType.HEAL_PATCH
+                layerManager.ensureDrawingLayer()
+            }) {
+                Icon(Icons.Default.AutoFixHigh, contentDescription = "Heal Brush", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
+            }
+
             // Color circle
             Box(
                 modifier = Modifier
@@ -2675,8 +2833,13 @@ fun CanvasEditorScreen(
                             } else {
                                 "ML Kit bawaan, tanpa file tambahan."
                             },
-                            color = Color.Gray, fontSize = 11.sp
+                            color = if (textEngine == TextEngine.PPOCR_V6 && !ppocrDetector.isAvailable()) Color(0xFFFF6B6B) else Color.Gray, fontSize = 11.sp
                         )
+                        if (ppocrError != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(ppocrError!!, color = Color(0xFFFFCC00), fontSize = 11.sp)
+                            Text("Logcat: adb logcat -s PpocrDetector,RunML", color = Color.Gray, fontSize = 10.sp)
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
@@ -2742,6 +2905,29 @@ fun CanvasEditorScreen(
                                 colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.MASK_BENTUK_TEKS) Accent else PanelBg)
                             ) {
                                 Text(MLMaskType.MASK_BENTUK_TEKS.displayName, color = Color.White, fontSize = 11.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Mode Inpaint:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text(
+                            "PatchMatch = pelestari tekstur (lebih bagus dari Photoshop Content-Aware). Telea = halus cepat.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            Button(
+                                onClick = { inpaintingManager.mode = com.grooptyper.app.model.InpaintMode.PATCH_MATCH },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooptyper.app.model.InpaintMode.PATCH_MATCH) Accent else PanelBg)
+                            ) {
+                                Text("PatchMatch", color = Color.White, fontSize = 11.sp)
+                            }
+                            Button(
+                                onClick = { inpaintingManager.mode = com.grooptyper.app.model.InpaintMode.TELEA },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooptyper.app.model.InpaintMode.TELEA) Accent else PanelBg)
+                            ) {
+                                Text("Telea", color = Color.White, fontSize = 11.sp)
                             }
                         }
                     }
