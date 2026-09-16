@@ -652,12 +652,12 @@ fun CanvasEditorScreen(
     // memori mepet) agar sapuan heal tidak crash. Dipakai ulang selama stroke,
     // dibebaskan via recycleInpaintMask() setelah commit agar tidak resident.
     // Paint mask dipakai ulang per event move (dulu 2 alokasi Paint per event).
-    private val healMaskFillPaint = android.graphics.Paint().apply {
+    val healMaskFillPaint = android.graphics.Paint().apply {
         isAntiAlias = true
         style = android.graphics.Paint.Style.FILL
         color = AndroidColor.WHITE
     }
-    private val healMaskStrokePaint = android.graphics.Paint().apply {
+    val healMaskStrokePaint = android.graphics.Paint().apply {
         isAntiAlias = true
         style = android.graphics.Paint.Style.STROKE
         strokeCap = android.graphics.Paint.Cap.ROUND
