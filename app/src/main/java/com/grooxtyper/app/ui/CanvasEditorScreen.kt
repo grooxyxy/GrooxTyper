@@ -1470,7 +1470,7 @@ fun CanvasEditorScreen(
             var ok = false
             var err: String? = null
             try {
-                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty))
+                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), context.applicationContext)
                 if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
                 else {
                     targetLayer.markDirty()
@@ -2583,7 +2583,7 @@ fun CanvasEditorScreen(
                         Spacer(modifier = Modifier.width(38.dp))
                         Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
                         Text(
-                            "Telea cepat (tunggal, semua konten)",
+                            "Neural (MiGan) + Telea instan",
                             color = Color.Gray, fontSize = 10.sp,
                             modifier = Modifier.weight(1f)
                         )

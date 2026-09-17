@@ -271,7 +271,12 @@ class InpaintingManager {
      * Pad adaptif 96 (dari Vasilias CONTEXT_PAD) agar patch punya sumber luas
      * dan tidak noise.
      */
-    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF): Boolean {
+    suspend fun inpaintHealDirty(
+        src: Bitmap,
+        mask: Bitmap,
+        dirty: android.graphics.RectF,
+        appContext: android.content.Context? = null
+    ): Boolean {
         val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             val l = dirty.left.toInt().coerceIn(0, src.width - 1)
@@ -290,7 +295,7 @@ class InpaintingManager {
                     (cy + 256).toFloat().coerceAtMost(src.height.toFloat())
                 )
                 if (safe.width() >= 8f && safe.height() >= 8f) {
-                    return inpaintHealDirty(src, mask, safe)
+                    return inpaintHealDirty(src, mask, safe, appContext)
                 }
                 android.util.Log.w("Inpaint", "heal: dirty terlalu kecil, skip")
                 return false
@@ -325,8 +330,9 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
-            // Heal TUNGGAL: Telea isophote native (cepat, deterministik, umum).
-            // Tanpa opsi/mode: satu metode untuk semua konten (bukan khusus teks).
+            // Heal: MI-GAN neural untuk area >=256px (jauh lebih bagus dari Telea
+            // untuk area luas manga/webtoon); Telea instan untuk titik/gores kecil.
+            // Tanpa opsi/mode: routing otomatis berdasar ukuran crop.
             try {
                 val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                 val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
