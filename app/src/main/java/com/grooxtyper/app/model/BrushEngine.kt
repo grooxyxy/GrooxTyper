@@ -43,6 +43,7 @@ enum class BrushType(val displayName: String, val category: String) {
     FLAT("Flat Brush", "Paint"),
     ROUND("Round Brush", "Paint"),
     CRAYON("Crayon", "Paint"),
+    BLEND("Blend", "Paint"),
     // Air
     AIRBRUSH("Airbrush", "Air"),
     AIR_FAN("Fan Brush", "Air"),
@@ -127,9 +128,22 @@ class BrushEngine {
     private var euroY = 0f
     private var euroDx = 0f
     private var euroInit = false
-    // Prediksi Ink-style: ekstrapolasi titik berikut dari kecepatan agar
-    // sapuan 720x16000 terasa responsif walau event touch jarang (low-latency
-    // front-buffered idea dari androidx.graphics.lowlatency).
+    // Warna pickup smudge (dipertahankan sepanjang stroke, reset tiap stroke).
+    private var blendPickup: Int? = null
+
+    private fun lerpColor(a: Int, b: Int, t: Float): Int {
+        val tt = t.coerceIn(0f, 1f)
+        fun ch(shift: Int): Int {
+            val av = (a shr shift) and 0xFF
+            val bv = (b shr shift) and 0xFF
+            return (av + (bv - av) * tt).toInt().coerceIn(0, 255)
+        }
+        return (ch(24) shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+    }
+
+    /** Prediksi titik berikut dari kecepatan (Ink prediction, murah, tanpa API baru).
+     * Sapuan 720x16000 terasa responsif walau event touch jarang (low-latency
+     * front-buffered idea dari androidx.graphics.lowlatency). */
     private var lastVelocity = Offset.Zero
     // Tile-dirty 64px ala MyPaint TiledSurface: hanya tile tersentuh yang
     // ditandai untuk composite inkremental (hemat vs render 46MB penuh).
@@ -172,6 +186,7 @@ class BrushEngine {
         euroY = 0f
         euroDx = 0f
         euroInit = false
+        blendPickup = null
         lastVelocity = Offset.Zero
         dirtyTiles.clear()
         dirtyTileBounds.setEmpty()
@@ -182,6 +197,7 @@ class BrushEngine {
         prevCurvePoint = null
         velocityEma = 0f
         euroInit = false
+        blendPickup = null
         lastVelocity = Offset.Zero
     }
 
@@ -357,6 +373,12 @@ class BrushEngine {
                 paint.strokeJoin = Paint.Join.ROUND
                 paint.alpha = (this@BrushEngine.opacity * 150).toInt().coerceIn(0, 255)
             }
+            BrushType.BLEND -> {
+                // Smudge hemat: warna diambil per segmen (lihat bawah), bukan per piksel.
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 220).toInt().coerceIn(0, 255)
+            }
             BrushType.AIRBRUSH -> {
                 if (!isHuge) paint.maskFilter = BlurMaskFilter(max(3f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
                 paint.alpha = (this@BrushEngine.opacity * 100).toInt().coerceIn(0, 255)
@@ -486,6 +508,17 @@ class BrushEngine {
         val paint = createBasePaint(isHuge)
         if (layer.isAlphaLocked) {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+        }
+        // Blend/smudge hemat: 1x getPixel per segmen di titik awal (bukan per dab),
+        // campur warna brush dengan warna kanvas agar transisi menyatu.
+        if (brushType == BrushType.BLEND) {
+            val sx = smoothedP1.x.toInt().coerceIn(0, bmp.width - 1)
+            val sy = smoothedP1.y.toInt().coerceIn(0, bmp.height - 1)
+            val sampled = runCatching { bmp.getPixel(sx, sy) }.getOrNull()
+            if (sampled != null && (sampled ushr 24) > 8) {
+                blendPickup = lerpColor(blendPickup ?: sampled, sampled, 0.25f)
+            }
+            paint.color = lerpColor(blendPickup ?: color, color, 0.45f)
         }
 
         val distance = hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y)
@@ -681,7 +714,9 @@ class BrushEngine {
 
     private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
         val bmp = layer.getPersistentBitmap()
-        val radius = max(3f, size / 2f)
+        // Radius mengikuti ukuran brush agar efek blur benar-benar terlihat
+        // (sebelumnya size/2 terlalu halus sehingga dikira tidak berfungsi).
+        val radius = max(8f, size)
         val pad = (size + radius * 2f + 4f)
 
         val leftF = min(p1.x, p2.x) - pad
@@ -696,7 +731,9 @@ class BrushEngine {
         val w = right - left
         val h = bottom - top
         if (w <= 0 || h <= 0) return
-        if (isHuge && w.toLong() * h.toLong() > 140_000L) return
+        // Batas lama 140_000L dinaikkan agar sapuan normal tak sunyi;
+        // region raksasa dipotong tengah agar tetap aman di huge canvas.
+        if (isHuge && w.toLong() * h.toLong() > 300_000L) return
 
         // Hanya proses dirty rect, bukan seluruh kanvas (hemat CPU/GC per segmen).
         // Semua alokasi dilindungi OOM + recycle di finally agar tidak bocor.
@@ -719,7 +756,7 @@ class BrushEngine {
                 style = Paint.Style.STROKE
                 strokeCap = Paint.Cap.ROUND
                 strokeJoin = Paint.Join.ROUND
-                strokeWidth = size
+                strokeWidth = size * 1.2f
                 color = Color.BLACK
             }
             maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)

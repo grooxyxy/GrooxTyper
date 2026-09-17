@@ -119,6 +119,14 @@ sealed interface HistoryEntry {
             liveBitmap = null
             pngBytes = null
         }
+
+        /** Lepas referensi tanpa join (aman dipanggil dari UI thread). */
+        fun recycleAsync() {
+            encodeThread = null
+            runCatching { liveBitmap?.recycle() }
+            liveBitmap = null
+            pngBytes = null
+        }
     }
 
     /** Isi TextBox SEBELUM diubah (geser/skala/putar/edit panel). */
@@ -163,7 +171,10 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
         while (count > cap) {
             val idx = undoStack.indexOfFirst { it is HistoryEntry.BitmapEntry }
             if (idx < 0) break
-            (undoStack.removeAt(idx) as? HistoryEntry.BitmapEntry)?.recycle()
+            // Jangan join di thread pemanggil (sering UI thread saat ACTION_DOWN):
+            // join 10 detik = brush "mati awal". Lepas referensi saja; thread
+            // encoder menyelesaikan tulisannya sendiri lalu di-GC.
+            (undoStack.removeAt(idx) as? HistoryEntry.BitmapEntry)?.recycleAsync()
             count--
         }
     }
@@ -217,7 +228,7 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
     private fun push(entry: HistoryEntry) {
         undoStack.add(entry)
         while (undoStack.size > maxHistory) {
-            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycle()
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycleAsync()
         }
         clearStack(redoStack)
         historyVersion++
@@ -345,12 +356,12 @@ class UndoRedoManager(private val maxHistory: Int = 15) {
 
     private fun trimUndo() {
         while (undoStack.size > maxHistory) {
-            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycle()
+            (undoStack.removeAt(0) as? HistoryEntry.BitmapEntry)?.recycleAsync()
         }
     }
 
     private fun clearStack(stack: MutableList<HistoryEntry>) {
-        stack.forEach { (it as? HistoryEntry.BitmapEntry)?.recycle() }
+        stack.forEach { (it as? HistoryEntry.BitmapEntry)?.recycleAsync() }
         stack.clear()
     }
 

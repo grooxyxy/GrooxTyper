@@ -52,7 +52,7 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 1. Zoom-in 100–200% ke area kerja: render hanya jendela terlihat
    (`drawVisibleBitmap` + `BrushHugeGuide.visibleRect`), bukan 11,5MP penuh.
-2. Untuk lineart pakai Dip Pen/G Pen/Ink/Eraser (jenis ala ibisPaint: Dip Pen Hard/Soft, Felt Tip, Ballpoint, G Pen, Flat/Round Brush, Crayon, Fan Brush, Soft Eraser); hindari sapuan panjang Airbrush/
+2. Untuk lineart pakai Dip Pen/G Pen/Ink/Blend/Eraser (jenis ala ibisPaint: Dip Pen Hard/Soft, Felt Tip Hard/Soft, Ballpoint, G Pen, Flat/Round Brush, Crayon, Fan Brush, Blend, Soft Eraser); hindari sapuan panjang Airbrush/
    Watercolor/Blur radius besar (BlurMaskFilter dimatikan otomatis di huge,
    blur live dibatasi 140k px, steps di-cap 32).
 3. Sapuan cepat tidak patah: interpolasi luar max 24 titik + inner 32 steps,

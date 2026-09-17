@@ -93,6 +93,11 @@ class BubbleDetector {
     var lastError: String? = null
         private set
 
+    /** Ringkasan output inferensi terakhir (untuk dialog diagnostik). */
+    @Volatile
+    var lastOutputDesc: String? = null
+        private set
+
     /**
      * Pastikan session ONNX termuat. True bila siap inferensi; false + [lastError]
      * terisi bila asset hilang/rusak atau runtime tak tersedia. Tanpa fallback.
@@ -257,6 +262,7 @@ class BubbleDetector {
                         val out1 = res[1].value as Array<Array<Array<FloatArray>>> // (1,32,160,160)
                         // Pastikan kanal seg agar tidak salah decode model detect.
                         if (out0[0].size == NUM_CHANNELS_SEG) {
+                            lastOutputDesc = "seg 37ch+protos"
                             return@withLock decodeSeg(out0[0], out1[0], src.width, src.height, scale, padX, padY)
                         }
                     } catch (e: Exception) {
@@ -268,12 +274,18 @@ class BubbleDetector {
                 val rawVal = res[0].value
                 val mat: Array<FloatArray>? = extractBatchMatrix(rawVal)
                 if (mat != null) {
+                    lastOutputDesc = "out=${res.size()} mat=${mat.size}x${mat[0].size}"
                     if (mat.isNotEmpty() && mat[0].size == 6 && mat.size in 2..1000) {
-                        decodeE2E(mat, src.width, src.height, scale, padX, padY, conf)
+                        decodeE2E(mat, src.width, src.height, scale, padX, padY, conf).also {
+                            lastOutputDesc = "e2e rows=${mat.size} kept=${it.size}"
+                        }
                     } else {
-                        decodeDetect(mat, src.width, src.height, scale, padX, padY, conf)
+                        decodeDetect(mat, src.width, src.height, scale, padX, padY, conf).also {
+                            lastOutputDesc = "detect mat=${mat.size}x${mat[0].size} kept=${it.size}"
+                        }
                     }
                 } else {
+                    lastOutputDesc = "out=${res.size()} bentuk tak dikenal"
                     emptyList()
                 }
             } catch (e: Exception) {

@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -898,6 +899,16 @@ fun CanvasEditorScreen(
     var bubbleModel by remember { mutableStateOf(BubbleModel.BUBBLE) }
     var bubbleDetecting by remember { mutableStateOf(false) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
+    // Preview hasil text detector di kanvas + mode hapus per-region.
+    var showTextOverlay by remember { mutableStateOf(false) }
+    var textEraseMode by remember { mutableStateOf(false) }
+
+    /** Hapus region teks terdeteksi berdasar indeks (tak ikut di-inpaint). */
+    fun removeTextRegionAt(index: Int) {
+        if (index < 0 || index >= detectedTextRegions.size) return
+        detectedTextRegions = detectedTextRegions.toMutableList().also { it.removeAt(index) }
+        refreshComposite()
+    }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by remember { mutableStateOf(false) }
     var lassoPath by remember { mutableStateOf<Path?>(null) }
@@ -928,7 +939,8 @@ fun CanvasEditorScreen(
                 val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
                 detectedBubbles = found
                 if (found.isEmpty()) {
-                    healError = "Model ONNX jalan tapi bubble tak ditemukan — coba area lebih dekat"
+                    val info = bubbleDetector.lastOutputDesc?.let { " ($it)" } ?: ""
+                    healError = "Model ONNX jalan tapi bubble tak ditemukan$info — coba area lebih dekat"
                 }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
@@ -1071,6 +1083,7 @@ fun CanvasEditorScreen(
                     emptyList()
                 }
                 mlDetecting = false
+                showTextOverlay = detectedTextRegions.isNotEmpty()
                 showMLInpaintDialog = true
             }
         }
@@ -1802,6 +1815,22 @@ fun CanvasEditorScreen(
                                         // Kotak seleksi: drag untuk bentuk persegi.
                                         // Ketuk bubble saat mode hapus → hapus bubble itu.
                                         if (boxStart == null) {
+                                            var textConsumed = false
+                                            if (textEraseMode) {
+                                                val textIdx = detectedTextRegions
+                                                    .mapIndexedNotNull { idx, r ->
+                                                        val b = r.boundingBox
+                                                        if (touchCanvasPos.x in b.left.toFloat()..b.right.toFloat() &&
+                                                            touchCanvasPos.y in b.top.toFloat()..b.bottom.toFloat()
+                                                        ) idx to ((b.width() * b.height()).toLong()) else null
+                                                    }
+                                                    .minByOrNull { it.second }?.first
+                                                if (textIdx != null) {
+                                                    removeTextRegionAt(textIdx)
+                                                    refreshComposite()
+                                                    textConsumed = true
+                                                }
+                                            }
                                             val hitIdx = detectedBubbles
                                                 .mapIndexedNotNull { idx, b ->
                                                     if (b.boundingBox.contains(touchCanvasPos.x, touchCanvasPos.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
@@ -1809,7 +1838,7 @@ fun CanvasEditorScreen(
                                                 .minByOrNull { it.second }?.first
                                             if (bubbleEraseMode && hitIdx != null) {
                                                 removeBubbleAt(hitIdx)
-                                            } else {
+                                            } else if (!textConsumed) {
                                                 boxStart = touchCanvasPos
                                                 boxCurrent = touchCanvasPos
                                             }
@@ -1836,6 +1865,9 @@ fun CanvasEditorScreen(
                                                 val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
                                                 inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
                                                 refreshCanvasState++
+                                            }
+                                            else {
+                                                healError = "Heal gagal dimulai: memori habis, coba sapuan lebih kecil"
                                             }
                                         } else {
                                             val maskPair = ensureInpaintMask()
@@ -1876,6 +1908,9 @@ fun CanvasEditorScreen(
                                                     val rect = RectF(touchCanvasPos.x - r, touchCanvasPos.y - r, touchCanvasPos.x + r, touchCanvasPos.y + r)
                                                     inpaintDirty = if (inpaintDirty == null) rect else RectF(minOf(inpaintDirty!!.left, rect.left), minOf(inpaintDirty!!.top, rect.top), maxOf(inpaintDirty!!.right, rect.right), maxOf(inpaintDirty!!.bottom, rect.bottom))
                                                     refreshCanvasState++
+                                                }
+                                                else {
+                                                    healError = "Heal gagal dimulai: memori habis, coba sapuan lebih kecil"
                                                 }
                                             } else {
                                                 val maskPair = ensureInpaintMask()
@@ -2311,6 +2346,31 @@ fun CanvasEditorScreen(
                             r.left + 8f,
                             r.top + 38f / viewState.scale,
                             indexPaint
+                        )
+                    }
+                }
+
+                if (showTextOverlay && detectedTextRegions.isNotEmpty()) {
+                    val textBoxPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                        color = android.graphics.Color.MAGENTA
+                    }
+                    val textIndexPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.YELLOW
+                        textSize = 30f / viewState.scale
+                        isFakeBoldText = true
+                        setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK)
+                    }
+                    val native = drawContext.canvas.nativeCanvas
+                    detectedTextRegions.forEachIndexed { i, r ->
+                        val b = r.boundingBox
+                        native.drawRect(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat(), textBoxPaint)
+                        native.drawText(
+                            "${i + 1}",
+                            b.left.toFloat() + 8f,
+                            b.top.toFloat() + 38f / viewState.scale,
+                            textIndexPaint
                         )
                     }
                 }
@@ -3517,6 +3577,62 @@ fun CanvasEditorScreen(
                             if (mlDetecting) "Mendeteksi teks…" else "Detected ${detectedTextRegions.size} text blocks.",
                             color = Color.LightGray, fontSize = 13.sp
                         )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Preview di kanvas", color = Color.White, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = showTextOverlay,
+                                onCheckedChange = {
+                                    showTextOverlay = it
+                                    refreshComposite()
+                                },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Mode hapus (ketuk teks di kanvas)", color = Color.White, fontSize = 12.sp)
+                            }
+                            Switch(
+                                checked = textEraseMode,
+                                onCheckedChange = { textEraseMode = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        if (detectedTextRegions.isNotEmpty()) {
+                            Text("Daftar teks (buang yang tak ingin di-inpaint):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 150.dp)
+                            ) {
+                                itemsIndexed(detectedTextRegions) { idx, r ->
+                                    val b = r.boundingBox
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text("#${idx + 1} ${r.text.take(24).ifBlank { "(kosong)" }}", color = Color.White, fontSize = 12.sp)
+                                            Text("(${b.left},${b.top} ${b.width()}x${b.height()})", color = Color.Gray, fontSize = 10.sp)
+                                        }
+                                        IconButton(
+                                            onClick = { removeTextRegionAt(idx) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Hapus teks ${idx + 1}", tint = Color.Red, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Mesin deteksi: ML Kit v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
@@ -3714,6 +3830,12 @@ fun CanvasEditorScreen(
                             else "Ditemukan ${detectedBubbles.size} bubble (mentah, tanpa refine).",
                             color = Color.LightGray, fontSize = 13.sp
                         )
+                        val bubbleStatus = bubbleDetector.lastError?.let { "Model error: $it" }
+                            ?: bubbleDetector.lastOutputDesc?.let { "Model OK • $it" }
+                        if (bubbleStatus != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(bubbleStatus, color = Color.Gray, fontSize = 11.sp)
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Model (pilih satu):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         BubbleModel.values().forEach { model ->
