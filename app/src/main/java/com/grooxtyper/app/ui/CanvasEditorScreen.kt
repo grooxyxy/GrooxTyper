@@ -121,7 +121,6 @@ import com.grooxtyper.app.model.CanvasViewState
 import com.grooxtyper.app.model.DrawingLayer
 import com.grooxtyper.app.model.ExportFormat
 import com.grooxtyper.app.model.FileExportManager
-import com.grooxtyper.app.model.HealMode
 import com.grooxtyper.app.model.InpaintMode
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.ImageImport
@@ -2575,7 +2574,7 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Heal brush modes — melampaui Photoshop Content-Aware untuk manga.
+                // Heal tunggal: Telea cepat, tanpa opsi mode.
                 if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.HEAL_PATCH) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2583,40 +2582,12 @@ fun CanvasEditorScreen(
                     ) {
                         Spacer(modifier = Modifier.width(38.dp))
                         Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
-                        for (hm in com.grooxtyper.app.model.HealMode.values()) {
-                            val sel = inpaintingManager.healMode == hm
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (sel) Accent else Color(0xFF2C2C2E))
-                                    .clickable { inpaintingManager.healMode = hm }
-                                    .padding(vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    when (hm) {
-                                        com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Aware"
-                                        com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure"
-                                        com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture"
-                                        com.grooxtyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga"
-                                    },
-                                    color = Color.White, fontSize = 10.sp,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        }
+                        Text(
+                            "Telea cepat (tunggal, semua konten)",
+                            color = Color.Gray, fontSize = 10.sp,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
-                    Text(
-                        when (inpaintingManager.healMode) {
-                            com.grooxtyper.app.model.HealMode.CONTENT_AWARE -> "Content-Aware: seimbang (pengganti PS)."
-                            com.grooxtyper.app.model.HealMode.PRESERVE_STRUCTURE -> "Structure: garis manga tetap tajam."
-                            com.grooxtyper.app.model.HealMode.PRESERVE_TEXTURE -> "Texture: screentone/kertas mulus."
-                            com.grooxtyper.app.model.HealMode.MANGA_SEAMLESS -> "Manga Seamless: garis + screentone (riset Xie SIGGRAPH21, terbaik)."
-                        },
-                        color = Color.Gray, fontSize = 10.sp,
-                        modifier = Modifier.padding(start = 78.dp)
-                    )
                 }
             }
         }
@@ -3409,7 +3380,7 @@ fun CanvasEditorScreen(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text(if (isHealing) "Inpaint Seleksi… (proses)" else "Inpaint Seleksi (Heal)") },
+                    text = { Text(if (isHealing) "Inpaint Seleksi… (proses)" else "Inpaint Seleksi (MiGan)") },
                     enabled = selectionEngine.hasSelection && !isHealing,
                     onClick = {
                         showLassoMenu = false

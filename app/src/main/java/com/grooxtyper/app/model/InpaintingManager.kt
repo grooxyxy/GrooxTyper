@@ -85,14 +85,16 @@ class InpaintingManager {
     var healFeather: Boolean by mutableStateOf(true)
 
     /**
-     * Inpaint area seleksi (lasso/kotak/bubble) memakai mask seleksi full-kanvas.
-     * Dipakai fitur "Inpaint Seleksi": reuse jalur heal agar hemat + manga-aware.
+     * Inpaint area seleksi (lasso/kotak/bubble) memakai MI-GAN on-device pada
+     * crop kecil (bounds + pad). HANYA dipanggil setelah area seleksi dibuat.
+     * Fallback Telea bila session MiGan gagal agar fitur tak pernah mati diam.
      * @return true bila ada piksel dikerjakan.
      */
-    fun inpaintSelection(
+    suspend fun inpaintSelection(
         layer: DrawingLayer,
         selectionMask: Bitmap,
-        bounds: android.graphics.RectF
+        bounds: android.graphics.RectF,
+        appContext: android.content.Context? = null
     ): Boolean {
         val src = layer.getPersistentBitmap()
         if (src.width != selectionMask.width || src.height != selectionMask.height) {
@@ -103,18 +105,71 @@ class InpaintingManager {
             android.util.Log.w("Inpaint", "selection: bounds terlalu kecil")
             return false
         }
-        // Dilatasi ringan agar anti-alias tepi seleksi ikut bersih.
-        if (dilateMask) {
-            try {
-                val tmp = Bitmap.createBitmap(selectionMask)
-                dilateMaskAlpha(tmp)
-                val c = android.graphics.Canvas(selectionMask)
-                c.drawColor(android.graphics.Color.TRANSPARENT, android.graphics.PorterDuff.Mode.CLEAR)
-                c.drawBitmap(tmp, 0f, 0f, null)
-                runCatching { tmp.recycle() }
-            } catch (e: Exception) { e.printStackTrace() }
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val pad = 24
+        val cl = maxOf(0, bounds.left.toInt() - pad)
+        val ct = maxOf(0, bounds.top.toInt() - pad)
+        val cr = minOf(src.width, bounds.right.toInt() + pad)
+        val cb = minOf(src.height, bounds.bottom.toInt() + pad)
+        val cw = cr - cl
+        val ch = cb - ct
+        if (cw <= 8 || ch <= 8) return false
+        var srcCrop: Bitmap? = null
+        var maskCrop: Bitmap? = null
+        try {
+            srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+            maskCrop = Bitmap.createBitmap(selectionMask, cl, ct, cw, ch)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            return false
         }
-        return inpaintHealDirty(src, selectionMask, bounds)
+        try {
+            // 1) MI-GAN (khusus seleksi).
+            if (appContext != null) {
+                try {
+                    if (com.grooxtyper.app.ml.MiganInpainter.ensureSession(appContext)) {
+                        val out = com.grooxtyper.app.ml.MiganInpainter.inpaint(srcCrop!!, maskCrop!!)
+                        if (out != null) {
+                            android.graphics.Canvas(src).drawBitmap(out, cl.toFloat(), ct.toFloat(), null)
+                            runCatching { out.recycle() }
+                            android.util.Log.i("Inpaint", "seleksi MiGan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                            return true
+                        }
+                        android.util.Log.w("Inpaint", "MiGan skip: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
+                    } else {
+                        android.util.Log.w("Inpaint", "MiGan session gagal: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                } catch (e: OutOfMemoryError) {
+                    e.printStackTrace()
+                }
+            }
+            // 2) Fallback Telea tunggal pada crop yang sama.
+            try {
+                val (argb, tmp) = ensureArgbMask(maskCrop!!)
+                try {
+                    com.grooxtyper.app.native.NativeEngine.nativeInpaintTelea(srcCrop!!, argb, 5.0)
+                } finally {
+                    if (tmp) runCatching { argb.recycle() }
+                }
+                android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                android.util.Log.i("Inpaint", "seleksi Telea-fallback ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                return true
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return false
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return false
+            }
+        } finally {
+            runCatching { srcCrop?.recycle() }
+            runCatching { maskCrop?.recycle() }
+        }
     }
 
     fun inpaintLayerArea(
@@ -270,80 +325,29 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
-            if (mode == InpaintMode.PATCH_MATCH) {
-                // Hybrid otomatis (Telea vs PatchMatch, insight OpenCV anphiriel + manga 720x16000):
-                // teks manga tipikal (lebar sapuan <80px atau area <150k) -> Telea isophote cepat;
-                // luas/bertekstur -> PatchMatch manga-aware adaptif.
-                val dirtyArea = bw.toLong() * bh.toLong()
-                val isThin = max(bw, bh) < 80 || dirtyArea < 150000L
-                if (isThin) {
-                    try {
-                        val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
-                        val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
-                        try {
-                            val (argb, tmp) = ensureArgbMask(maskCrop)
-                            try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 4.0) }
-                            finally { if (tmp) runCatching { argb.recycle() } }
-                            android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
-                            android.util.Log.i("Inpaint", "heal Telea ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                            return true
-                        } finally {
-                            runCatching { srcCrop.recycle() }
-                            runCatching { maskCrop.recycle() }
-                        }
-                    } catch (e: Exception) { e.printStackTrace() } catch (e: OutOfMemoryError) { e.printStackTrace(); return false }
-                }
+            // Heal TUNGGAL: Telea isophote native (cepat, deterministik, umum).
+            // Tanpa opsi/mode: satu metode untuk semua konten (bukan khusus teks).
+            try {
+                val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                 try {
-                    val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
-                    val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
-                    try {
-                        // PatchMatch sekarang multi-scale + guide + constraint (fix noise)
-                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = healMode)
-                        if (!ok) {
-                            android.util.Log.w("Inpaint", "heal: PatchMatch skip (mask/ROI kosong)")
-                            // Fallback Telea agar seleksi/heal kecil tetap ada hasil.
-                            try {
-                                val (argbF, tmpF) = ensureArgbMask(maskCrop)
-                                try { NativeEngine.nativeInpaintTelea(srcCrop, argbF, 5.0) }
-                                finally { if (tmpF) runCatching { argbF.recycle() } }
-                                android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
-                                return true
-                            } catch (_: Exception) { return false }
-                        }
-                        android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
-                        android.util.Log.i("Inpaint", "heal PatchMatch ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                        return true
-                    } finally {
-                        runCatching { srcCrop.recycle() }
-                        runCatching { maskCrop.recycle() }
-                    }
-                } catch (e: OutOfMemoryError) {
-                    e.printStackTrace()
-                    // OOM di crop: JANGAN jalankan PatchMatch di bitmap 46MB
-                    // penuh (alokasi IntArray ~138MB → crash). Coba Telea di
-                    // crop yang sama (lebih ringan), lalu menyerah dengan aman.
-                    try {
-                        val srcCrop2 = Bitmap.createBitmap(src, cl, ct, cw, ch)
-                        val maskCrop2 = Bitmap.createBitmap(mask, cl, ct, cw, ch)
-                        try {
-                            val (argb2, tmp2) = ensureArgbMask(maskCrop2)
-                            try { NativeEngine.nativeInpaintTelea(srcCrop2, argb2, 5.0) }
-                            finally { if (tmp2) runCatching { argb2.recycle() } }
-                            android.graphics.Canvas(src).drawBitmap(srcCrop2, cl.toFloat(), ct.toFloat(), null)
-                            return true
-                        } finally {
-                            runCatching { srcCrop2.recycle() }
-                            runCatching { maskCrop2.recycle() }
-                        }
-                    } catch (_: Exception) { return false } catch (_: OutOfMemoryError) { return false }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    inpaintBitmapDirect(src, mask)
+                    val (argb, tmp) = ensureArgbMask(maskCrop)
+                    try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 4.0) }
+                    finally { if (tmp) runCatching { argb.recycle() } }
+                    android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                    android.util.Log.i("Inpaint", "heal Telea ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
                     return true
+                } finally {
+                    runCatching { srcCrop.recycle() }
+                    runCatching { maskCrop.recycle() }
                 }
-            } else {
-                inpaintBitmapDirect(src, mask)
-                return true
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                android.util.Log.w("Inpaint", "heal Telea OOM ${cw}x${ch}")
+                return false
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return false
             }
         } catch (e: Exception) {
             e.printStackTrace()

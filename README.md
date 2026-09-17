@@ -57,8 +57,10 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
    blur live dibatasi 140k px, steps di-cap 32).
 3. Sapuan cepat tidak patah: interpolasi luar max 24 titik + inner 32 steps,
    stabilizer lokal (tanpa recompose storm), clip ke dirty-rect segmen.
-4. Heal Patch: sapu untuk kumpulkan mask → commit `inpaintHealDirty` hanya
-   crop dirty → mask 46MB di-recycle (`recycleInpaintMask`).
+4. Heal brush TUNGGAL (Telea native, tanpa opsi mode): sapu untuk kumpulkan
+   mask → commit crop dirty + antrean conflate bila sibuk.
+   Inpaint Seleksi memakai MI-GAN on-device (`models/mg.onnx`, MIT,
+   Picsart AI Research) pada crop kecil + fallback Telea.
 5. Tips anti-lag: 1 drawing layer (fast-path blit ~50px vs render 46MB),
    kecilkan size <32px bila patah, hindari teks/blend menumpuk di area sapuan.
 
