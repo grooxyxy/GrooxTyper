@@ -72,7 +72,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun GalleryScreen(
-    onOpenCanvas: (id: String, width: Int, height: Int, initialBitmap: Bitmap?) -> Unit
+    onOpenCanvas: (id: String, width: Int, height: Int, initialBitmap: Bitmap?, title: String?) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -138,7 +138,7 @@ fun GalleryScreen(
                         ?.substringBeforeLast('.')?.ifBlank { null }
                         ?: "Imported Artwork"
                     // Buka dulu → terasa instan. Simpan menyusul di background.
-                    onOpenCanvas(projId, projW, projH, fitted)
+                    onOpenCanvas(projId, projW, projH, fitted, srcTitle)
                     scope.launch(Dispatchers.IO) {
                         // Jangan timpa save editor yang lebih baru (stale-write):
                         // bila editor sudah autosave duluan, lewati file+meta basi.
@@ -263,7 +263,7 @@ fun GalleryScreen(
                                         val full = withContext(Dispatchers.IO) {
                                             projectManager.loadProjectBitmap(proj.imagePath)
                                         } ?: thumbBmp
-                                        onOpenCanvas(proj.id, proj.width, proj.height, full)
+                                        onOpenCanvas(proj.id, proj.width, proj.height, full, proj.title)
                                     }
                                 },
                             colors = CardDefaults.cardColors(containerColor = Color(0xFF2A2A2A)),
@@ -402,7 +402,7 @@ fun GalleryScreen(
                             val blankBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                             projectManager.saveProject(newId, "New Project", w, h, blankBmp)
                             showCreateDialog = false
-                            onOpenCanvas(newId, w, h, null)
+                            onOpenCanvas(newId, w, h, null, "New Project")
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF9800))
                     ) {

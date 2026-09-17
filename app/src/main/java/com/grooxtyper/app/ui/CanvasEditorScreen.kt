@@ -355,6 +355,7 @@ private fun drawVisibleBitmap(
 @Composable
 fun CanvasEditorScreen(
     projectId: String,
+    initialTitle: String? = null,
     canvasWidth: Int,
     canvasHeight: Int,
     initialBitmap: Bitmap? = null,
@@ -365,9 +366,12 @@ fun CanvasEditorScreen(
 
     val projectManager = remember { ProjectManager(context) }
     // Judul project = nama asli file import (untuk nama file export).
+    // initialTitle dioper via navigasi agar benar walau simpan background
+    // belum selesai saat export ditekan (anti stale-write nama).
     val projectTitle: String = remember {
-        runCatching { projectManager.getProject(projectId)?.title }
-            .getOrNull()?.ifBlank { null } ?: "GrooxTyper"
+        initialTitle?.ifBlank { null }
+            ?: runCatching { projectManager.getProject(projectId)?.title }
+                .getOrNull()?.ifBlank { null } ?: "GrooxTyper"
     }
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
@@ -3257,16 +3261,17 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.FlipToBack, contentDescription = "Image", tint = if (activeTool == ActiveTool.IMAGE) Accent else Color.White)
             }
 
-            // Text Detector (ML Kit lokal, tanpa download model) — dikembalikan ke toolbar.
+            // Text Detector (ML Kit lokal, tanpa download model): buka panel dulu,
+            // deteksi baru jalan saat tombol Deteksi di panel ditekan.
             IconButton(
-                onClick = { runMLDetection() }
+                onClick = { showMLInpaintDialog = true }
             ) {
                 Icon(Icons.Default.Search, contentDescription = "Text Detector", tint = Color.White)
             }
 
             // ML Inpaint (pakai hasil deteksi teks terakhir)
             IconButton(
-                onClick = { runMLDetection() }
+                onClick = { showMLInpaintDialog = true }
             ) {
                 Icon(Icons.Default.AutoFixHigh, contentDescription = "Inpaint", tint = Color.White)
             }
