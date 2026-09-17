@@ -1094,6 +1094,7 @@ fun CanvasEditorScreen(
         }
     }
 
+
     /**
      * Warna teks kontras terhadap latar di titik kanvas: latar terang → hitam,
      * latar gelap → putih. Sampel luminansi radius 12px dari komposit.
@@ -1121,6 +1122,13 @@ fun CanvasEditorScreen(
                 sum += ((0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF))).toLong()
                 n++
             }
+            if (n == 0L) return brushEngine.color
+            if (sum / n > 128) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        } catch (e: Exception) {
+            e.printStackTrace()
+            brushEngine.color
+        }
+    }
 
     /** Isi semua bubble terdeteksi dari antrean multi-bubble (urutan baca manga). */
     fun autoFillBubbles() {
@@ -1194,6 +1202,7 @@ fun CanvasEditorScreen(
                 )
                 template?.let { box.applyStyleFrom(it) }
                 applyAllStylesTo(box)
+                box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
                 box.fitToRect(inset)
                 val created = layerManager.addTextLayer(box)
                 undoRedoManager.pushLayerAdd(created.id)
@@ -1243,13 +1252,6 @@ fun CanvasEditorScreen(
     fun textLayerIdOf(box: TextBox): String =
         layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
 
-            if (n == 0L) return brushEngine.color
-            if (sum / n > 128) android.graphics.Color.BLACK else android.graphics.Color.WHITE
-        } catch (e: Exception) {
-            e.printStackTrace()
-            brushEngine.color
-        }
-    }
 
     fun flattenSelectedText() {
         val box = selectedTextBox ?: return
