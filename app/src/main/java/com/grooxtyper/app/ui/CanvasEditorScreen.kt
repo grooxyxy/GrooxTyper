@@ -365,6 +365,11 @@ fun CanvasEditorScreen(
     val scope = rememberCoroutineScope()
 
     val projectManager = remember { ProjectManager(context) }
+    // Judul project = nama asli file import (untuk nama file export).
+    val projectTitle: String = remember {
+        runCatching { projectManager.getProject(projectId)?.title }
+            .getOrNull()?.ifBlank { null } ?: "GrooxTyper"
+    }
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
@@ -1113,6 +1118,7 @@ fun CanvasEditorScreen(
             )
             template?.let { box.applyStyleFrom(it) }
             applyAllStylesTo(box)
+            box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
             box.fitToRect(inset)
             val created = layerManager.addTextLayer(box)
             undoRedoManager.pushLayerAdd(created.id)
@@ -1188,6 +1194,7 @@ fun CanvasEditorScreen(
             )
             template?.let { box.applyStyleFrom(it) }
             applyAllStylesTo(box)
+            box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
             box.fitToRect(bounds)
             val created = layerManager.addTextLayer(box)
             undoRedoManager.pushLayerAdd(created.id)
@@ -1207,6 +1214,41 @@ fun CanvasEditorScreen(
     /** Layer id untuk snapshot undo teks (undo mencari berdasar layer id). */
     fun textLayerIdOf(box: TextBox): String =
         layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
+
+    /**
+     * Warna teks kontras terhadap latar di titik kanvas: latar terang → hitam,
+     * latar gelap → putih. Sampel luminansi radius 12px dari komposit.
+     */
+    fun contrastTextColorAt(cx: Float, cy: Float): Int {
+        return try {
+            val bmp = compositeBitmap
+            if (bmp.isRecycled) return brushEngine.color
+            val r = 12
+            val x0 = cx.toInt().coerceIn(0, bmp.width - 1)
+            val y0 = cy.toInt().coerceIn(0, bmp.height - 1)
+            val x1 = (x0 - r).coerceAtLeast(0)
+            val y1 = (y0 - r).coerceAtLeast(0)
+            val x2 = (x0 + r).coerceAtMost(bmp.width - 1)
+            val y2 = (y0 + r).coerceAtMost(bmp.height - 1)
+            val w = x2 - x1 + 1
+            val h = y2 - y1 + 1
+            if (w <= 0 || h <= 0) return brushEngine.color
+            val px = IntArray(w * h)
+            bmp.getPixels(px, 0, w, x1, y1, w, h)
+            var sum = 0L
+            var n = 0L
+            for (p in px) {
+                if ((p ushr 24) < 16) continue
+                sum += ((0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF))).toLong()
+                n++
+            }
+            if (n == 0L) return brushEngine.color
+            if (sum / n > 128) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        } catch (e: Exception) {
+            e.printStackTrace()
+            brushEngine.color
+        }
+    }
 
     fun flattenSelectedText() {
         val box = selectedTextBox ?: return
@@ -1248,6 +1290,7 @@ fun CanvasEditorScreen(
         )
         multiBubbleTemplate?.let { box.applyStyleFrom(it) }
         applyAllStylesTo(box)
+        box.color = contrastTextColorAt(at.x, at.y)
         // Bila ada seleksi bubble, langsung pas-kan ukurannya.
         selectionEngine.selectionBounds()?.let { box.fitToRect(it) }
         val created = layerManager.addTextLayer(box)
@@ -2055,7 +2098,14 @@ fun CanvasEditorScreen(
                                         if (maskOwned != null && dirtyOwned != null && targetLayer != null &&
                                             dirtyOwned.right > dirtyOwned.left && dirtyOwned.bottom > dirtyOwned.top
                                         ) {
-                                            if (isHealing) {
+                                            // Diagnosa pasti: hitung isi mask dulu (murah, sampling).
+                                            // 0 px = sapuan tak tercatat (bukan salah inpaint).
+                                            val ink = inpaintingManager.countMaskPixels(maskOwned, dirtyOwned)
+                                            android.util.Log.i("Heal", "commit dirty=${dirtyOwned.width().toInt()}x${dirtyOwned.height().toInt()} maskPx~$ink")
+                                            if (ink == 0) {
+                                                runCatching { maskOwned.recycle() }
+                                                healError = "Sapuan tak tercatat di mask (0 px) — coba sapu lagi"
+                                            } else if (isHealing) {
                                                 // Gabung ke antrean tunggal (conflate), jangan buang.
                                                 val pm = pendingHealMask
                                                 if (pm != null && !pm.isRecycled && pm.width == maskOwned.width && pm.height == maskOwned.height) {
@@ -2923,6 +2973,10 @@ fun CanvasEditorScreen(
                             "${canvasWidth} x ${canvasHeight} px • teks & layer ikut ter-render",
                             color = Color.Gray, fontSize = 11.sp
                         )
+                        Text(
+                            "Nama file: ${com.grooxtyper.app.model.FileExportManager.sanitizeFileName(projectTitle)}${exportFormat.extension}",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text("Format", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(6.dp))
@@ -2977,7 +3031,7 @@ fun CanvasEditorScreen(
                             val q = exportQuality.toInt()
                             scope.launch {
                                 val msg = withContext(Dispatchers.Default) {
-                                    val file = exportManager.exportArtwork(layerManager, fmt, quality = q)
+                                    val file = exportManager.exportArtwork(layerManager, fmt, filename = projectTitle, quality = q)
                                     if (file == null) {
                                         "Gagal export (memori habis?). Coba tutup aplikasi lain / kualitas lebih rendah."
                                     } else {

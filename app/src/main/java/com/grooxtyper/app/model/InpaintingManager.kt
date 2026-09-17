@@ -183,6 +183,32 @@ class InpaintingManager {
         }
     }
 
+    /** Hitung piksel mask di dalam [dirty] (sampling tiap 4px agar murah di 46MB). */
+    fun countMaskPixels(mask: Bitmap, dirty: android.graphics.RectF, step: Int = 4): Int {
+        return try {
+            val l = dirty.left.toInt().coerceIn(0, mask.width - 1)
+            val t = dirty.top.toInt().coerceIn(0, mask.height - 1)
+            val r = dirty.right.toInt().coerceIn(l + 1, mask.width)
+            val b = dirty.bottom.toInt().coerceIn(t + 1, mask.height)
+            var n = 0
+            val row = IntArray(r - l)
+            var y = t
+            while (y < b) {
+                mask.getPixels(row, 0, r - l, l, y, r - l, 1)
+                var x = 0
+                while (x < row.size) {
+                    if ((row[x] ushr 24) > 30) n++
+                    x += step
+                }
+                y += step
+            }
+            n
+        } catch (e: Exception) {
+            e.printStackTrace()
+            -1
+        }
+    }
+
     /**
      * Heal brush satu sapuan: inpaint hanya di dalam [dirty] (RectF kanvas)
      * agar 720x16000 tidak memindai 46MB penuh. Dipakai commit heal brush
@@ -191,6 +217,7 @@ class InpaintingManager {
      * dan tidak noise.
      */
     fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             val l = dirty.left.toInt().coerceIn(0, src.width - 1)
             val t = dirty.top.toInt().coerceIn(0, src.height - 1)
@@ -258,6 +285,7 @@ class InpaintingManager {
                             try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 4.0) }
                             finally { if (tmp) runCatching { argb.recycle() } }
                             android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                            android.util.Log.i("Inpaint", "heal Telea ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
                             return true
                         } finally {
                             runCatching { srcCrop.recycle() }
@@ -283,6 +311,7 @@ class InpaintingManager {
                             } catch (_: Exception) { return false }
                         }
                         android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                        android.util.Log.i("Inpaint", "heal PatchMatch ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
                         return true
                     } finally {
                         runCatching { srcCrop.recycle() }

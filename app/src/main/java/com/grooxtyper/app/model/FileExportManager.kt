@@ -18,6 +18,16 @@ enum class ExportFormat(val extension: String, val mime: String, val supportsQua
 
 class FileExportManager(private val context: Context) {
 
+    companion object {
+        /** Samakan dengan pola nama font: pakai nama asli, bersihkan karakter ilegal. */
+        fun sanitizeFileName(raw: String, fallback: String = "GrooxTyper"): String {
+            val base = raw.substringAfterLast('/').substringAfterLast('\\').trim()
+                .substringBeforeLast('.').ifBlank { fallback }
+            return base.replace(Regex("[^A-Za-z0-9._\\- ]"), "_")
+                .trim().take(80).ifBlank { fallback }
+        }
+    }
+
     /**
      * Render komposit + tulis ke file kerja (dir privat app). Kembalikan null
      * bila gagal (mis. memori habis di 720x16000) — pemanggil WAJIB
@@ -31,6 +41,7 @@ class FileExportManager(private val context: Context) {
         quality: Int = 90
     ): File? {
         // 720x16000 = ~46MB sementara; recycle segera setelah kompres.
+        val safeName = sanitizeFileName(filename)
         var composite: Bitmap? = null
         try {
             composite = Bitmap.createBitmap(layerManager.width, layerManager.height, Bitmap.Config.ARGB_8888)
@@ -38,7 +49,7 @@ class FileExportManager(private val context: Context) {
 
             val picturesDir = context.getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: context.filesDir
             val grooxDir = File(picturesDir, "GrooxTyper").apply { if (!exists()) mkdirs() }
-            val file = File(grooxDir, "$filename${format.extension}")
+            val file = File(grooxDir, "$safeName${format.extension}")
 
             try {
                 val os: OutputStream = FileOutputStream(file)

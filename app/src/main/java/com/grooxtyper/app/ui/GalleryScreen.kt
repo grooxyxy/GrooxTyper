@@ -124,6 +124,19 @@ fun GalleryScreen(
                     }
                     val projId = "${System.currentTimeMillis()}"
                     val startedAt = System.currentTimeMillis()
+                    // Pakai nama file asli sebagai judul project agar export
+                    // memakai nama asli (bukan "Imported Artwork").
+                    val srcTitle: String = runCatching {
+                        context.contentResolver.query(it, null, null, null, null)?.use { c ->
+                            val idx = c.getColumnIndex(
+                                android.provider.OpenableColumns.DISPLAY_NAME
+                            )
+                            if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+                        }
+                    }.getOrNull()
+                        ?.substringAfterLast('/').substringAfterLast('\\').trim()
+                        ?.substringBeforeLast('.')?.ifBlank { null }
+                        ?: "Imported Artwork"
                     // Buka dulu → terasa instan. Simpan menyusul di background.
                     onOpenCanvas(projId, projW, projH, fitted)
                     scope.launch(Dispatchers.IO) {
@@ -132,7 +145,7 @@ fun GalleryScreen(
                         val existing = runCatching { projectManager.getProject(projId) }.getOrNull()
                         if (existing == null || existing.lastModified < startedAt) {
                             runCatching {
-                                projectManager.saveProject(projId, "Imported Artwork", projW, projH, fitted)
+                                projectManager.saveProject(projId, srcTitle, projW, projH, fitted)
                             }
                             withContext(Dispatchers.Main) {
                                 runCatching { refreshProjects() }

@@ -106,8 +106,10 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1")
     implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1")
 
-    // ONNX Runtime Mobile: inferensi model bubble (YOLO detect) on-device
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+    // ONNX Runtime Mobile: inferensi model bubble (YOLO detect) on-device.
+    // v1.22.0 (mendukung opset 22): model bd.onnx berstempel opset 22 dan
+    // DITOLAK ORT 1.20 (maks opset 21) dengan ORT_INVALID_ARGUMENT.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
