@@ -1094,6 +1094,34 @@ fun CanvasEditorScreen(
         }
     }
 
+    /**
+     * Warna teks kontras terhadap latar di titik kanvas: latar terang → hitam,
+     * latar gelap → putih. Sampel luminansi radius 12px dari komposit.
+     */
+    fun contrastTextColorAt(cx: Float, cy: Float): Int {
+        return try {
+            val bmp = compositeBitmap
+            if (bmp.isRecycled) return brushEngine.color
+            val r = 12
+            val x0 = cx.toInt().coerceIn(0, bmp.width - 1)
+            val y0 = cy.toInt().coerceIn(0, bmp.height - 1)
+            val x1 = (x0 - r).coerceAtLeast(0)
+            val y1 = (y0 - r).coerceAtLeast(0)
+            val x2 = (x0 + r).coerceAtMost(bmp.width - 1)
+            val y2 = (y0 + r).coerceAtMost(bmp.height - 1)
+            val w = x2 - x1 + 1
+            val h = y2 - y1 + 1
+            if (w <= 0 || h <= 0) return brushEngine.color
+            val px = IntArray(w * h)
+            bmp.getPixels(px, 0, w, x1, y1, w, h)
+            var sum = 0L
+            var n = 0L
+            for (p in px) {
+                if ((p ushr 24) < 16) continue
+                sum += ((0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF))).toLong()
+                n++
+            }
+
     /** Isi semua bubble terdeteksi dari antrean multi-bubble (urutan baca manga). */
     fun autoFillBubbles() {
         if (multiBubbleLines.isEmpty() || detectedBubbles.isEmpty()) return
@@ -1215,33 +1243,6 @@ fun CanvasEditorScreen(
     fun textLayerIdOf(box: TextBox): String =
         layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
 
-    /**
-     * Warna teks kontras terhadap latar di titik kanvas: latar terang → hitam,
-     * latar gelap → putih. Sampel luminansi radius 12px dari komposit.
-     */
-    fun contrastTextColorAt(cx: Float, cy: Float): Int {
-        return try {
-            val bmp = compositeBitmap
-            if (bmp.isRecycled) return brushEngine.color
-            val r = 12
-            val x0 = cx.toInt().coerceIn(0, bmp.width - 1)
-            val y0 = cy.toInt().coerceIn(0, bmp.height - 1)
-            val x1 = (x0 - r).coerceAtLeast(0)
-            val y1 = (y0 - r).coerceAtLeast(0)
-            val x2 = (x0 + r).coerceAtMost(bmp.width - 1)
-            val y2 = (y0 + r).coerceAtMost(bmp.height - 1)
-            val w = x2 - x1 + 1
-            val h = y2 - y1 + 1
-            if (w <= 0 || h <= 0) return brushEngine.color
-            val px = IntArray(w * h)
-            bmp.getPixels(px, 0, w, x1, y1, w, h)
-            var sum = 0L
-            var n = 0L
-            for (p in px) {
-                if ((p ushr 24) < 16) continue
-                sum += ((0.299 * ((p shr 16) and 0xFF) + 0.587 * ((p shr 8) and 0xFF) + 0.114 * (p and 0xFF))).toLong()
-                n++
-            }
             if (n == 0L) return brushEngine.color
             if (sum / n > 128) android.graphics.Color.BLACK else android.graphics.Color.WHITE
         } catch (e: Exception) {
