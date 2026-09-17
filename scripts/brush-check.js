@@ -50,7 +50,8 @@ assert(patch.includes('PRESERVE_TEXTURE'), 'heal punya mode Preserve Texture');
 assert(patch.includes('gradWeight'), 'heal jarak patch sadar gradien (tajam vs PS)');
 assert(inpaint.includes('healMode'), 'InpaintingManager expose healMode');
 assert(inpaint.includes('inpaintHealDirty'), 'InpaintingManager punya inpaintHealDirty');
-assert(editor.includes('HealMode'), 'UI pemilih mode heal tampil di quick slider');
+assert(editor.includes('Telea cepat (tunggal'), 'UI heal tunggal tanpa opsi mode');
+assert(editor.includes('Inpaint Seleksi (MiGan)'), 'UI inpaint seleksi MiGan');
 
 // 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
 assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');
