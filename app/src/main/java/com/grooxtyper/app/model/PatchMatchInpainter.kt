@@ -59,7 +59,8 @@ object PatchMatchInpainter {
      * [mode] memilih strategi patch agar melampaui Photoshop untuk manga.
      * Implementasi sekarang multi-scale + guide + constraint (fix noise).
      */
-    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.CONTENT_AWARE): Boolean {
+    /** Mode tunggal heal: manga-seamless (garis + screentone). Tanpa opsi. */
+    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.MANGA_SEAMLESS): Boolean {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return false
@@ -367,33 +368,28 @@ object PatchMatchInpainter {
         }
 
         val maxRadius = max(w, h)
+        // Trik Criminisi et al. 2004: isi front berprioritas (keyakinan x tepi)
+        // dulu agar garis manga tersambung; bukan urutan sapuan raster yang
+        // mengaburkan struktur. Luminance guide dihitung sekali per panggilan.
+        val lum = DoubleArray(w * h) { i -> lumAt(guidePixels, null, null, w, h, i % w, i / w) }
         for (iter in 0 until curIters) {
             val forward = (iter % 2 == 0)
-            if (forward) {
-                for (y in 0 until h) {
-                    for (x in 0 until w) {
-                        val idx = y * w + x
-                        if (mask[idx]) refinePixel(
-                            idx, x, y, pixels, guidePixels, mask, w, h, prefix,
-                            nnf, scores, rng, true, maxRadius,
-                            sourceConstraints, targetConstraints, constrainedSources
-                        )
-                    }
-                    onProgress?.invoke(0.08f + 0.72f * (iter + (y + 1f) / h) / curIters)
-                }
-            } else {
-                for (y in h - 1 downTo 0) {
-                    for (x in w - 1 downTo 0) {
-                        val idx = y * w + x
-                        if (mask[idx]) refinePixel(
-                            idx, x, y, pixels, guidePixels, mask, w, h, prefix,
-                            nnf, scores, rng, false, maxRadius,
-                            sourceConstraints, targetConstraints, constrainedSources
-                        )
-                    }
-                    onProgress?.invoke(0.08f + 0.72f * (iter + (h - y) / h.toFloat()) / curIters)
+            val order = priorityOrder(targetIndices, mask, w, h, prefix, lum)
+            var done = 0
+            for (idx in order) {
+                val x = idx % w
+                val y = idx / w
+                refinePixel(
+                    idx, x, y, pixels, guidePixels, mask, w, h, prefix,
+                    nnf, scores, rng, forward, maxRadius,
+                    sourceConstraints, targetConstraints, constrainedSources
+                )
+                done++
+                if (done % 4096 == 0) {
+                    onProgress?.invoke(0.08f + 0.72f * (iter + done / targetIndices.size.toFloat()) / curIters)
                 }
             }
+            onProgress?.invoke(0.08f + 0.72f * (iter + 1f) / curIters)
         }
 
         val accR = FloatArray(mask.size)
@@ -639,6 +635,45 @@ object PatchMatchInpainter {
             }
         }
         return cost.toFloat()
+    }
+
+    /**
+     * Prioritas isi ala Criminisi: P(p) = C(p) x D(p). C = fraksi piksel dikenal
+     * di jendela patch (via prefix sum O(1)); D = kekuatan tepi Sobel agar garis
+     * manga diisi lebih dulu sepanjang isophote. Tanpa ini, sapuan raster
+     * mengisi area datar dulu dan garis putus/blur.
+     */
+    private fun priorityOrder(
+        targetIndices: IntArray,
+        mask: BooleanArray,
+        w: Int,
+        h: Int,
+        prefix: IntArray,
+        lum: DoubleArray
+    ): IntArray {
+        val r = PATCH_RADIUS
+        val scored = ArrayList<Pair<Int, Double>>(targetIndices.size)
+        for (idx in targetIndices) {
+            val x = idx % w
+            val y = idx / w
+            val l = max(0, x - r)
+            val t = max(0, y - r)
+            val rr = min(w - 1, x + r)
+            val bb = min(h - 1, y + r)
+            val area = ((rr - l + 1) * (bb - t + 1)).toDouble().coerceAtLeast(1.0)
+            val conf = 1.0 - maskSum(prefix, w, l, t, rr, bb) / area
+            fun g(xx: Int, yy: Int): Double {
+                val cx = xx.coerceIn(0, w - 1)
+                val cy = yy.coerceIn(0, h - 1)
+                return lum[cy * w + cx]
+            }
+            val gx = (g(x + 1, y) - g(x - 1, y)) * 0.5
+            val gy = (g(x, y + 1) - g(x, y - 1)) * 0.5
+            val edge = min(1.0, kotlin.math.hypot(gx, gy) / 64.0)
+            scored.add(idx to conf * (0.25 + 0.75 * edge))
+        }
+        scored.sortByDescending { it.second }
+        return IntArray(scored.size) { scored[it].first }
     }
 
     private fun lumAt(pixels: IntArray, mask: BooleanArray?, guide: IntArray?, w: Int, h: Int, x: Int, y: Int): Double {

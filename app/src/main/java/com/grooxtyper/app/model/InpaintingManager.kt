@@ -271,12 +271,7 @@ class InpaintingManager {
      * Pad adaptif 96 (dari Vasilias CONTEXT_PAD) agar patch punya sumber luas
      * dan tidak noise.
      */
-    suspend fun inpaintHealDirty(
-        src: Bitmap,
-        mask: Bitmap,
-        dirty: android.graphics.RectF,
-        appContext: android.content.Context? = null
-    ): Boolean {
+    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF): Boolean {
         val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             val l = dirty.left.toInt().coerceIn(0, src.width - 1)
@@ -295,7 +290,7 @@ class InpaintingManager {
                     (cy + 256).toFloat().coerceAtMost(src.height.toFloat())
                 )
                 if (safe.width() >= 8f && safe.height() >= 8f) {
-                    return inpaintHealDirty(src, mask, safe, appContext)
+                    return inpaintHealDirty(src, mask, safe)
                 }
                 android.util.Log.w("Inpaint", "heal: dirty terlalu kecil, skip")
                 return false
@@ -330,35 +325,32 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
-            // Heal: MI-GAN neural untuk area >=256px (jauh lebih bagus dari Telea
-            // untuk area luas manga/webtoon); Telea instan untuk titik/gores kecil.
+            // Heal exemplar tunggal (tanpa model): crop >=256px via PatchMatch
+            // berprioritas Criminisi (keyakinan x tepi) agar garis manga/webtoon
+            // tersambung; titik kecil via Telea instan di bawah.
             // Tanpa opsi/mode: routing otomatis berdasar ukuran crop.
-            if (appContext != null && max(cw, ch) >= 256) {
+            if (max(cw, ch) >= 256) {
                 try {
-                    if (com.grooxtyper.app.ml.MiganInpainter.ensureSession(appContext)) {
-                        val srcCropM = Bitmap.createBitmap(src, cl, ct, cw, ch)
-                        val maskCropM = Bitmap.createBitmap(mask, cl, ct, cw, ch)
-                        try {
-                            val out = com.grooptyper.app.ml.MiganInpainter.inpaint(srcCropM, maskCropM)
-                            if (out != null) {
-                                android.graphics.Canvas(src).drawBitmap(out, cl.toFloat(), ct.toFloat(), null)
-                                runCatching { out.recycle() }
-                                android.util.Log.i("Inpaint", "heal MiGan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                                return true
-                            }
-                            android.util.Log.w("Inpaint", "MiGan skip: " + com.grooptyper.app.ml.MiganInpainter.lastError)
-                        } finally {
-                            runCatching { srcCropM.recycle() }
-                            runCatching { maskCropM.recycle() }
+                    val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                    val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                    try {
+                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop)
+                        if (!ok) {
+                            android.util.Log.w("Inpaint", "heal exemplar skip, fallback Telea")
+                        } else {
+                            android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                            android.util.Log.i("Inpaint", "heal exemplar ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                            return true
                         }
-                    } else {
-                        android.util.Log.w("Inpaint", "MiGan session gagal: " + com.grooptyper.app.ml.MiganInpainter.lastError)
+                    } finally {
+                        runCatching { srcCrop.recycle() }
+                        runCatching { maskCrop.recycle() }
                     }
-                } catch (e: Exception) {
-                    e.printStackTrace()
                 } catch (e: OutOfMemoryError) {
                     e.printStackTrace()
                     return false
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
             try {
