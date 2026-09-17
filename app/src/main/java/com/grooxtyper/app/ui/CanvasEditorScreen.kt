@@ -3406,7 +3406,7 @@ fun CanvasEditorScreen(
                                     val maskCopy = try {
                                         selectionEngine.selectionMaskBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                     } catch (e: Exception) { selectionEngine.selectionMaskBitmap }
-                                    ok = inpaintingManager.inpaintSelection(active, maskCopy, bounds)
+                                    ok = inpaintingManager.inpaintSelection(active, maskCopy, bounds, context.applicationContext)
                                     if (maskCopy !== selectionEngine.selectionMaskBitmap) runCatching { maskCopy.recycle() }
                                     if (!ok) err = "Inpaint seleksi dilewati: area/mask kosong"
                                     else active.markDirty()

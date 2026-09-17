@@ -3,6 +3,7 @@ package com.grooxtyper.app.ml
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
+import ai.onnxruntime.OnnxJavaType
 import android.content.Context
 import android.graphics.Bitmap
 import kotlinx.coroutines.sync.Mutex
@@ -97,15 +98,27 @@ object MiganInpainter {
             img.rewind()
             msk.rewind()
             val env = OrtEnvironment.getEnvironment()
-            imgTensor = OnnxTensor.createTensor(env, img, longArrayOf(1, 3, h.toLong(), w.toLong()))
-            maskTensor = OnnxTensor.createTensor(env, msk, longArrayOf(1, 1, h.toLong(), w.toLong()))
+            // WAJIB tipe eksplisit UINT8: overload ByteBuffer tanpa tipe
+            // selalu dianggap INT8 oleh ORT (dulu inilah yang membuat
+            // session.run selalu gagal lalu fallback ke Telea).
+            imgTensor = OnnxTensor.createTensor(env, img, longArrayOf(1, 3, h.toLong(), w.toLong()), OnnxJavaType.UINT8)
+            maskTensor = OnnxTensor.createTensor(env, msk, longArrayOf(1, 1, h.toLong(), w.toLong()), OnnxJavaType.UINT8)
             val inNames = sess.inputNames.toList()
             val feed = LinkedHashMap<String, OnnxTensor>()
             feed[if (inNames.contains("image")) "image" else inNames[0]] = imgTensor
             feed[if (inNames.contains("mask")) "mask" else inNames[1]] = maskTensor
             result = sess.run(feed)
-            val raw = result[0].value
-            return toBitmap(raw, w, h)
+            // Jalur utama: array multidimensi. Cadangan: buffer mentah bila
+            // getValue() gagal/tak sesuai (tetap tanpa crash, error presisi).
+            val outTensor = result[0]
+            try {
+                val bmp = toBitmap(outTensor.value, w, h)
+                if (bmp != null) return bmp
+            } catch (e: Exception) {
+                e.printStackTrace()
+                lastError = "Parse output MiGan gagal: ${e.message}"
+            }
+            return fromByteBuffer(outTensor as? OnnxTensor, w, h)
         } catch (e: Exception) {
             e.printStackTrace()
             lastError = "Inferensi MiGan gagal: ${e.message ?: e.javaClass.simpleName}"
@@ -118,6 +131,36 @@ object MiganInpainter {
             runCatching { imgTensor?.close() }
             runCatching { maskTensor?.close() }
             runCatching { result?.close() }
+        }
+    }
+
+    /** Cadangan: baca output uint8 langsung dari buffer mentah (row-major). */
+    private fun fromByteBuffer(tensor: OnnxTensor?, w: Int, h: Int): Bitmap? {
+        return try {
+            val bb = tensor?.getByteBuffer()
+            if (bb == null || bb.remaining() < w * h * 3) {
+                lastError = "Buffer output MiGan invalid"
+                return null
+            }
+            val px = IntArray(w * h)
+            for (c in 0 until 3) {
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        val v = bb.get().toInt() and 0xFF
+                        val i = y * w + x
+                        px[i] = px[i] or (v shl (16 - c * 8))
+                    }
+                }
+            }
+            for (i in px.indices) px[i] = px[i] or (0xFF shl 24)
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(px, 0, w, 0, 0, w, h)
+            lastError = null
+            bmp
+        } catch (e: Exception) {
+            e.printStackTrace()
+            lastError = "Buffer output MiGan gagal: ${e.message}"
+            null
         }
     }
 
@@ -173,6 +216,7 @@ object MiganInpainter {
             }
             val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             bmp.setPixels(px, 0, w, 0, 0, w, h)
+            lastError = null
             return bmp
         } catch (e: Exception) {
             e.printStackTrace()
