@@ -134,7 +134,7 @@ fun GalleryScreen(
                             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
                         }
                     }.getOrNull()
-                        ?.substringAfterLast('/').substringAfterLast('\\').trim()
+                        ?.substringAfterLast('/')?.substringAfterLast('\\')?.trim()
                         ?.substringBeforeLast('.')?.ifBlank { null }
                         ?: "Imported Artwork"
                     // Buka dulu → terasa instan. Simpan menyusul di background.
