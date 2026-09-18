@@ -2578,7 +2578,7 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Heal tunggal: Telea cepat, tanpa opsi mode.
+                // Heal 2 opsi tanpa model: Cepat (Telea) vs Texture (exemplar copy patch).
                 if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.HEAL_PATCH) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2586,12 +2586,33 @@ fun CanvasEditorScreen(
                     ) {
                         Spacer(modifier = Modifier.width(38.dp))
                         Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
-                        Text(
-                            "Exemplar prioritas + Telea instan",
-                            color = Color.Gray, fontSize = 10.sp,
-                            modifier = Modifier.weight(1f)
-                        )
+                        for (hm in com.grooxtyper.app.model.InpaintingManager.HealMethod.values()) {
+                            val sel = inpaintingManager.healMethod == hm
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) Accent else Color(0xFF2C2C2E))
+                                    .clickable { inpaintingManager.healMethod = hm }
+                                    .padding(vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    hm.displayName,
+                                    color = Color.White, fontSize = 10.sp,
+                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
                     }
+                    Text(
+                        when (inpaintingManager.healMethod) {
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.CEPAT -> "Cepat: Telea instan, halus."
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Texture: tempel patch asli, screentone lestari."
+                        },
+                        color = Color.Gray, fontSize = 10.sp,
+                        modifier = Modifier.padding(start = 78.dp)
+                    )
                 }
             }
         }

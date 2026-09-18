@@ -38,6 +38,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
@@ -559,7 +560,19 @@ private fun WriteTab(
         label = { Text("Isi teks") },
         minLines = 2,
         maxLines = 5,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        // Kolom selalu terang-di-atas-gelap agar terbaca apa pun warna isi teks.
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+            focusedContainerColor = Color(0xFF101012),
+            unfocusedContainerColor = Color(0xFF101012),
+            cursorColor = Accent,
+            focusedLabelColor = Color.Gray,
+            unfocusedLabelColor = Color.Gray,
+            focusedBorderColor = Accent,
+            unfocusedBorderColor = Color(0xFF38383A)
+        )
     )
     Text("Ukuran ${fontSize.toInt()} px", color = Color.Gray, fontSize = 12.sp)
     Slider(
@@ -989,14 +1002,36 @@ private fun StyleTab(
             onValueChange = onStyleName,
             label = { Text("Nama style") },
             singleLine = true,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedContainerColor = Color(0xFF101012),
+                unfocusedContainerColor = Color(0xFF101012),
+                cursorColor = Accent,
+                focusedLabelColor = Color.Gray,
+                unfocusedLabelColor = Color.Gray,
+                focusedBorderColor = Accent,
+                unfocusedBorderColor = Color(0xFF38383A)
+            )
         )
         OutlinedTextField(
             value = stylePrefix,
             onValueChange = onStylePrefix,
             label = { Text("[SFX]") },
             singleLine = true,
-            modifier = Modifier.weight(0.7f)
+            modifier = Modifier.weight(0.7f),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedContainerColor = Color(0xFF101012),
+                unfocusedContainerColor = Color(0xFF101012),
+                cursorColor = Accent,
+                focusedLabelColor = Color.Gray,
+                unfocusedLabelColor = Color.Gray,
+                focusedBorderColor = Accent,
+                unfocusedBorderColor = Color(0xFF38383A)
+            )
         )
         Button(
             onClick = onSave,

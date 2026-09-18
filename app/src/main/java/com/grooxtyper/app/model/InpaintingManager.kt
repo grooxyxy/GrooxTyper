@@ -77,6 +77,14 @@ class InpaintingManager {
         }
     }
 
+    /** Dua opsi heal brush tanpa model: cepat (Telea) vs texture (exemplar). */
+    enum class HealMethod(val displayName: String) {
+        CEPAT("Cepat"),
+        TEXTURE("Texture")
+    }
+
+    var healMethod: HealMethod by mutableStateOf(HealMethod.CEPAT)
+
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
     // patch. Default MANGA_SEAMLESS (garis + screentone, riset Xie SIGGRAPH21).
@@ -325,16 +333,16 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
-            // Heal exemplar tunggal (tanpa model): crop >=256px via PatchMatch
-            // berprioritas Criminisi (keyakinan x tepi) agar garis manga/webtoon
-            // tersambung; titik kecil via Telea instan di bawah.
-            // Tanpa opsi/mode: routing otomatis berdasar ukuran crop.
-            if (max(cw, ch) >= 256) {
+            // Heal TEXTURE: exemplar PatchMatch berprioritas Criminisi menempel
+            // texture asli via copy patch (tanpa blur difusi) agar screentone /
+            // grain manga/webtoon lestari; crop kecil tetap Telea instan.
+            // Heal CEPAT: Telea saja (tercepat, halus).
+            if (healMethod == HealMethod.TEXTURE && max(cw, ch) >= 256) {
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                     try {
-                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop)
+                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = HealMode.PRESERVE_TEXTURE)
                         if (!ok) {
                             android.util.Log.w("Inpaint", "heal exemplar skip, fallback Telea")
                         } else {
