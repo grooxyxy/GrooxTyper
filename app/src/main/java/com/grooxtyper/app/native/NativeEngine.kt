@@ -8,4 +8,7 @@ object NativeEngine {
     }
 
     external fun nativeInpaintTelea(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double)
+
+    /** Navier-Stokes isophote transport (opsi heal STRUKTUR). iterations<=0 = otomatis. */
+    external fun nativeInpaintNS(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double, iterations: Int)
 }

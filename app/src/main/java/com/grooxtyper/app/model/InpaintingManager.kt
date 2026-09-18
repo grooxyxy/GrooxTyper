@@ -77,13 +77,14 @@ class InpaintingManager {
         }
     }
 
-    /** Dua opsi heal brush tanpa model: cepat (Telea) vs texture (exemplar). */
+    /** Dua opsi heal brush tanpa model (bukan Telea): struktur (Navier-Stokes)
+     * vs texture (exemplar PatchMatch). */
     enum class HealMethod(val displayName: String) {
-        CEPAT("Cepat"),
+        STRUKTUR("Struktur"),
         TEXTURE("Texture")
     }
 
-    var healMethod: HealMethod by mutableStateOf(HealMethod.CEPAT)
+    var healMethod: HealMethod by mutableStateOf(HealMethod.STRUKTUR)
 
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
@@ -333,10 +334,37 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
+            // Dua opsi heal tanpa model (bukan Telea):
+            // STRUKTUR = Navier-Stokes transport isophote (garis tersambung),
+            // TEXTURE = exemplar PatchMatch preserve-texture (screentone lestari).
+            // Crop kecil (<256px) tetap Telea instan di bawah.
+            if (healMethod == HealMethod.STRUKTUR) {
+                try {
+                    val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                    val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                    try {
+                        val (argb, tmp) = ensureArgbMask(maskCrop)
+                        try { NativeEngine.nativeInpaintNS(srcCrop, argb, 5.0, 0) }
+                        finally { if (tmp) runCatching { argb.recycle() } }
+                        android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                        android.util.Log.i("Inpaint", "heal NS ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                        return true
+                    } finally {
+                        runCatching { srcCrop.recycle() }
+                        runCatching { maskCrop.recycle() }
+                    }
+                } catch (e: OutOfMemoryError) {
+                    e.printStackTrace()
+                    android.util.Log.w("Inpaint", "heal NS OOM ${cw}x${ch}")
+                    return false
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    android.util.Log.w("Inpaint", "heal NS gagal, fallback Telea")
+                }
+            }
             // Heal TEXTURE: exemplar PatchMatch berprioritas Criminisi menempel
             // texture asli via copy patch (tanpa blur difusi) agar screentone /
             // grain manga/webtoon lestari; crop kecil tetap Telea instan.
-            // Heal CEPAT: Telea saja (tercepat, halus).
             if (healMethod == HealMethod.TEXTURE && max(cw, ch) >= 256) {
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)

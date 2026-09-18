@@ -2607,7 +2607,7 @@ fun CanvasEditorScreen(
                     }
                     Text(
                         when (inpaintingManager.healMethod) {
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.CEPAT -> "Cepat: Telea instan, halus."
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.STRUKTUR -> "Struktur: garis tersambung (Navier-Stokes)."
                             com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Texture: tempel patch asli, screentone lestari."
                         },
                         color = Color.Gray, fontSize = 10.sp,
