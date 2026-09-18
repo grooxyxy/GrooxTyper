@@ -57,6 +57,28 @@ object TextRenderer {
         }
         val contentH = lineH * lines.size
 
+        // Perspektif (keystone ala free-transform): petakan 4 sudut konten ke
+        // trapesium. perspX menyempitkan tepi atas/bawah, perspY tepi kiri/kanan.
+        if (box.perspX != 0f || box.perspY != 0f) {
+            val hw = contentW / 2f
+            val hh = contentH / 2f
+            if (hw > 0.5f && hh > 0.5f) {
+                val dxT = box.perspX.coerceIn(-1f, 1f) * hw
+                val dyL = box.perspY.coerceIn(-1f, 1f) * hh
+                val src = floatArrayOf(-hw, -hh, hw, -hh, hw, hh, -hw, hh)
+                val dst = floatArrayOf(
+                    -hw + dxT, -hh + dyL,
+                    hw - dxT, -hh - dyL,
+                    hw + dxT, hh + dyL,
+                    -hw - dxT, hh - dyL
+                )
+                val persp = android.graphics.Matrix()
+                if (persp.setPolyToPoly(src, 0, dst, 0, 4)) {
+                    canvas.concat(persp)
+                }
+            }
+        }
+
         val layouts = lines.mapIndexed { i, line ->
             val baseline = -contentH / 2f - fm.ascent + i * lineH
             val x0 = when (box.align) {

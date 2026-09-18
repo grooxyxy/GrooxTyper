@@ -38,7 +38,9 @@ data class TextStylePreset(
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
     var glow: TextGlowSpec? = null,
-    var bevel: TextBevelSpec? = null
+    var bevel: TextBevelSpec? = null,
+    var perspX: Float = 0f,
+    var perspY: Float = 0f
 ) {
     fun applyTo(box: TextBox, typeface: Typeface?) {
         box.fontName = fontName
@@ -64,6 +66,8 @@ data class TextStylePreset(
         box.strikethrough = strikethrough
         box.glow = glow?.copy()
         box.bevel = bevel?.copy()
+        box.perspX = perspX
+        box.perspY = perspY
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -117,6 +121,8 @@ data class TextStylePreset(
                 put("opacity", bevel!!.opacity.toDouble())
             })
         }
+        put("perspX", perspX.toDouble())
+        put("perspY", perspY.toDouble())
     }
 
     companion object {
@@ -144,7 +150,9 @@ data class TextStylePreset(
             underline = box.underline,
             strikethrough = box.strikethrough,
             glow = box.glow?.copy(),
-            bevel = box.bevel?.copy()
+            bevel = box.bevel?.copy(),
+            perspX = box.perspX,
+            perspY = box.perspY
         )
 
         fun fromJson(o: JSONObject): TextStylePreset {
@@ -210,7 +218,9 @@ data class TextStylePreset(
                         size = b.optDouble("size", 2.0).toFloat(),
                         opacity = b.optDouble("opacity", 0.8).toFloat()
                     )
-                }
+                },
+                perspX = o.optDouble("perspX", 0.0).toFloat().coerceIn(-1f, 1f),
+                perspY = o.optDouble("perspY", 0.0).toFloat().coerceIn(-1f, 1f)
             )
         }
     }

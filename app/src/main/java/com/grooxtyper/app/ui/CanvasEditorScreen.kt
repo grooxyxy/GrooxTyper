@@ -1241,9 +1241,11 @@ fun CanvasEditorScreen(
                 template?.let { box.applyStyleFrom(it) }
                 box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
                 if (scriptAutoTypeset) {
-                    // Auto Typesetting: abaikan rules; ukuran font, line break,
-                    // alignment, padding & posisi dihitung otomatis per bubble.
-                    com.grooxtyper.app.model.AutoTypesetter.fit(box, inset)
+                    // Auto Typesetting + Style Rules: prefix menentukan font,
+                    // warna & efek; ukuran, wrap & posisi tetap dihitung otomatis.
+                    val styled = applyAllStylesTo(box)
+                    if (!styled) box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
+                    com.grooxtyper.app.model.AutoTypesetter.fit(box, inset, keepStyle = styled)
                 } else {
                     applyAllStylesTo(box)
                     box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
@@ -1277,7 +1279,9 @@ fun CanvasEditorScreen(
             template?.let { box.applyStyleFrom(it) }
             box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
             if (scriptAutoTypeset) {
-                com.grooxtyper.app.model.AutoTypesetter.fit(box, bounds)
+                val styled = applyAllStylesTo(box)
+                if (!styled) box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
+                com.grooxtyper.app.model.AutoTypesetter.fit(box, bounds, keepStyle = styled)
             } else {
                 applyAllStylesTo(box)
                 box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())

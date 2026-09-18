@@ -153,6 +153,8 @@ fun TextEditorPanel(
     var boxW by remember(box.id, styleVersion) { mutableFloatStateOf(box.boxWidth ?: 600f) }
 
     var textOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.textOpacity) }
+    var perspX by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspX) }
+    var perspY by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspY) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
     var underline by remember(box.id, styleVersion) { mutableStateOf(box.underline) }
     var strike by remember(box.id, styleVersion) { mutableStateOf(box.strikethrough) }
@@ -452,6 +454,10 @@ fun TextEditorPanel(
                         onScaleX = { scaleX = it; box.textScaleX = it; push() },
                         textOpacity = textOpacity,
                         onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
+                        perspX = perspX,
+                        onPerspX = { perspX = it; box.perspX = it; push() },
+                        perspY = perspY,
+                        onPerspY = { perspY = it; box.perspY = it; push() },
                         uppercase = uppercase,
                         onUppercase = { uppercase = it; box.uppercase = it; push() },
                         underline = underline,
@@ -817,7 +823,11 @@ private fun EffectTab(
     bevelSize: Float,
     onBevelSize: (Float) -> Unit,
     bevelOpacity: Float,
-    onBevelOpacity: (Float) -> Unit
+    onBevelOpacity: (Float) -> Unit,
+    perspX: Float,
+    onPerspX: (Float) -> Unit,
+    perspY: Float,
+    onPerspY: (Float) -> Unit
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
@@ -894,6 +904,20 @@ private fun EffectTab(
     Slider(
         value = textOpacity, onValueChange = onTextOpacity,
         valueRange = 0.1f..1f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
+    Text("Perspektif", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    Text("Miringkan blok teks ala free-transform (keystone)", color = Color.Gray, fontSize = 11.sp)
+    Text("Atas–bawah ${(perspX * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+    Slider(
+        value = perspX, onValueChange = onPerspX,
+        valueRange = -1f..1f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
+    Text("Kiri–kanan ${(perspY * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+    Slider(
+        value = perspY, onValueChange = onPerspY,
+        valueRange = -1f..1f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
     Row(verticalAlignment = Alignment.CenterVertically) {

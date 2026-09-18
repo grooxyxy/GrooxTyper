@@ -86,6 +86,12 @@ class TextBox(
     // dan manual lewat slider "Sempitkan teks" di panel teks.
     var textScaleX: Float = 1f,
     var rotation: Float = 0f,
+    // Perspektif teks (keystone ala free-transform): -1f..1f, 0 = datar.
+    // perspX > 0: tepi atas menyempit (teks "menjauh" ke atas),
+    // perspX < 0: tepi bawah menyempit.
+    // perspY > 0: tepi kiri menyempit, perspY < 0: tepi kanan menyempit.
+    var perspX: Float = 0f,
+    var perspY: Float = 0f,
     var fontName: String = "Default Bold",
     var typeface: Typeface = Typeface.DEFAULT_BOLD,
     /**
@@ -237,6 +243,8 @@ class TextBox(
         glow = o.glow?.copy()
         bevel = o.bevel?.copy()
         textScaleX = o.textScaleX
+        perspX = o.perspX
+        perspY = o.perspY
         fontName = o.fontName
         typeface = o.typeface
     }
@@ -375,10 +383,14 @@ class TextBox(
             (s?.spread ?: 0f) * scale + glowPad + shadowOffset
     }
 
+    /** Ekspansi bounds akibat distorsi perspektif (px kanvas). */
+    fun perspectiveExtra(w: Float, h: Float): Float =
+        (kotlin.math.abs(perspX) * w + kotlin.math.abs(perspY) * h) / 2f
+
     /** Bounds lengkap termasuk padding outline/shadow, dalam px kanvas. */
     fun getBounds(): RectF {
         val (w, h) = contentSize()
-        val pad = boundsPad()
+        val pad = boundsPad() + perspectiveExtra(w, h)
         return RectF(
             position.x - w / 2f - pad,
             position.y - h / 2f - pad,
@@ -390,7 +402,7 @@ class TextBox(
     /** Bounds visual (glif + efek, tanpa margin sentuh) untuk verifikasi muat. */
     fun getVisualBounds(): RectF {
         val (w, h) = contentSize()
-        val pad = visualPad()
+        val pad = visualPad() + perspectiveExtra(w, h)
         // Rotasi sudah 0 setelah fitToRect; bila user memutar manual, hitung
         // AABB agar pemeriksaan tetap konservatif (tidak under-estimate).
         if (rotation == 0f) {
@@ -540,6 +552,8 @@ class TextBox(
         scale = scale,
         textScaleX = textScaleX,
         rotation = rotation,
+        perspX = perspX,
+        perspY = perspY,
         fontName = fontName,
         typeface = typeface,
         boxWidth = boxWidth
@@ -573,6 +587,8 @@ class TextBox(
         scale = o.scale
         textScaleX = o.textScaleX
         rotation = o.rotation
+        perspX = o.perspX
+        perspY = o.perspY
         fontName = o.fontName
         typeface = o.typeface
         boxWidth = o.boxWidth
@@ -606,6 +622,8 @@ class TextBox(
             scale == o.scale &&
             textScaleX == o.textScaleX &&
             rotation == o.rotation &&
+            perspX == o.perspX &&
+            perspY == o.perspY &&
             fontName == o.fontName &&
             boxWidth == o.boxWidth
     }
@@ -679,8 +697,10 @@ class TextBox(
             }
             put("scale", scale.toDouble())
             put("textScaleX", textScaleX.toDouble())
-            put("rotation", rotation.toDouble())
-            put("fontName", fontName)
+        put("rotation", rotation.toDouble())
+        put("perspX", perspX.toDouble())
+        put("perspY", perspY.toDouble())
+        put("fontName", fontName)
             boxWidth?.let { put("boxWidth", it.toDouble()) }
         }
 
@@ -755,6 +775,8 @@ class TextBox(
                 scale = o.optDouble("scale", 1.0).toFloat(),
                 textScaleX = o.optDouble("textScaleX", 1.0).toFloat(),
                 rotation = o.optDouble("rotation", 0.0).toFloat(),
+                perspX = o.optDouble("perspX", 0.0).toFloat().coerceIn(-1f, 1f),
+                perspY = o.optDouble("perspY", 0.0).toFloat().coerceIn(-1f, 1f),
                 fontName = fontName,
                 typeface = runCatching { typefaceFor(fontName) }.getOrDefault(Typeface.DEFAULT_BOLD),
                 boxWidth = if (o.has("boxWidth")) o.optDouble("boxWidth").toFloat() else null

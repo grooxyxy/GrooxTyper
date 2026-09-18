@@ -266,20 +266,14 @@ private fun WheelCanvas(
         val left = center.x - geom.half
         val top = center.y - geom.half
 
-        // Cincin hue.
-        val sweep = android.graphics.SweepGradient(
-            center.x, center.y,
-            intArrayOf(
-                android.graphics.Color.RED,
-                android.graphics.Color.YELLOW,
-                android.graphics.Color.GREEN,
-                android.graphics.Color.CYAN,
-                android.graphics.Color.BLUE,
-                android.graphics.Color.MAGENTA,
-                android.graphics.Color.RED
-            ),
-            null
-        )
+        // Cincin hue: gradasi HSV per 10° diselaraskan TEPAT dengan
+        // wheelPick() (0° = kanan, searah jarum jam) sehingga warna yang
+        // disentuh selalu sama dengan warna yang terpilih — tanpa lompatan.
+        val hueStops = FloatArray(37) { i -> i / 36f }
+        val hueColors = IntArray(37) { i ->
+            android.graphics.Color.HSVToColor(floatArrayOf(i * 10f, 1f, 1f))
+        }
+        val sweep = android.graphics.SweepGradient(center.x, center.y, hueColors, hueStops)
         val ringPaint = android.graphics.Paint().apply {
             isAntiAlias = true
             shader = sweep
@@ -332,7 +326,14 @@ private data class WheelGeom(
     val half: Float
 )
 
-/** Terjemahkan sentuhan roda menjadi HSV (cincin = hue, kotak = sat/val). */
+/**
+ * Terjemahkan sentuhan roda menjadi HSV (cincin = hue, kotak = sat/val).
+ * Dead-zone antar zona: sentuhan di celah (radius antara tepi luar kotak
+ * dan tepi dalam cincin) diabaikan agar saat menggeser saturasi di kotak
+ * ke arah tepi, hue tidak ikut berubah (bug lompat ke merah).
+ * Cincin dipetakan dengan sistem clamp agar hue mengunci lancar ke nilai
+ * terdekat tepat di sekitar ring tanpa pernah melompat ke 0°.
+ */
 private fun wheelPick(
     pos: Offset,
     geom: WheelGeom,
@@ -342,13 +343,27 @@ private fun wheelPick(
     val dx = pos.x - geom.radius
     val dy = pos.y - geom.radius
     val dist = hypot(dx, dy)
-    if (dist > geom.innerR) {
-        var hue = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
-        if (hue < 0) hue += 360f
-        onPick(hue, hsv[1], hsv[2])
-    } else {
-        val s = ((pos.x - (geom.radius - geom.half)) / (geom.half * 2)).coerceIn(0f, 1f)
-        val v = (1f - (pos.y - (geom.radius - geom.half)) / (geom.half * 2)).coerceIn(0f, 1f)
-        onPick(hsv[0], s, v)
+    val ringInner = geom.radius - geom.ringW
+    // Zona: > ringInner = cincin hue; <= innerR*0.98 = kotak SV;
+    // di antaranya = dead-zone (tidak melakukan apa-apa).
+    when {
+        dist > ringInner -> {
+            // Sudut atan2: 0° = kanan, searah jarum jam (y ke bawah).
+            // SweepGradient juga searah jarum jam dari kanan -> cocok 1:1.
+            var hue = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+            if (hue < 0) hue += 360f
+            // Clamp halus agar tidak wrap merah<->magenta: hue tetap 0..359.9
+            // (tepat 360 dibawa ke 359.9 agar tidak "kelempar" ke merah).
+            if (hue >= 360f) hue = 359.9f
+            onPick(hue, hsv[1], hsv[2])
+        }
+        dist <= geom.innerR * 0.98f -> {
+            val s = ((pos.x - (geom.radius - geom.half)) / (geom.half * 2)).coerceIn(0f, 1f)
+            val v = (1f - (pos.y - (geom.radius - geom.half)) / (geom.half * 2)).coerceIn(0f, 1f)
+            onPick(hsv[0], s, v)
+        }
+        else -> {
+            // Dead-zone: abaikan supaya gesture di celah tidak merusak pilihan.
+        }
     }
 }

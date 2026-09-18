@@ -6,7 +6,10 @@ import androidx.compose.ui.geometry.Offset
 /**
  * Auto Typesetting: mode kedua penempatan teks script.
  * Menghitung otomatis ukuran font, wrap baris, alignment, padding,
- * dan posisi agar teks pas di dalam bubble — tanpa perlu style rules.
+ * dan posisi agar teks pas di dalam bubble. Bila dipanggil dengan
+ * [fit] keepStyle = true, style dari Style Rules (font, warna, efek,
+ * alignment) dipertahankan dan hanya geometri (ukuran/wrap/posisi)
+ * yang dihitung otomatis.
  *
  * Dipanggil per bubble: [fit] menempatkan teks ke rect bubble dengan
  * heuristik dua sisi (persegi vs lebar-pendek ala manga) dan skor
@@ -21,8 +24,9 @@ object AutoTypesetter {
     /**
      * Terapkan auto typesetting ke [box] agar muat di [bubbleRect].
      * Mengubah fontSize, boxWidth (paragraph wrap), align, dan position.
+     * [keepStyle] = true: jangan sentuh alignment (milik Style Rules).
      */
-    fun fit(box: TextBox, bubbleRect: RectF) {
+    fun fit(box: TextBox, bubbleRect: RectF, keepStyle: Boolean = false) {
         if (bubbleRect.width() <= 8f || bubbleRect.height() <= 8f) return
         box.position = Offset(bubbleRect.centerX(), bubbleRect.centerY())
         box.rotation = 0f
@@ -39,11 +43,14 @@ object AutoTypesetter {
         }
 
         // Alignment mengikuti isi: teks pendek center, teks multi-baris
-        // panjang lebih nyaman dibaca rata kiri.
-        box.align = if (box.text.length > 40 && box.text.contains(' ')) {
-            TextAlignMode.LEFT
-        } else {
-            TextAlignMode.CENTER
+        // panjang lebih nyaman dibaca rata kiri. Dilewati bila keepStyle
+        // (alignment sudah ditentukan Style Rules).
+        if (!keepStyle) {
+            box.align = if (box.text.length > 40 && box.text.contains(' ')) {
+                TextAlignMode.LEFT
+            } else {
+                TextAlignMode.CENTER
+            }
         }
 
         val maxFont = (usableH * MAX_FONT_RATIO).coerceAtLeast(18f)
