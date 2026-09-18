@@ -93,3 +93,16 @@ Architects Daughter, Indie Flower, Shadows Into Light, Titan One,
 RocknRoll One (mendukung kana/kanji), Short Stack, Sniglet.
 Sumber: repo `google/fonts` (masing-masing `ofl/<nama>/`). Font custom
 `.ttf`/`.otf` tetap bisa diimpor manual dan muncul setelah font bawaan.
+
+## Mode Script: Style Rules vs Auto Typesetting
+
+Panel **Script → Bubble** kini punya dua mode penempatan yang bisa dipilih user:
+
+- **Style Rules** (bawaan): prefix baris script (mis. `[SFX]`, `() : `) memilih
+  preset style dari Style Manager, lalu teks di-fit ke bubble via `fitToRect`.
+- **Auto Typesetting**: tanpa perlu rules. Untuk tiap bubble dihitung otomatis
+  ukuran font, line break (wrap paragraph), alignment (teks panjang rata kiri,
+  pendek center), padding 12%, dan posisi tengah agar teks pas di bubble.
+  Engine membandingkan dua kandidat wrap (penuh vs 0.8x lebar bubble) dengan
+  skor keterbacaan (font terbesar, penalti baris terakhir terlalu pendek).
+  Implementasi: `app/src/main/java/com/grooxtyper/app/model/AutoTypesetter.kt`.
