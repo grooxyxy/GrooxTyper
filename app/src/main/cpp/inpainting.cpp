@@ -307,9 +307,9 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintNS(
     int iters = iterations;
     if (iters <= 0) {
         // Adaptif luas: cukup untuk konvergensi, dibatasi agar interaktif.
-        iters = (int)(order.size() / 20000) + 6;
-        if (iters < 6) iters = 6;
-        if (iters > 40) iters = 40;
+        iters = (int)(order.size() / 30000) + 4;
+        if (iters < 4) iters = 4;
+        if (iters > 24) iters = 24;
     }
     if (iters > 200) iters = 200;
 

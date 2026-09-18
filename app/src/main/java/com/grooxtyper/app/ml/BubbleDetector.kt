@@ -119,7 +119,8 @@ class BubbleDetector {
     suspend fun detect(
         bitmap: Bitmap,
         model: BubbleModel,
-        appContext: Context? = null
+        appContext: Context? = null,
+        onProgress: ((Float) -> Unit)? = null
     ): List<DetectedBubble> =
         withContext(Dispatchers.Default) {
             try {
@@ -138,7 +139,7 @@ class BubbleDetector {
                 val shortSide = min(bitmap.width, bitmap.height).coerceAtLeast(1)
                 val aspect = longSide / shortSide.toFloat()
                 if (aspect >= 3f || longSide >= 2000) {
-                    return@withContext detectTallOnnx(bitmap, session)
+                    return@withContext detectTallOnnx(bitmap, session, onProgress)
                 }
                 val dets = runOnnx(session, bitmap).filter { it.classId == 0 }
                 nms(dets, IOU_THRESH)
@@ -553,7 +554,7 @@ class BubbleDetector {
      * pendek, min 512px, maks 1024px) ber-overlap 30%, inferensi per tile,
      * geser koordinat, lalu NMS global untuk buang duplikat di overlap.
      */
-    private suspend fun detectTallOnnx(bitmap: Bitmap, session: OrtSession): List<DetectedBubble> {
+    private suspend fun detectTallOnnx(bitmap: Bitmap, session: OrtSession, onProgress: ((Float) -> Unit)? = null): List<DetectedBubble> {
         val w = bitmap.width
         val h = bitmap.height
         if (w <= 0 || h <= 0) return emptyList()
@@ -591,8 +592,12 @@ class BubbleDetector {
                     runCatching { crop.recycle() }
                 }
             }
-            if (end >= longSide) break
+            if (end >= longSide) {
+                onProgress?.invoke(1f)
+                break
+            }
             offset += step
+            onProgress?.invoke((end / longSide.toFloat()).coerceIn(0f, 1f))
             if (offset >= longSide) break
         }
         return nms(out, IOU_THRESH)

@@ -52,6 +52,10 @@ import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
@@ -417,6 +421,18 @@ fun CanvasEditorScreen(
     // LaunchedEffect/imagePicker di bawah bisa baca tanpa unresolved reference).
     var isHealing by remember { mutableStateOf(false) }
     var healError by remember { mutableStateOf<String?>(null) }
+    // Fraksi progres 0..1 (-1f = tak tentu) + tips bergilir saat sibuk.
+    var busyFrac by remember { mutableFloatStateOf(-1f) }
+    var busyTipIdx by remember { mutableIntStateOf(0) }
+    val busyTips = remember {
+        listOf(
+            "Tips: zoom-in 100–200% agar sapuan presisi",
+            "Tips: sapuan pendek lebih cepat daripada satu sapuan panjang",
+            "Tips: mode Texture menjaga screentone latar",
+            "Tips: hasil heal bisa di-undo kapan pun",
+            "Tips: deteksi bubble paling akurat di area terang"
+        )
+    }
     var isImportingEditor by remember { mutableStateOf(false) }
     var isMLInpainting by remember { mutableStateOf(false) }
     // Flatten bersifat destruktif (teks jadi piksel, tak bisa diedit lagi)
@@ -676,6 +692,9 @@ fun CanvasEditorScreen(
 
     var selectedTextBox by remember { mutableStateOf<TextBox?>(null) }
     var textHandleMode by remember { mutableStateOf(TextHandle.NONE) }
+    // Joystick teks: riwayat undo digabung per rentetan ketuk (<1.5 dtk).
+    var dpadBaselineBoxId by remember { mutableStateOf<String?>(null) }
+    var dpadLastMs by remember { mutableStateOf(0L) }
     // Image layer terpilih + mode handle (cermin TextBox).
     var selectedImageId by remember { mutableStateOf<String?>(null) }
     var imageHandleMode by remember { mutableStateOf(ImageHandleMode.NONE) }
@@ -942,9 +961,14 @@ fun CanvasEditorScreen(
             }
             bubbleDetecting = true
             healError = null
+            busyFrac = 0f
             try {
                 // Jalankan deteksi bubble heuristik on-device.
-                val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext)
+                val prog: (Float) -> Unit = { f ->
+                    val c = f.coerceIn(0f, 1f)
+                    if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
+                }
+                val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext, prog)
                 detectedBubbles = found
                 if (found.isEmpty()) {
                     val info = bubbleDetector.lastOutputDesc?.let { " ($it)" } ?: ""
@@ -959,6 +983,7 @@ fun CanvasEditorScreen(
             } finally {
                 runCatching { snap.recycle() }
                 bubbleDetecting = false
+                busyFrac = -1f
             }
             showBubbleOverlay = true
             refreshComposite()
@@ -1255,6 +1280,22 @@ fun CanvasEditorScreen(
     fun textLayerIdOf(box: TextBox): String =
         layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
 
+    /** Langkah joystick adaptif zoom (tampil ~6px di layar). */
+    fun dpadStep(): Float = (6f / viewState.scale).coerceIn(2f, 48f)
+
+    /** Geser teks terpilih via joystick (undo digabung per rentetan). */
+    fun nudgeSelectedText(dx: Float, dy: Float) {
+        val box = selectedTextBox ?: return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (dpadBaselineBoxId != box.id || now - dpadLastMs > 1500L) {
+            undoRedoManager.pushTextBox(textLayerIdOf(box), box.copy())
+            dpadBaselineBoxId = box.id
+        }
+        dpadLastMs = now
+        box.position = Offset(box.position.x + dx, box.position.y + dy)
+        refreshComposite()
+    }
+
 
     fun flattenSelectedText() {
         val box = selectedTextBox ?: return
@@ -1470,11 +1511,17 @@ fun CanvasEditorScreen(
     fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer) {
         isHealing = true
         healError = null
+        busyFrac = 0f
         scope.launch(Dispatchers.Default) {
             var ok = false
             var err: String? = null
+            // Lapor progres PatchMatch (dibatasi agar tak spam recompose).
+            val prog: (Float) -> Unit = { f ->
+                val c = f.coerceIn(0f, 1f)
+                if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
+            }
             try {
-                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty))
+                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), prog)
                 if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
                 else {
                     targetLayer.markDirty()
@@ -1505,6 +1552,7 @@ fun CanvasEditorScreen(
                         pendingHealDirty = null
                         pendingHealLayerId = null
                         isHealing = false
+                        busyFrac = -1f
                         if (msg != null) healError = msg
                     }
                     refreshComposite()
@@ -2732,6 +2780,15 @@ fun CanvasEditorScreen(
             isSavingExit -> "Menyimpan project…"
             else -> null
         }
+        // Tips bergilir selama sibuk (3 detik per tips).
+        val isBusyNow = busyNote != null
+        LaunchedEffect(isBusyNow) {
+            if (!isBusyNow) return@LaunchedEffect
+            while (true) {
+                delay(3000)
+                busyTipIdx = (busyTipIdx + 1) % busyTips.size
+            }
+        }
         if (busyNote != null || healError != null) {
             Column(
                 modifier = Modifier
@@ -2744,11 +2801,30 @@ fun CanvasEditorScreen(
                 if (busyNote != null) {
                     Text(busyNote, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth(),
-                        color = Accent,
-                        trackColor = Color(0xFF38383A)
-                    )
+                    if (busyFrac >= 0f) {
+                        LinearProgressIndicator(
+                            progress = busyFrac.coerceIn(0f, 1f),
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Accent,
+                            trackColor = Color(0xFF38383A)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "${(busyFrac.coerceIn(0f, 1f) * 100).toInt()}% • ${busyTips[busyTipIdx % busyTips.size]}",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Accent,
+                            trackColor = Color(0xFF38383A)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            busyTips[busyTipIdx % busyTips.size],
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                    }
                 }
                 if (healError != null) {
                     if (busyNote != null) Spacer(modifier = Modifier.height(4.dp))
@@ -3093,6 +3169,27 @@ fun CanvasEditorScreen(
                     refreshComposite()
                 }, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.RotateRight, contentDescription = "Putar 15°", tint = Color.White)
+                }
+                // Joystick: geser teks presisi tanpa jari menutupi kanvas.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Row {
+                        Spacer(modifier = Modifier.size(26.dp))
+                        IconButton(onClick = { nudgeSelectedText(0f, -dpadStep()) }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Atas", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                        Spacer(modifier = Modifier.size(26.dp))
+                    }
+                    Row {
+                        IconButton(onClick = { nudgeSelectedText(-dpadStep(), 0f) }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Default.KeyboardArrowLeft, contentDescription = "Kiri", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = { nudgeSelectedText(0f, dpadStep()) }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Bawah", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = { nudgeSelectedText(dpadStep(), 0f) }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Default.KeyboardArrowRight, contentDescription = "Kanan", tint = Color.White, modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
                 IconButton(onClick = { deleteSelectedText() }, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Delete, contentDescription = "Hapus teks", tint = Color.Red)

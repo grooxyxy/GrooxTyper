@@ -60,7 +60,7 @@ object PatchMatchInpainter {
      * Implementasi sekarang multi-scale + guide + constraint (fix noise).
      */
     /** Mode tunggal heal: manga-seamless (garis + screentone). Tanpa opsi. */
-    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.MANGA_SEAMLESS): Boolean {
+    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.MANGA_SEAMLESS, onProgress: ((Float) -> Unit)? = null): Boolean {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return false
@@ -112,12 +112,16 @@ object PatchMatchInpainter {
             return false
         }
 
-        // Guard OOM: bila ROI raksasa (>2M) downscale 0.5 dulu (seperti sebelumnya)
+        // Guard OOM berlapis: >1MP → 0.33, >0.5MP → 0.5 (heal besar tetap cepat).
         var scale = 1f
         var workW = rw
         var workH = rh
         if (rw.toLong() * rh > 1000000L) {
             scale = 0.33f
+            workW = max(16, (rw * scale).toInt())
+            workH = max(16, (rh * scale).toInt())
+        } else if (rw.toLong() * rh > 500000L) {
+            scale = 0.5f
             workW = max(16, (rw * scale).toInt())
             workH = max(16, (rh * scale).toInt())
         }
@@ -139,9 +143,9 @@ object PatchMatchInpainter {
             // Panggil pipeline multi-scale Vasilias yang anti-noise
             val result = if (feather) {
                 // Feather true -> gunakan pipeline lengkap dengan boundary feather
-                processWithMode(srcCrop, region, mode)
+                processWithMode(srcCrop, region, mode, onProgress)
             } else {
-                processWithModeNoFeather(srcCrop, region, mode)
+                processWithModeNoFeather(srcCrop, region, mode, onProgress)
             }
             // Kembalikan ke src skala penuh
             val toBlit = if (scale != 1f) {
@@ -190,24 +194,24 @@ object PatchMatchInpainter {
 
     private fun isMaskPixel(p: Int): Boolean = (p ushr 24) > 30
 
-    private fun processWithMode(srcCrop: Bitmap, region: Region, mode: HealMode): Bitmap {
+    private fun processWithMode(srcCrop: Bitmap, region: Region, mode: HealMode, onProgress: ((Float) -> Unit)? = null): Bitmap {
         // Delegasikan ke Vasilias pipeline dengan penyesuaian HealMode
         // HealMode memengaruhi gradWeight via patchDistance yang kita modifikasi
         // untuk STRUCTURE/TEXTURE. Kita simpan mode global untuk patchDistance.
         currentHealMode = mode
-        val res = processInternal(srcCrop, region)
+        val res = processInternal(srcCrop, region, onProgress)
         currentHealMode = HealMode.CONTENT_AWARE
         return res
     }
 
-    private fun processWithModeNoFeather(srcCrop: Bitmap, region: Region, mode: HealMode): Bitmap {
+    private fun processWithModeNoFeather(srcCrop: Bitmap, region: Region, mode: HealMode, onProgress: ((Float) -> Unit)? = null): Bitmap {
         // Tanpa feather: tetap pakai pipeline tapi matikan feather di akhir
         // Sederhana: panggil proses lalu tanpa feather (kita akan skip featherBoundary)
         currentHealMode = mode
         // Untuk no-feather, kita set flag sementara
         val prevFeather = featherEnabled
         featherEnabled = false
-        val res = processInternal(srcCrop, region)
+        val res = processInternal(srcCrop, region, onProgress)
         featherEnabled = prevFeather
         currentHealMode = HealMode.CONTENT_AWARE
         return res
@@ -234,7 +238,7 @@ object PatchMatchInpainter {
         }
 
     // ── Vasilias pipeline (disalin, sedikit adaptasi) ─────────────────────
-    private fun processInternal(bitmap: Bitmap, region: Region): Bitmap {
+    private fun processInternal(bitmap: Bitmap, region: Region, onProgress: ((Float) -> Unit)? = null): Bitmap {
         val w = bitmap.width
         val h = bitmap.height
         val b = region.bounds
@@ -253,7 +257,7 @@ object PatchMatchInpainter {
         val mask = buildMask(localRegion, rw, rh)
         if (!mask.any { it }) return bitmap.copy(Bitmap.Config.ARGB_8888, false)
 
-        val out = multiScaleInpaint(pixels, mask, rw, rh, null)
+        val out = multiScaleInpaint(pixels, mask, rw, rh, onProgress)
         val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
         result.setPixels(out, 0, rw, rx, ry, rw, rh)
         return result

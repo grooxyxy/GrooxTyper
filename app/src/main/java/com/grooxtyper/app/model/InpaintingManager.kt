@@ -352,7 +352,7 @@ class InpaintingManager {
      * Pad adaptif 96 (dari Vasilias CONTEXT_PAD) agar patch punya sumber luas
      * dan tidak noise.
      */
-    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF): Boolean {
+    fun inpaintHealDirty(src: Bitmap, mask: Bitmap, dirty: android.graphics.RectF, onProgress: ((Float) -> Unit)? = null): Boolean {
         val t0 = android.os.SystemClock.elapsedRealtime()
         try {
             val l = dirty.left.toInt().coerceIn(0, src.width - 1)
@@ -446,7 +446,7 @@ class InpaintingManager {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                     try {
-                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = HealMode.PRESERVE_TEXTURE)
+                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = HealMode.PRESERVE_TEXTURE, onProgress = onProgress)
                         if (!ok) {
                             android.util.Log.w("Inpaint", "heal exemplar skip, fallback Telea")
                         } else {
@@ -470,7 +470,7 @@ class InpaintingManager {
                 val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                 try {
                     val (argb, tmp) = ensureArgbMask(maskCrop)
-                    try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 4.0) }
+                    try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 3.0) }
                     finally { if (tmp) runCatching { argb.recycle() } }
                     android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
                     android.util.Log.i("Inpaint", "heal Telea ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
