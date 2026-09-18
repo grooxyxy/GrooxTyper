@@ -153,7 +153,10 @@ class InpaintingManager {
         TEXTURE("Texture")
     }
 
-    var healMethod: HealMethod by mutableStateOf(HealMethod.STRUKTUR)
+    // Default TEXTURE: latar manga/webtoon umumnya bertexture/gradasi, dan
+    // metode difusi (Telea/NS) me-blur keduanya — exemplar menempel patch
+    // asli sehingga texture + gradasi lestari.
+    var healMethod: HealMethod by mutableStateOf(HealMethod.TEXTURE)
 
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
     // Heal brush ala Photoshop tapi lebih bagus untuk manga: pilih strategi
@@ -436,7 +439,9 @@ class InpaintingManager {
             // Heal TEXTURE: exemplar PatchMatch berprioritas Criminisi menempel
             // texture asli via copy patch (tanpa blur difusi) agar screentone /
             // grain manga/webtoon lestari; crop kecil tetap Telea instan.
-            if (healMethod == HealMethod.TEXTURE && max(cw, ch) >= 256) {
+            // TEXTURE berlaku semua ukuran (difusi blur merusak texture/gradasi
+            // bahkan di crop kecil); Telea hanya fallback bila exemplar skip.
+            if (healMethod == HealMethod.TEXTURE) {
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)

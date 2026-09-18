@@ -57,7 +57,7 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
    blur live dibatasi 140k px, steps di-cap 32).
 3. Sapuan cepat tidak patah: interpolasi luar max 24 titik + inner 32 steps,
    stabilizer lokal (tanpa recompose storm), clip ke dirty-rect segmen.
-4. Heal brush 2 opsi tanpa model (bukan Telea): STRUKTUR via Navier-Stokes transport isophote (garis tersambung) atau TEXTURE via exemplar PatchMatch (screentone lestari): sapu untuk kumpulkan
+4. Heal brush 2 opsi tanpa model: TEXTURE via exemplar PatchMatch menempel texture/gradasi asli (default, cocok latar manga/webtoon) atau STRUKTUR via Navier-Stokes transport isophote (garis tersambung): sapu untuk kumpulkan
    mask → commit crop dirty + antrean conflate bila sibuk.
    Inpaint Seleksi memakai MI-GAN on-device (`models/mg.onnx`, MIT,
    Picsart AI Research) pada crop kecil + fallback Telea.
