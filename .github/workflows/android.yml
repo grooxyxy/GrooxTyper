@@ -30,6 +30,27 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
 
+      - name: Cache pip (ultralytics)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-ultralytics-v1
+
+      - name: Download & export bubble model (MangaLens YOLO11n-seg -> ONNX, <50MB)
+        run: |
+          pip install --quiet ultralytics
+          curl -sL --retry 3 -o /tmp/mangalens.pt "https://huggingface.co/huyvux3005/manga109-segmentation-bubble/resolve/main/best.pt"
+          ls -la /tmp/mangalens.pt
+          python3 -c "
+          from ultralytics import YOLO
+          m = YOLO('/tmp/mangalens.pt')
+          print('exported:', m.export(format='onnx', imgsz=640, dynamic=False, opset=17))
+          "
+          mv /tmp/mangalens.onnx app/src/main/assets/models/bd.onnx
+          SIZE=$(stat -c%s app/src/main/assets/models/bd.onnx)
+          echo "bubble model size: $SIZE bytes"
+          test "$SIZE" -lt 52428800
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 

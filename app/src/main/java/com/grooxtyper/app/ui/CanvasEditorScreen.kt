@@ -746,9 +746,15 @@ fun CanvasEditorScreen(
             // ALPHA_8 dulu (11,5MB untuk 720x16000, cukup untuk mask biner) →
             // heal brush terasa instan tanpa jank alokasi 46MB + bebas OOM.
             // ARGB_8888 hanya dicoba bila ALPHA_8 gagal (perangkat aneh).
+            // ARGB_8888 WAJIB untuk mask heal. Dulu pakai ALPHA_8 (hemat memori),
+            // TAPI getPixels() di ALPHA_8 tidak reliable di banyak device (nilai
+            // alpha terbaca salah/opaque semua) → seluruh crop terbaca sebagai
+            // lubang penuh: heal Struktur jadi no-op (tak ada piksel sumber) dan
+            // heal Tekstur mengisi kotak penuh warna rata-rata (kotak putih).
+            // Native Telea/NS/pyramid juga mensyaratkan mask RGBA_8888.
             val isHugeMask = canvasWidth.toLong() * canvasHeight > 4_000_000L
             try {
-                bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ALPHA_8)
+                bmp = Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888)
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
                 runCatching { System.gc(); Thread.sleep(50) }
@@ -771,7 +777,8 @@ fun CanvasEditorScreen(
                 e.printStackTrace()
                 return null
             }
-            // Canvas tetap bisa gambar putih di ALPHA_8 (alpha=255)
+            // Gambar putih di ARGB → alpha 255, terbaca konsisten oleh
+            // getPixels() dan native RGBA_8888.
             cv = android.graphics.Canvas(bmp!!)
             inpaintMask = bmp
             inpaintMaskCanvas = cv
@@ -2592,6 +2599,15 @@ fun CanvasEditorScreen(
                         ActiveTool.INPAINT -> Color(0xFFFF4081)
                         else -> Color.White
                     }
+                    // Cincin ganda: garis gelap tipis di luar warna kursor agar
+                    // kursor lingkaran TERLIHAT di latar putih (dulu putih polos
+                    // = tak terlihat di halaman manga) sekaligus di latar gelap.
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.85f),
+                        radius = cursorRadius.coerceAtLeast(6f),
+                        center = cursorPosition!!,
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 5f)
+                    )
                     drawCircle(
                         color = col,
                         radius = cursorRadius.coerceAtLeast(6f),

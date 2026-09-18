@@ -33,7 +33,7 @@ enum class BubbleModel(
 ) {
     BUBBLE(
         "Bubble Detector • on-device",
-        "Inferensi nyata ONNX Runtime, input 640x640",
+        "MangaLens YOLO11n-seg (mAP50 99.1) via ONNX Runtime, input 640x640",
         "models/bd.onnx"
     )
 }
@@ -56,8 +56,11 @@ object YoloBubbleModel {
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model aktif: YOLO26-nano detect end-to-end (NMS-free), 1 kelas text,
- *   input 640x640, output tunggal (1,300,6) = x1,y1,x2,y2,score,cls tanpa mask.
+ * - Model aktif: MangaLens YOLO11n-seg (Apache-2.0, huyvux3005/manga109-
+ *   segmentation-bubble, mAP50 box 99.1% / mask 99.1%), 1 kelas bubble,
+ *   input 640x640, output (1,37,8400) + protos (1,32,160,160) → box + mask.
+ *   Model (~13MB ONNX) di-download & di-export saat build di GitHub Actions,
+ *   tidak di-commit ke repo (batas <50MB terpenuhi).
  * - Legacy: YOLO seg 1-class, output (1,37,8400) + protos (1,32,160,160)
  *   dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
