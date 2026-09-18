@@ -146,16 +146,18 @@ class InpaintingManager {
         }
     }
 
-    /** Dua opsi heal brush tanpa model (bukan Telea): struktur (Navier-Stokes)
-     * vs texture (exemplar PatchMatch). */
+    /** Dua opsi heal brush tanpa model: struktur (Navier-Stokes isophote
+     * onion-peel, garis tersambung) vs tekstur/gradasi (pyramid push-pull
+     * native + sintesis grain — dirancang untuk mask besar). */
     enum class HealMethod(val displayName: String) {
         STRUKTUR("Struktur"),
-        TEXTURE("Texture")
+        TEXTURE("Tekstur/Gradasi")
     }
 
-    // Default TEXTURE: latar manga/webtoon umumnya bertexture/gradasi, dan
-    // metode difusi (Telea/NS) me-blur keduanya — exemplar menempel patch
-    // asli sehingga texture + gradasi lestari.
+    // Default TEXTURE: latar manga/webtoon umumnya bertekstur/gradasi —
+    // pyramid push-pull menyambung gradasi mulus dari konteks multi-skala
+    // dan mensintesis grain dari cincin sekitar lubang (difusi Telea/NS
+    // polos memblur keduanya; exemplar PatchMatch berisik di gradasi).
     var healMethod: HealMethod by mutableStateOf(HealMethod.TEXTURE)
 
     var mode: InpaintMode = InpaintMode.PATCH_MATCH
@@ -166,16 +168,16 @@ class InpaintingManager {
     var healFeather: Boolean by mutableStateOf(true)
 
     /**
-     * Inpaint area seleksi (lasso/kotak/bubble) memakai MI-GAN on-device pada
-     * crop kecil (bounds + pad). HANYA dipanggil setelah area seleksi dibuat.
-     * Fallback Telea bila session MiGan gagal agar fitur tak pernah mati diam.
+     * Inpaint area seleksi (lasso/kotak/bubble) memakai pyramid push-pull
+     * native pada crop (bounds + pad): seleksi luas terisi mulus mengikuti
+     * gradasi konteks + grain halus, jauh lebih cepat dari model on-device.
+     * Fallback Telea bila native gagal agar fitur tak pernah mati diam.
      * @return true bila ada piksel dikerjakan.
      */
     suspend fun inpaintSelection(
         layer: DrawingLayer,
         selectionMask: Bitmap,
-        bounds: android.graphics.RectF,
-        appContext: android.content.Context? = null
+        bounds: android.graphics.RectF
     ): Boolean {
         val src = layer.getPersistentBitmap()
         if (src.width != selectionMask.width || src.height != selectionMask.height) {
@@ -208,26 +210,23 @@ class InpaintingManager {
             return false
         }
         try {
-            // 1) MI-GAN (khusus seleksi).
-            if (appContext != null) {
+            // 1) Pyramid push-pull: mask besar seleksi terisi mulus mengikuti
+            //    gradasi konteks multi-skala + grain halus (anti-plong).
+            try {
+                val (argb, tmp) = ensureArgbMask(maskCrop!!)
                 try {
-                    if (com.grooxtyper.app.ml.MiganInpainter.ensureSession(appContext)) {
-                        val out = com.grooxtyper.app.ml.MiganInpainter.inpaint(srcCrop!!, maskCrop!!)
-                        if (out != null) {
-                            android.graphics.Canvas(src).drawBitmap(out, cl.toFloat(), ct.toFloat(), null)
-                            runCatching { out.recycle() }
-                            android.util.Log.i("Inpaint", "seleksi MiGan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                            return true
-                        }
-                        android.util.Log.w("Inpaint", "MiGan skip: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
-                    } else {
-                        android.util.Log.w("Inpaint", "MiGan session gagal: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } catch (e: OutOfMemoryError) {
-                    e.printStackTrace()
+                    com.grooxtyper.app.native.NativeEngine.nativeInpaintPyramid(srcCrop!!, argb, 6, 1.0)
+                } finally {
+                    if (tmp) runCatching { argb.recycle() }
                 }
+                android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                android.util.Log.i("Inpaint", "seleksi pyramid ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                return true
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.util.Log.w("Inpaint", "seleksi pyramid gagal, fallback Telea")
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
             }
             // 2) Fallback Telea tunggal pada crop yang sama.
             try {
@@ -408,10 +407,11 @@ class InpaintingManager {
                     runCatching { maskCropPre.recycle() }
                 }
             }
-            // Dua opsi heal tanpa model (bukan Telea):
-            // STRUKTUR = Navier-Stokes transport isophote (garis tersambung),
-            // TEXTURE = exemplar PatchMatch preserve-texture (screentone lestari).
-            // Crop kecil (<256px) tetap Telea instan di bawah.
+            // Dua opsi heal tanpa model:
+            // STRUKTUR = Navier-Stokes isophote onion-peel (garis tersambung,
+            //   hanya membaca tetangga terisi → cepat & tak bocor warna teks).
+            // TEXTURE/GRADASI = pyramid push-pull + grain (mask besar mulus).
+            // Telea di bawah hanya fallback terakhir bila keduanya gagal.
             if (healMethod == HealMethod.STRUKTUR) {
                 try {
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
@@ -436,24 +436,24 @@ class InpaintingManager {
                     android.util.Log.w("Inpaint", "heal NS gagal, fallback Telea")
                 }
             }
-            // Heal TEXTURE: exemplar PatchMatch berprioritas Criminisi menempel
-            // texture asli via copy patch (tanpa blur difusi) agar screentone /
-            // grain manga/webtoon lestari; crop kecil tetap Telea instan.
-            // TEXTURE berlaku semua ukuran (difusi blur merusak texture/gradasi
-            // bahkan di crop kecil); Telea hanya fallback bila exemplar skip.
+            // Heal TEKSTUR/GRADASI untuk mask besar: pyramid push-pull native.
+            // Downsample ber-coverage mengisi lubang dari konteks luas (gradasi
+            // panjang tersambung mulus, tanpa blur pinggir difusi), lalu grain
+            // disintesis dari statistik Laplacian cincin sekitar lubang agar
+            // kertas/screentone tidak terlihat plong. ~O(n): mask besar cepat.
             if (healMethod == HealMethod.TEXTURE) {
                 try {
+                    onProgress?.invoke(0.15f)
                     val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                     val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
                     try {
-                        val ok = PatchMatchInpainter.inpaint(srcCrop, maskCrop, feather = healFeather, mode = HealMode.PRESERVE_TEXTURE, onProgress = onProgress)
-                        if (!ok) {
-                            android.util.Log.w("Inpaint", "heal exemplar skip, fallback Telea")
-                        } else {
-                            android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
-                            android.util.Log.i("Inpaint", "heal exemplar ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                            return true
-                        }
+                        val (argb, tmp) = ensureArgbMask(maskCrop)
+                        try { NativeEngine.nativeInpaintPyramid(srcCrop, argb, 6, 1.0) }
+                        finally { if (tmp) runCatching { argb.recycle() } }
+                        android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                        onProgress?.invoke(1f)
+                        android.util.Log.i("Inpaint", "heal pyramid ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                        return true
                     } finally {
                         runCatching { srcCrop.recycle() }
                         runCatching { maskCrop.recycle() }
@@ -463,6 +463,7 @@ class InpaintingManager {
                     return false
                 } catch (e: Exception) {
                     e.printStackTrace()
+                    android.util.Log.w("Inpaint", "heal pyramid gagal, fallback Telea")
                 }
             }
             try {

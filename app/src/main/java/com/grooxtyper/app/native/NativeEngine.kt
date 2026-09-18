@@ -9,6 +9,13 @@ object NativeEngine {
 
     external fun nativeInpaintTelea(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double)
 
-    /** Navier-Stokes isophote transport (opsi heal STRUKTUR). iterations<=0 = otomatis. */
+    /** Navier-Stokes isophote onion-peel (opsi heal STRUKTUR). iterations<=0 = otomatis. */
     external fun nativeInpaintNS(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double, iterations: Int)
+
+    /**
+     * Pyramid push-pull inpainting (opsi heal TEKSTUR/GRADASI + seleksi):
+     * mengisi lubang dari konteks multi-skala (gradasi tersambung mulus pada
+     * mask besar) lalu mensintesis grain dari statistik cincin sekitar lubang.
+     */
+    external fun nativeInpaintPyramid(srcBitmap: Bitmap, maskBitmap: Bitmap, maxLevels: Int, grainScale: Double)
 }

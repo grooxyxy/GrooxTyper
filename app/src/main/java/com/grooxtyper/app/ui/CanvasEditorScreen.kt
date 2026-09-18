@@ -1687,13 +1687,19 @@ fun CanvasEditorScreen(
                                             p2.consume()
                                         } else {
                                             pan = curCenter - prevCenter
+                                            // Anti-teleport: lompatan pan > 1 layar dalam satu frame
+                                            // berarti previousPosition basi (transisi jari/glitch)
+                                            // → abaikan frame ini, jangan geser kanvas.
+                                            if (pan.getDistance() > kotlin.math.max(vw, vh)) {
+                                                pan = Offset.Zero
+                                            }
 
                                             val prevDist = (prevP1 - prevP2).getDistance()
                                             val curDist = (curP1 - curP2).getDistance()
                                             // Jari bersilang (jarak ~0) membuat zoom meledak → abaikan.
-                                            if (prevDist > 20f) {
-                                                zoom = (curDist / prevDist).coerceIn(0.8f, 1.25f)
-                                            }
+                                            zoom = if (prevDist > 20f && curDist > 20f) {
+                                                (curDist / prevDist).coerceIn(0.8f, 1.25f)
+                                            } else 1f
 
                                             val prevAngle = Math.toDegrees(kotlin.math.atan2((prevP2.y - prevP1.y).toDouble(), (prevP2.x - prevP1.x).toDouble())).toFloat()
                                             val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
@@ -1702,7 +1708,12 @@ fun CanvasEditorScreen(
                                             val rawRot = ((curAngle - prevAngle + 540f) % 360f) - 180f
                                             // Kunci rotasi: twist kecil diabaikan, yang sengaja
                                             // diteruskan utuh (tanpa lompat).
-                                            rotAccum += rawRot
+                                            // Anti-teleport: lonjakan sudut >40° dalam satu frame
+                                            // adalah glitch (jari bersilang / previousPosition basi),
+                                            // bukan putaran sungguhan → buang, jangan diakumulasi.
+                                            if (kotlin.math.abs(rawRot) <= 40f) {
+                                                rotAccum += rawRot
+                                            }
                                             var rotToApply = 0f
                                             if (kotlin.math.abs(rotAccum) >= 2f) {
                                                 rotToApply = rotAccum
@@ -1718,19 +1729,23 @@ fun CanvasEditorScreen(
                                             val oldScale = viewState.scale
                                             val newScale = (oldScale * zoom).coerceIn(0.05f, 10.0f)
                                             val ze = newScale / oldScale.coerceAtLeast(1e-6f)
+                                            // Terapkan rotasi DULU; koreksi offset WAJIB memakai
+                                            // delta AKTUAL pasca-snap 0/90/180/270. Bila offset
+                                            // dihitung dari delta mentah sementara render memakai
+                                            // sudut tersnap, jangkar meleset → kanvas teleport.
+                                            val appliedRot = if (rotToApply != 0f) viewState.applyRotationDelta(rotToApply) else 0f
                                             viewState.offsetX += pan.x
                                             viewState.offsetY += pan.y
                                             val px = 0.5f * vw
                                             val py = 0.5f * vh
                                             val vx = curCenter.x - px - viewState.offsetX
                                             val vy = curCenter.y - py - viewState.offsetY
-                                            val rrad = Math.toRadians(rotToApply.toDouble())
+                                            val rrad = Math.toRadians(appliedRot.toDouble())
                                             val rc = kotlin.math.cos(rrad).toFloat()
                                             val rs = kotlin.math.sin(rrad).toFloat()
                                             viewState.offsetX += vx - ze * (rc * vx - rs * vy)
                                             viewState.offsetY += vy - ze * (rs * vx + rc * vy)
                                             viewState.scale = newScale
-                                            if (rotToApply != 0f) viewState.applyRotationDelta(rotToApply)
 
                                             p1.consume()
                                             p2.consume()
@@ -2655,7 +2670,7 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Heal 2 opsi tanpa model: Cepat (Telea) vs Texture (exemplar copy patch).
+                // Heal 2 opsi tanpa model: Struktur (NS isophote) vs Tekstur/Gradasi (pyramid push-pull + grain).
                 if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.HEAL_PATCH) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -2685,7 +2700,7 @@ fun CanvasEditorScreen(
                     Text(
                         when (inpaintingManager.healMethod) {
                             com.grooxtyper.app.model.InpaintingManager.HealMethod.STRUKTUR -> "Struktur: garis tersambung (Navier-Stokes)."
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Texture: tempel patch asli, screentone lestari."
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Tekstur/Gradasi: pyramid fill mulus + grain, kuat di mask besar."
                         },
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
@@ -3532,7 +3547,7 @@ fun CanvasEditorScreen(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text(if (isHealing) "Inpaint Seleksi… (proses)" else "Inpaint Seleksi (MiGan)") },
+                    text = { Text(if (isHealing) "Inpaint Seleksi… (proses)" else "Inpaint Seleksi") },
                     enabled = selectionEngine.hasSelection && !isHealing,
                     onClick = {
                         showLassoMenu = false
@@ -3553,7 +3568,7 @@ fun CanvasEditorScreen(
                                     val maskCopy = try {
                                         selectionEngine.selectionMaskBitmap.copy(Bitmap.Config.ARGB_8888, false)
                                     } catch (e: Exception) { selectionEngine.selectionMaskBitmap }
-                                    ok = inpaintingManager.inpaintSelection(active, maskCopy, bounds, context.applicationContext)
+                                    ok = inpaintingManager.inpaintSelection(active, maskCopy, bounds)
                                     if (maskCopy !== selectionEngine.selectionMaskBitmap) runCatching { maskCopy.recycle() }
                                     if (!ok) err = "Inpaint seleksi dilewati: area/mask kosong"
                                     else active.markDirty()

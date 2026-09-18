@@ -59,7 +59,14 @@ class CanvasViewState(
         pivotFracY = ny
     }
 
-    fun applyRotationDelta(deltaRotation: Float) {
+    /**
+     * Terapkan delta rotasi (dengan snap ke 0/90/180/270).
+     * @return delta AKTUAL yang diterapkan setelah snap — WAJIB dipakai untuk
+     * koreksi offset jangkar gesture. Bila koreksi memakai delta mentah
+     * sementara render memakai sudut tersnap, jangkar meleset → teleport.
+     */
+    fun applyRotationDelta(deltaRotation: Float): Float {
+        val before = rotation
         rawRotation = (rawRotation + deltaRotation) % 360f
         val normRotation = if (rawRotation < 0) rawRotation + 360f else rawRotation
 
@@ -72,6 +79,7 @@ class CanvasViewState(
             abs(normRotation - 270f) < snapThreshold -> 270f
             else -> normRotation
         }
+        return rotation - before
     }
 
     fun windowToCanvasCoordinates(

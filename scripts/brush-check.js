@@ -51,7 +51,12 @@ assert(patch.includes('gradWeight'), 'heal jarak patch sadar gradien (tajam vs P
 assert(inpaint.includes('healMode'), 'InpaintingManager expose healMode');
 assert(inpaint.includes('inpaintHealDirty'), 'InpaintingManager punya inpaintHealDirty');
 assert(editor.includes('HealMethod.values()'), 'UI 2 opsi heal tanpa model (Cepat/Texture)');
-assert(editor.includes('Inpaint Seleksi (MiGan)'), 'UI inpaint seleksi MiGan');
+assert(editor.includes('Inpaint Seleksi'), 'UI punya aksi Inpaint Seleksi');
+assert(!editor.includes('MiGan'), 'UI bebas referensi MiGan (model dihapus)');
+assert(!fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt')), 'MiganInpainter.kt dihapus');
+assert(!fs.existsSync(path.join(ROOT, 'app/src/main/assets/models/mg.onnx')), 'model mg.onnx dihapus dari assets');
+assert(inpaint.includes('nativeInpaintPyramid'), 'heal tekstur/gradasi + seleksi memakai pyramid push-pull native (mask besar)');
+assert(inpaint.includes('nativeInpaintNS'), 'heal struktur memakai Navier-Stokes native');
 
 // 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
 assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');
