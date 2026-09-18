@@ -1458,7 +1458,7 @@ fun CanvasEditorScreen(
 
     fun screenToCanvasCoordinates(screenX: Float, screenY: Float): Offset {
         // Inverse dari Modifier.graphicsLayer(scale, translation, rotationZ)
-        // yang pivot-nya DINAMIS mengikuti titik tengah jari (pivotFrac).
+        // yang pivot-nya TETAP di tengah (pivotFrac 0.5, 0.5).
         // Bitmap digambar di (0,0) Canvas, jadi koordinat layout == koordinat bitmap.
         val pivotX = viewState.pivotFracX * viewportSize.width
         val pivotY = viewState.pivotFracY * viewportSize.height
@@ -1568,6 +1568,9 @@ fun CanvasEditorScreen(
     var pressMoved by remember { mutableStateOf(false) }
     // Sesi dua-jari aktif (untuk settle event pertama + menahan aksi satu jari).
     var twoFingerActive by remember { mutableStateOf(false) }
+    // Akumulator rotasi untuk kunci rotasi: twist kecil (<2°) diabaikan agar
+    // pinch-zoom tak ikut mutar liar; rotasi sengaja tetap jalan utuh.
+    var rotAccum by remember { mutableFloatStateOf(0f) }
 
     // Tahan jari 600ms tanpa geser = eyedropper sementara.
     // Titik awal dibatalkan via undo agar kanvas tetap bersih.
@@ -1654,7 +1657,6 @@ fun CanvasEditorScreen(
                                 strokeLength = 0f
                                 var zoom = 1f
                                 var pan = Offset.Zero
-                                var rotation = 0f
 
                                 if (pointerCount >= 2) {
                                     val p1 = changes[0]
@@ -1674,10 +1676,13 @@ fun CanvasEditorScreen(
 
                                         if (!twoFingerActive) {
                                             // Event pertama dua-jari: previous tak stabil,
-                                            // hanya tetapkan pivot agar tidak lompat.
+                                            // jangan ubah apa pun selain settle (tanpa
+                                            // menggeser pivot agar tak teleport).
                                             twoFingerActive = true
+                                            rotAccum = 0f
                                             lastScreenPoint = null
-                                            viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
+                                            viewState.pivotFracX = 0.5f
+                                            viewState.pivotFracY = 0.5f
                                             p1.consume()
                                             p2.consume()
                                         } else {
@@ -1694,16 +1699,38 @@ fun CanvasEditorScreen(
                                             val curAngle = Math.toDegrees(kotlin.math.atan2((curP2.y - curP1.y).toDouble(), (curP2.x - curP1.x).toDouble())).toFloat()
                                             // Normalisasi delta ke [-180,180] agar tak spin 358°
                                             // saat melewati batas -180/180.
-                                            rotation = ((curAngle - prevAngle + 540f) % 360f) - 180f
+                                            val rawRot = ((curAngle - prevAngle + 540f) % 360f) - 180f
+                                            // Kunci rotasi: twist kecil diabaikan, yang sengaja
+                                            // diteruskan utuh (tanpa lompat).
+                                            rotAccum += rawRot
+                                            var rotToApply = 0f
+                                            if (kotlin.math.abs(rotAccum) >= 2f) {
+                                                rotToApply = rotAccum
+                                                rotAccum = 0f
+                                            }
 
-                                            // Pivot zoom/rotasi = titik tengah dua jari (dengan
-                                            // kompensasi offset) agar tidak teleport ke satu jari.
-                                            viewState.setPivotFraction(curCenter.x / vw, curCenter.y / vh, vw, vh)
-
-                                            viewState.scale = (viewState.scale * zoom).coerceIn(0.1f, 10.0f)
+                                            // Pivot DIKUNCI di tengah (0.5): zoom/rotasi
+                                            // dijangkar ke centroid lewat koreksi offset agar
+                                            // titik di bawah jari tetap diam (tanpa teleport).
+                                            // O' = O + pan + V − ze·R(Δ)·V, V = C − P − O.
+                                            viewState.pivotFracX = 0.5f
+                                            viewState.pivotFracY = 0.5f
+                                            val oldScale = viewState.scale
+                                            val newScale = (oldScale * zoom).coerceIn(0.05f, 10.0f)
+                                            val ze = newScale / oldScale.coerceAtLeast(1e-6f)
                                             viewState.offsetX += pan.x
                                             viewState.offsetY += pan.y
-                                            viewState.applyRotationDelta(rotation)
+                                            val px = 0.5f * vw
+                                            val py = 0.5f * vh
+                                            val vx = curCenter.x - px - viewState.offsetX
+                                            val vy = curCenter.y - py - viewState.offsetY
+                                            val rrad = Math.toRadians(rotToApply.toDouble())
+                                            val rc = kotlin.math.cos(rrad).toFloat()
+                                            val rs = kotlin.math.sin(rrad).toFloat()
+                                            viewState.offsetX += vx - ze * (rc * vx - rs * vy)
+                                            viewState.offsetY += vy - ze * (rs * vx + rc * vy)
+                                            viewState.scale = newScale
+                                            if (rotToApply != 0f) viewState.applyRotationDelta(rotToApply)
 
                                             p1.consume()
                                             p2.consume()
@@ -2194,6 +2221,7 @@ fun CanvasEditorScreen(
                                     colorPickActive = false
                                     pressId++
                                     twoFingerActive = false
+                                    rotAccum = 0f
                                     // Kunci sketsa lasso bebas menjadi SATU area baru (multi).
                                     // Sketsa super-kecil = tap → hapus area yang diketuk.
                                     lassoPath?.let { sketch ->
@@ -2242,6 +2270,7 @@ fun CanvasEditorScreen(
                                 strokeIsHeal = false
                                 brushEngine.endStroke()
                                 twoFingerActive = false
+                                rotAccum = 0f
                                 lassoPath?.let { sketch ->
                                     val lb = RectF()
                                     sketch.computeBounds(lb, true)

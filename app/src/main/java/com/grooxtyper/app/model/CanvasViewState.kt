@@ -22,7 +22,8 @@ class CanvasViewState(
 
     /**
      * Titik tumpu zoom/rotasi sebagai fraksi viewport (0..1).
-     * Diikuti titik tengah dua jari saat pinch agar tidak teleport.
+     * DIKUNCI di tengah (0.5): zoom/rotasi dijangkar ke centroid lewat
+     * koreksi offset (anti-teleport). Jangan diubah per event.
      */
     var pivotFracX by mutableFloatStateOf(0.5f)
     var pivotFracY by mutableFloatStateOf(0.5f)
