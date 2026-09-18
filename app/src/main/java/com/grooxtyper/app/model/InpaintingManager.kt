@@ -54,9 +54,78 @@ class InpaintingManager {
         return argb to true
     }
 
-    /** Dilatasi ~1px: blur SOLID pada SALINAN mask, lalu komposit OR kembali. */
-    private fun dilateMaskAlpha(mask: Bitmap) {
+    /**
+     * Perluas sapuan kasar menjadi mask area-luas: dilatasi 3x3 berulang
+     * proporsional ukuran sapuan + isi region tertutup (flood fill dari tepi
+     * pada kebalikan mask). Hasil: coret lebar di atas objek langsung menutup
+     * objeknya tanpa perlu mask presisi. Deterministik di semua device
+     * (aritmetika IntArray, tanpa BlurMaskFilter).
+     */
+    private fun expandHealMask(crop: Bitmap, dirtyLongSide: Int) {
         try {
+            val w = crop.width
+            val h = crop.height
+            if (w <= 0 || h <= 0) return
+            val iters = max(2, min(dirtyLongSide / 16, 10))
+            val px = IntArray(w * h)
+            crop.getPixels(px, 0, w, 0, 0, w, h)
+            var cur = BooleanArray(w * h) { (px[it] ushr 24) > 30 }
+            repeat(iters) {
+                val nxt = BooleanArray(w * h)
+                for (y in 0 until h) {
+                    for (x in 0 until w) {
+                        if (cur[y * w + x]) {
+                            for (dy in -1..1) {
+                                val yy = y + dy
+                                if (yy !in 0 until h) continue
+                                for (dx in -1..1) {
+                                    val xx = x + dx
+                                    if (xx !in 0 until w) continue
+                                    nxt[yy * w + xx] = true
+                                }
+                            }
+                        }
+                    }
+                }
+                cur = nxt
+            }
+            // Isi lubang tertutup: yang tak terjangkau flood dari tepi = interior.
+            val seen = BooleanArray(w * h)
+            val stack = ArrayDeque<Int>()
+            for (x in 0 until w) {
+                if (!cur[x]) { seen[x] = true; stack.addLast(x) }
+                val b = (h - 1) * w + x
+                if (!cur[b]) { seen[b] = true; stack.addLast(b) }
+            }
+            for (y in 0 until h) {
+                val l = y * w
+                if (!cur[l]) { seen[l] = true; stack.addLast(l) }
+                val r = y * w + w - 1
+                if (!cur[r]) { seen[r] = true; stack.addLast(r) }
+            }
+            while (stack.isNotEmpty()) {
+                val p = stack.removeLast()
+                val x = p % w
+                val y = p / w
+                if (x > 0) { val n = p - 1; if (!cur[n] && !seen[n]) { seen[n] = true; stack.addLast(n) } }
+                if (x < w - 1) { val n = p + 1; if (!cur[n] && !seen[n]) { seen[n] = true; stack.addLast(n) } }
+                if (y > 0) { val n = p - w; if (!cur[n] && !seen[n]) { seen[n] = true; stack.addLast(n) } }
+                if (y < h - 1) { val n = p + w; if (!cur[n] && !seen[n]) { seen[n] = true; stack.addLast(n) } }
+            }
+            val out = IntArray(w * h)
+            for (i in cur.indices) {
+                if (cur[i] || !seen[i]) out[i] = -1 // putih = lubang (isi interior)
+            }
+            crop.setPixels(out, 0, w, 0, 0, w, h)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        }
+    }
+
+    /** Dilatasi ~1px: blur SOLID pada SALINAN mask, lalu komposit OR kembali. */
+    private fun dilateMaskAlpha(mask: Bitmap) {        try {
             // Salinan diburamkan (tepi alpha mengembang ~1-2px).
             val blurred = mask.copy(mask.config ?: Bitmap.Config.ARGB_8888, true) ?: return
             val cb = Canvas(blurred)
@@ -320,11 +389,13 @@ class InpaintingManager {
                 android.util.Log.w("Inpaint", "heal: crop terlalu kecil ${cw}x${ch}, skip")
                 return false
             }
-            // Dilatasi mask 1px di dalam crop saja (anti-halo tepi teks).
+            // Perluas mask kasar jadi region penuh: sapuan lebar tak perlu presisi —
+            // dilatasi proporsional + isi lubang tertutup (mis. coretan melingkari
+            // balon ikut menutup interiornya). Dibatasi dalam crop (hemat).
             if (dilateMask) {
                 val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
                 if (maskCropPre != null) {
-                    dilateMaskAlpha(maskCropPre)
+                    expandHealMask(maskCropPre, max(bw, bh))
                     try {
                         val dst = Canvas(mask)
                         val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
