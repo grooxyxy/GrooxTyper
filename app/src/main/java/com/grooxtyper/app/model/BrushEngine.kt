@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
@@ -149,6 +150,9 @@ class BrushEngine {
     private var euroInit = false
     // Warna pickup smudge (dipertahankan sepanjang stroke, reset tiap stroke).
     private var blendPickup: Int? = null
+    // Stamp bitmap untuk blend/smudge sungguhan: cuplikan piksel kanvas yang
+    // diseret sepanjang stroke (adaptasi ide SmudgePathCommand Paintroid).
+    private var blendStamp: Bitmap? = null
 
     private fun lerpColor(a: Int, b: Int, t: Float): Int {
         val tt = t.coerceIn(0f, 1f)
@@ -206,6 +210,8 @@ class BrushEngine {
         euroDx = 0f
         euroInit = false
         blendPickup = null
+        runCatching { blendStamp?.recycle() }
+        blendStamp = null
         lastVelocity = Offset.Zero
         dirtyTiles.clear()
         dirtyTileBounds.setEmpty()
@@ -217,6 +223,8 @@ class BrushEngine {
         velocityEma = 0f
         euroInit = false
         blendPickup = null
+        runCatching { blendStamp?.recycle() }
+        blendStamp = null
         lastVelocity = Offset.Zero
     }
 
@@ -470,6 +478,12 @@ class BrushEngine {
         val smoothedP1 = smoothPoint(rulerGuide.snapPoint(p1), lastSmoothedPoint, useStabilizer)
         val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1, useStabilizer)
         lastSmoothedPoint = smoothedP2
+
+        if (brushType == BrushType.BLEND) {
+            applyBlendStroke(layer, smoothedP1, smoothedP2, isHuge)
+            prevCurvePoint = smoothedP2
+            return
+        }
 
         if (brushType == BrushType.BLUR) {
             // Huge: blur per segmen sangat mahal (4 alokasi bitmap per dab).
@@ -731,43 +745,156 @@ class BrushEngine {
         }
     }
 
+    private fun captureBlendStamp(source: Bitmap, center: Offset, diameter: Float): Bitmap? {
+        val d = diameter.toInt().coerceAtLeast(8)
+        val half = d / 2
+        val left = (center.x - half).toInt().coerceIn(0, source.width - 1)
+        val top = (center.y - half).toInt().coerceIn(0, source.height - 1)
+        val right = (left + d).coerceIn(1, source.width)
+        val bottom = (top + d).coerceIn(1, source.height)
+        val w = (right - left).coerceAtLeast(1)
+        val h = (bottom - top).coerceAtLeast(1)
+        return try {
+            val out = Bitmap.createBitmap(d, d, Bitmap.Config.ARGB_8888)
+            val src = Rect(left, top, right, bottom)
+            val dst = Rect((d - w) / 2, (d - h) / 2, (d - w) / 2 + w, (d - h) / 2 + h)
+            val c = Canvas(out)
+            val clip = Path().apply {
+                addCircle(d / 2f, d / 2f, d / 2f, Path.Direction.CW)
+            }
+            c.save()
+            c.clipPath(clip)
+            c.drawBitmap(source, src, dst, Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = true })
+            c.restore()
+            out
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun applyBlendStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
+        val bmp = layer.getPersistentBitmap()
+        val stampSize = (size * 1.15f).coerceIn(8f, if (isHuge) 96f else 160f)
+        val newStamp = captureBlendStamp(bmp, p1, stampSize)
+        if (newStamp != null) {
+            runCatching { blendStamp?.recycle() }
+            blendStamp = newStamp
+        }
+        val stamp = blendStamp ?: return
+        val distance = hypot(p2.x - p1.x, p2.y - p1.y)
+        val steps = ceil((distance / (stampSize * if (isHuge) 0.45f else 0.28f)).toDouble()).toInt().coerceIn(1, if (isHuge) 24 else 96)
+        val pad = stampSize * 0.75f + 8f
+        val cl = (min(p1.x, p2.x) - pad).coerceIn(0f, bmp.width.toFloat())
+        val ct = (min(p1.y, p2.y) - pad).coerceIn(0f, bmp.height.toFloat())
+        val cr = (max(p1.x, p2.x) + pad).coerceIn(0f, bmp.width.toFloat())
+        val cb = (max(p1.y, p2.y) + pad).coerceIn(0f, bmp.height.toFloat())
+        if (cr - cl < 1f || cb - ct < 1f) return
+        markDirtyTiles(cl, ct, cr, cb)
+        val canvas = getCanvasFor(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            isFilterBitmap = true
+            alpha = (opacity * 235).toInt().coerceIn(16, 235)
+        }
+        canvas.save()
+        canvas.clipRect(cl, ct, cr, cb)
+        for (i in 0..steps) {
+            val t = i / steps.toFloat()
+            val x = p1.x + (p2.x - p1.x) * t
+            val y = p1.y + (p2.y - p1.y) * t
+            val rect = RectF(x - stampSize / 2f, y - stampSize / 2f, x + stampSize / 2f, y + stampSize / 2f)
+            canvas.drawBitmap(stamp, null, rect, paint)
+        }
+        canvas.restore()
+        layer.markDirty()
+    }
+
+    private fun boxBlurPass(input: IntArray, output: IntArray, width: Int, height: Int, radius: Int, horizontal: Boolean) {
+        if (radius <= 0) {
+            System.arraycopy(input, 0, output, 0, input.size)
+            return
+        }
+        if (horizontal) {
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    var a = 0; var r = 0; var g = 0; var b = 0; var count = 0
+                    val start = max(0, x - radius)
+                    val end = min(width - 1, x + radius)
+                    for (sx in start..end) {
+                        val c = input[y * width + sx]
+                        a += (c ushr 24) and 0xFF
+                        r += (c ushr 16) and 0xFF
+                        g += (c ushr 8) and 0xFF
+                        b += c and 0xFF
+                        count++
+                    }
+                    output[y * width + x] = ((a / count) shl 24) or ((r / count) shl 16) or ((g / count) shl 8) or (b / count)
+                }
+            }
+        } else {
+            for (x in 0 until width) {
+                for (y in 0 until height) {
+                    var a = 0; var r = 0; var g = 0; var b = 0; var count = 0
+                    val start = max(0, y - radius)
+                    val end = min(height - 1, y + radius)
+                    for (sy in start..end) {
+                        val c = input[sy * width + x]
+                        a += (c ushr 24) and 0xFF
+                        r += (c ushr 16) and 0xFF
+                        g += (c ushr 8) and 0xFF
+                        b += c and 0xFF
+                        count++
+                    }
+                    output[y * width + x] = ((a / count) shl 24) or ((r / count) shl 16) or ((g / count) shl 8) or (b / count)
+                }
+            }
+        }
+    }
+
+    private fun blurBitmapContent(src: Bitmap, radiusPx: Int): Bitmap {
+        val w = src.width
+        val h = src.height
+        val inPix = IntArray(w * h)
+        val tmpPix = IntArray(w * h)
+        val outPix = IntArray(w * h)
+        src.getPixels(inPix, 0, w, 0, 0, w, h)
+        boxBlurPass(inPix, tmpPix, w, h, radiusPx, horizontal = true)
+        boxBlurPass(tmpPix, outPix, w, h, radiusPx, horizontal = false)
+        // Dua pass lagi agar hasil lebih mirip Gaussian/stack blur, bukan average kasar.
+        boxBlurPass(outPix, tmpPix, w, h, max(1, radiusPx / 2), horizontal = true)
+        boxBlurPass(tmpPix, outPix, w, h, max(1, radiusPx / 2), horizontal = false)
+        return Bitmap.createBitmap(outPix, w, h, Bitmap.Config.ARGB_8888)
+    }
+
     private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
         val bmp = layer.getPersistentBitmap()
-        // Radius mengikuti ukuran brush agar efek blur benar-benar terlihat
-        // (sebelumnya size/2 terlalu halus sehingga dikira tidak berfungsi).
-        val radius = max(8f, size)
-        val pad = (size + radius * 2f + 4f)
+        // BlurMaskFilter resmi hanya memburamkan MASK/tepi bentuk, bukan isi
+        // bitmap; jadi blur brush lama tampak tidak bekerja. Pakai blur isi
+        // piksel sungguhan pada dirty rect kecil (bounded CPU blur).
+        val radiusPx = max(3, (size * 0.45f).toInt())
+        val pad = size + radiusPx * 2f + 6f
 
-        val leftF = min(p1.x, p2.x) - pad
-        val topF = min(p1.y, p2.y) - pad
-        val rightF = max(p1.x, p2.x) + pad
-        val bottomF = max(p1.y, p2.y) + pad
-
-        val left = leftF.toInt().coerceIn(0, bmp.width - 1)
-        val top = topF.toInt().coerceIn(0, bmp.height - 1)
-        val right = rightF.toInt().coerceIn(1, bmp.width)
-        val bottom = bottomF.toInt().coerceIn(1, bmp.height)
+        val left = (min(p1.x, p2.x) - pad).toInt().coerceIn(0, bmp.width - 1)
+        val top = (min(p1.y, p2.y) - pad).toInt().coerceIn(0, bmp.height - 1)
+        val right = (max(p1.x, p2.x) + pad).toInt().coerceIn(1, bmp.width)
+        val bottom = (max(p1.y, p2.y) + pad).toInt().coerceIn(1, bmp.height)
         val w = right - left
         val h = bottom - top
         if (w <= 0 || h <= 0) return
-        // Batas lama 140_000L dinaikkan agar sapuan normal tak sunyi;
-        // region raksasa dipotong tengah agar tetap aman di huge canvas.
+        // 140_000L: guard lama untuk blur huge-canvas; proses baru tetap dibatasi
+        // area kecil agar sapuan panjang tidak membekukan UI / OOM.
         if (isHuge && w.toLong() * h.toLong() > 300_000L) return
 
-        // Hanya proses dirty rect, bukan seluruh kanvas (hemat CPU/GC per segmen).
-        // Semua alokasi dilindungi OOM + recycle di finally agar tidak bocor.
         var region: Bitmap? = null
         var blurred: Bitmap? = null
         var maskBmp: Bitmap? = null
         var tempLayer: Bitmap? = null
         try {
             region = Bitmap.createBitmap(bmp, left, top, w, h)
-            blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val blurCanvas = Canvas(blurred!!)
-            val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
-            }
-            blurCanvas.drawBitmap(region!!, 0f, 0f, blurPaint)
+            blurred = blurBitmapContent(region!!, radiusPx)
 
             maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val maskCanvas = Canvas(maskBmp!!)
@@ -775,7 +902,7 @@ class BrushEngine {
                 style = Paint.Style.STROKE
                 strokeCap = Paint.Cap.ROUND
                 strokeJoin = Paint.Join.ROUND
-                strokeWidth = size * 1.2f
+                strokeWidth = size * 1.25f
                 color = Color.BLACK
             }
             maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)
@@ -786,6 +913,7 @@ class BrushEngine {
             val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
             tempCanvas.drawBitmap(maskBmp!!, 0f, 0f, dstIn)
 
+            markDirtyTiles(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
             Canvas(bmp).drawBitmap(tempLayer!!, left.toFloat(), top.toFloat(), null)
             layer.markDirty()
         } catch (e: OutOfMemoryError) {

@@ -1502,6 +1502,48 @@ fun CanvasEditorScreen(
         return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 
+    fun canvasToScreenCoordinates(canvasPos: Offset): Offset {
+        val pivotX = viewState.pivotFracX * viewportSize.width
+        val pivotY = viewState.pivotFracY * viewportSize.height
+        val dx = canvasPos.x - pivotX
+        val dy = canvasPos.y - pivotY
+        val rad = Math.toRadians(viewState.rotation.toDouble())
+        val rx = dx * Math.cos(rad) - dy * Math.sin(rad)
+        val ry = dx * Math.sin(rad) + dy * Math.cos(rad)
+        return Offset(
+            (pivotX + rx.toFloat() * viewState.scale + viewState.offsetX),
+            (pivotY + ry.toFloat() * viewState.scale + viewState.offsetY)
+        )
+    }
+
+    fun resetRulerGuideToVisible(type: RulerType) {
+        val a = screenToCanvasCoordinates(0f, 0f)
+        val b = screenToCanvasCoordinates(
+            viewportSize.width.toFloat().coerceAtLeast(1f),
+            viewportSize.height.toFloat().coerceAtLeast(1f)
+        )
+        val left = minOf(a.x, b.x).coerceIn(0f, canvasWidth.toFloat())
+        val top = minOf(a.y, b.y).coerceIn(0f, canvasHeight.toFloat())
+        val right = maxOf(a.x, b.x).coerceIn(0f, canvasWidth.toFloat())
+        val bottom = maxOf(a.y, b.y).coerceIn(0f, canvasHeight.toFloat())
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+        val span = (minOf(right - left, bottom - top) * 0.35f).coerceAtLeast(80f)
+        when (type) {
+            RulerType.STRAIGHT_LINE -> {
+                brushEngine.rulerGuide.startPos = Offset((cx - span).coerceAtLeast(0f), cy)
+                brushEngine.rulerGuide.endPos = Offset((cx + span).coerceAtMost(canvasWidth.toFloat()), cy)
+                brushEngine.rulerGuide.rotationDeg = 0f
+            }
+            RulerType.CIRCLE -> {
+                brushEngine.rulerGuide.circleCenter = Offset(cx, cy)
+                brushEngine.rulerGuide.circleRadius = (span * 0.7f).coerceAtLeast(40f)
+                brushEngine.rulerGuide.rotationDeg = 0f
+            }
+            else -> Unit
+        }
+    }
+
     /**
      * "To Canvas": kembalikan view agar seluruh kanvas pas & terpusat di
      * layar (dipakai saat user tak sengaja terlempar / kanvas hilang).
@@ -2667,7 +2709,7 @@ fun CanvasEditorScreen(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cs = viewState.scale
                     val ox = viewState.offsetX; val oy = viewState.offsetY
-                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
+                    fun toScreen(o: Offset) = canvasToScreenCoordinates(o)
                     val rp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; color = 0xAA00E5FF.toInt(); pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f,8f),0f) }
                     when (brushEngine.rulerGuide.type) {
                         RulerType.STRAIGHT_LINE -> {
@@ -2696,7 +2738,7 @@ fun CanvasEditorScreen(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cs = viewState.scale
                     val ox = viewState.offsetX; val oy = viewState.offsetY
-                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
+                    fun toScreen(o: Offset) = canvasToScreenCoordinates(o)
                     val b = box.getBounds()
                     val pad = 24f
                     val l = b.left - pad; val t = b.top - pad; val r = b.right + pad; val bt = b.bottom + pad
@@ -3783,6 +3825,7 @@ fun CanvasEditorScreen(
                                     .fillMaxWidth()
                                     .clickable {
                                         brushEngine.rulerGuide.type = r
+                                        if (r != RulerType.OFF) resetRulerGuideToVisible(r)
                                         showRulerDialog = false
                                     }
                                     .padding(12.dp),
@@ -3839,7 +3882,10 @@ fun CanvasEditorScreen(
                             multiBubbleDraft = ""
                             showMultiBubbleDialog = true
                         },
-                        onOpenPerspectiveGrid = { perspGridMode = true },
+                        onOpenPerspectiveGrid = {
+                            perspGridMode = true
+                            showTextEditor = false
+                        },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }

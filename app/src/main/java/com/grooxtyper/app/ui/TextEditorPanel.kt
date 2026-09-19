@@ -484,7 +484,8 @@ fun TextEditorPanel(
                         bevelSize = bevelSize,
                         onBevelSize = { bevelSize = it; box.bevel?.size = it; push() },
                         bevelOpacity = bevelOpacity,
-                        onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() }
+                        onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() },
+                        onOpenPerspectiveGrid = onOpenPerspectiveGrid
                     )
                     3 -> StyleTab(
                         styleName = styleName,
