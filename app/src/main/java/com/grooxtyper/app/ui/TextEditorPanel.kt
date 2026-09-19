@@ -102,7 +102,7 @@ fun TextEditorPanel(
     onOpenMultiBubble: () -> Unit,
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
-    onOpenPerspectiveGrid: () -> Unit,
+    onOpenPerspectiveGrid: () -> Unit = {},
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -455,7 +455,6 @@ fun TextEditorPanel(
                         onScaleX = { scaleX = it; box.textScaleX = it; push() },
                         textOpacity = textOpacity,
                         onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
-
                         uppercase = uppercase,
                         onUppercase = { uppercase = it; box.uppercase = it; push() },
                         underline = underline,
@@ -902,19 +901,9 @@ private fun EffectTab(
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
     Text("Perspektif", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    Text("Miringkan blok teks ala free-transform (keystone)", color = Color.Gray, fontSize = 11.sp)
-    Text("Atas–bawah ${(perspX * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
-    Slider(
-        value = perspX, onValueChange = onPerspX,
-        valueRange = -1f..1f,
-        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-    )
-    Text("Kiri–kanan", color = Color.Gray, fontSize = 12.sp)
-    Slider(
-        value = 0f, onValueChange = {},
-        valueRange = -1f..1f,
-        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-    )
+    Text("Atur keystone lewat grid perspektif di canvas (seret 4 sudut).", color = Color.Gray, fontSize = 11.sp)
+    Button(onClick = onOpenPerspectiveGrid, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Text("Buka Grid Perspektif", fontSize = 12.sp)
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Kapital semua", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
