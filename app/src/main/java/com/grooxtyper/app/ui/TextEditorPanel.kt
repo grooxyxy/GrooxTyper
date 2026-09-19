@@ -491,6 +491,7 @@ fun TextEditorPanel(
                         onStyleName = { styleName = it },
                         stylePrefix = stylePrefix,
                         onStylePrefix = { stylePrefix = it },
+                        onOpenPerspectiveGrid = onOpenPerspectiveGrid,
                         onSave = {
                             val preset = TextStylePreset.fromBox(
                                 box, styleName.ifBlank { "Style ${presets.size + 1}" }, stylePrefix

@@ -2846,6 +2846,8 @@ fun CanvasEditorScreen(
                         when (inpaintingManager.healMethod) {
                             com.grooxtyper.app.model.InpaintingManager.HealMethod.STRUKTUR -> "Struktur: garis tersambung (Navier-Stokes)."
                             com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Tekstur/Gradasi: pyramid fill mulus + grain, kuat di mask besar."
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.BLUR_AREA -> "Blur Area: cepat & mulus untuk area luas (latar manga/webtoon)."
+                            com.grooxtyper.app.model.InpaintingManager.HealMethod.GUIDED -> "Guided: isi area luas mengikuti struktur, garis tak blur."
                         },
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
