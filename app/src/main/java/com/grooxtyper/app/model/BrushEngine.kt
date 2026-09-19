@@ -98,7 +98,7 @@ class RulerGuide(
             val cx = (startPos.x + endPos.x) / 2f
             val cy = (startPos.y + endPos.y) / 2f
             val rad = Math.toRadians(deltaDeg.toDouble())
-            val cosR = cos(rad).toFloat(); val sinR = sin(rad).toFloat()
+            val cosR = kotlin.math.cos(rad).toFloat(); val sinR = kotlin.math.sin(rad).toFloat()
             fun rot(o: Offset): Offset {
                 val dx = o.x - cx; val dy = o.y - cy
                 return Offset(cx + dx * cosR - dy * sinR, cy + dx * sinR + dy * cosR)

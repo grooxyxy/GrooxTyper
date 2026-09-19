@@ -149,9 +149,11 @@ class InpaintingManager {
     /** Dua opsi heal brush tanpa model: struktur (Navier-Stokes isophote
      * onion-peel, garis tersambung) vs tekstur/gradasi (pyramid push-pull
      * native + sintesis grain — dirancang untuk mask besar). */
-    enum class HealMethod(val displayName: String) {
-        STRUKTUR("Struktur"),
-        TEXTURE("Tekstur/Gradasi")
+    enum class HealMethod(val displayName: String, val desc: String) {
+        STRUKTUR("Struktur", "Menyambung garis/kontur tegas (Navier-Stokes isophote)."),
+        TEXTURE("Tekstur/Gradasi", "Mengisi mask besar mulus (pyramid push-pull + grain)."),
+        BLUR_AREA("Blur Area", "Cepat & mulus untuk area luas (Gaussian). Latar manga/webtoon."),
+        GUIDED("Guided", "Isi area luas mengikuti struktur lokal, garis tak blur.")
     }
 
     // Default TEXTURE: latar manga/webtoon umumnya bertekstur/gradasi —

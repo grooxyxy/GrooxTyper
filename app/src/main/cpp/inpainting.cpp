@@ -673,30 +673,143 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintPyramid(
     AndroidBitmap_unlockPixels(env, maskBitmap);
 }
 
+// ======================================================================
+// Blur Gaussian separable — heal area luas (latar manga/webtoon).
+// Beroperasi pada buffer RGBA_8888 mentah (4 byte/piksel), hanya lubang.
+// ======================================================================
+namespace {
+void gaussianBlurArea(uint8_t *img, const uint8_t *mask, int width, int height, int radius) {
+    if (radius < 1) radius = 1;
+    if (radius > 60) radius = 60;
+    size_t n = (size_t)width * height;
+    int ksize = radius * 2 + 1;
+    std::vector<float> kernel(ksize);
+    float sigma = radius / 2.0f, ksum = 0;
+    for (int i2 = 0; i2 < ksize; ++i2) {
+        int x = i2 - radius;
+        kernel[i2] = std::exp(-(float)(x * x) / (2 * sigma * sigma));
+        ksum += kernel[i2];
+    }
+    for (int i2 = 0; i2 < ksize; ++i2) kernel[i2] /= ksum;
+    std::vector<uint8_t> src(img, img + n * 4);
+    std::vector<uint8_t> tmp(n * 4);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            size_t i = (size_t)y * width + x;
+            if (!mask[i]) { std::memcpy(&tmp[i*4], &src[i*4], 4); continue; }
+            float sr=0, sg=0, sb=0, sa=0, sw=0;
+            for (int kk = -radius; kk <= radius; ++kk) {
+                int xx = x + kk;
+                if (xx < 0 || xx >= width) continue;
+                size_t j2 = (size_t)y * width + xx;
+                float w = kernel[kk + radius];
+                sr += w * src[j2*4]; sg += w * src[j2*4+1]; sb += w * src[j2*4+2]; sa += w * src[j2*4+3];
+                sw += w;
+            }
+            if (sw > 1e-6f) {
+                tmp[i*4]   = (uint8_t)std::min(255.f, std::max(0.f, sr / sw));
+                tmp[i*4+1] = (uint8_t)std::min(255.f, std::max(0.f, sg / sw));
+                tmp[i*4+2] = (uint8_t)std::min(255.f, std::max(0.f, sb / sw));
+                tmp[i*4+3] = (uint8_t)std::min(255.f, std::max(0.f, sa / sw));
+            } else std::memcpy(&tmp[i*4], &src[i*4], 4);
+        }
+    }
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            size_t i = (size_t)y * width + x;
+            if (!mask[i]) { std::memcpy(&img[i*4], &tmp[i*4], 4); continue; }
+            float sr=0, sg=0, sb=0, sa=0, sw=0;
+            for (int kk = -radius; kk <= radius; ++kk) {
+                int yy = y + kk;
+                if (yy < 0 || yy >= height) continue;
+                size_t j2 = (size_t)yy * width + x;
+                float w = kernel[kk + radius];
+                sr += w * tmp[j2*4]; sg += w * tmp[j2*4+1]; sb += w * tmp[j2*4+2]; sa += w * tmp[j2*4+3];
+                sw += w;
+            }
+            if (sw > 1e-6f) {
+                img[i*4]   = (uint8_t)std::min(255.f, std::max(0.f, sr / sw));
+                img[i*4+1] = (uint8_t)std::min(255.f, std::max(0.f, sg / sw));
+                img[i*4+2] = (uint8_t)std::min(255.f, std::max(0.f, sb / sw));
+                img[i*4+3] = (uint8_t)std::min(255.f, std::max(0.f, sa / sw));
+            } else std::memcpy(&img[i*4], &tmp[i*4], 4);
+        }
+    }
+}
+
+// ======================================================================
+// Guided heal area — isi lubang mengikuti struktur lokal (bilateral-like,
+// onion-peel dari tepi ke dalam). Garis tegas tak blur, cocok latar manga.
+// ======================================================================
+void guidedHealArea(uint8_t *img, const uint8_t *mask, int width, int height, int iterations) {
+    size_t n = (size_t)width * height;
+    std::vector<uint8_t> state(n, 0);
+    for (size_t i = 0; i < n; ++i) state[i] = mask[i] ? 0 : 2;
+    std::vector<uint8_t> work(img, img + n * 4);
+    if (iterations <= 0) {
+        int count = 0;
+        for (size_t i = 0; i < n; ++i) if (mask[i]) ++count;
+        iterations = std::min(3000, std::max(80, count / 4));
+    }
+    const int R = 2;
+    for (int iter = 0; iter < iterations; ++iter) {
+        bool any = false;
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                size_t i = (size_t)y * width + x;
+                if (state[i] != 0) continue;
+                float cr = work[i*4], cg = work[i*4+1], cb = work[i*4+2];
+                float sr=0, sg=0, sb=0, sa=0, sw=0;
+                for (int dy = -R; dy <= R; ++dy) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= height) continue;
+                    for (int dx = -R; dx <= R; ++dx) {
+                        int xx = x + dx;
+                        if (xx < 0 || xx >= width) continue;
+                        size_t j2 = (size_t)yy * width + xx;
+                        if (state[j2] != 2) continue;
+                        float spatial = 1.0f / (1.0f + (float)(dx * dx + dy * dy));
+                        float dr = (float)work[j2*4] - cr, dg = (float)work[j2*4+1] - cg, db = (float)work[j2*4+2] - cb;
+                        float cd = std::sqrt(dr * dr + dg * dg + db * db);
+                        float w = spatial * std::exp(-cd * cd / (2 * 60.f * 60.f));
+                        sr += w * work[j2*4]; sg += w * work[j2*4+1]; sb += w * work[j2*4+2]; sa += w * work[j2*4+3];
+                        sw += w;
+                    }
+                }
+                if (sw > 1e-6f) {
+                    work[i*4]   = (uint8_t)std::min(255.f, std::max(0.f, sr / sw));
+                    work[i*4+1] = (uint8_t)std::min(255.f, std::max(0.f, sg / sw));
+                    work[i*4+2] = (uint8_t)std::min(255.f, std::max(0.f, sb / sw));
+                    work[i*4+3] = (uint8_t)std::min(255.f, std::max(0.f, sa / sw));
+                    state[i] = 2;
+                    any = true;
+                }
+            }
+        }
+        if (!any) break;
+    }
+    std::memcpy(img, work.data(), n * 4);
+}
+} // namespace
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_grooxtyper_app_native_NativeEngine_nativeGaussianBlurArea(
         JNIEnv *env, jobject, jobject srcBitmap, jobject maskBitmap, jint radius) {
     AndroidBitmapInfo srcInfo, maskInfo;
     if (AndroidBitmap_getInfo(env, srcBitmap, &srcInfo) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) {
-        LOGE("Blur: Failed to get bitmap info"); return;
-    }
+        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) return;
     if (srcInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
-        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        LOGE("Blur: Bitmaps must be RGBA_8888"); return;
-    }
+        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return;
     void *srcPixels, *maskPixels;
     if (AndroidBitmap_lockPixels(env, srcBitmap, &srcPixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
-        LOGE("Blur: Failed to lock pixels"); return;
-    }
-    Pixel *img = (Pixel *)srcPixels;
-    Pixel *maskImg = (Pixel *)maskPixels;
+        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) return;
+    uint8_t *img = (uint8_t *)srcPixels;
+    uint8_t *maskImg = (uint8_t *)maskPixels;
     int width = srcInfo.width, height = srcInfo.height;
     size_t n = (size_t)width * height;
     std::vector<uint8_t> mask(n);
     for (size_t i = 0; i < n; ++i)
-        mask[i] = (maskImg[i].r + maskImg[i].g + maskImg[i].b) > 127 ? 1 : 0;
+        mask[i] = (maskImg[i*4] + maskImg[i*4+1] + maskImg[i*4+2]) > 127 ? 1 : 0;
     gaussianBlurArea(img, mask.data(), width, height, (int)radius);
     AndroidBitmap_unlockPixels(env, srcBitmap);
     AndroidBitmap_unlockPixels(env, maskBitmap);
@@ -707,25 +820,19 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeGuidedHealArea(
         JNIEnv *env, jobject, jobject srcBitmap, jobject maskBitmap, jint iterations) {
     AndroidBitmapInfo srcInfo, maskInfo;
     if (AndroidBitmap_getInfo(env, srcBitmap, &srcInfo) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) {
-        LOGE("Guided: Failed to get bitmap info"); return;
-    }
+        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) return;
     if (srcInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
-        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
-        LOGE("Guided: Bitmaps must be RGBA_8888"); return;
-    }
+        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) return;
     void *srcPixels, *maskPixels;
     if (AndroidBitmap_lockPixels(env, srcBitmap, &srcPixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
-        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
-        LOGE("Guided: Failed to lock pixels"); return;
-    }
-    Pixel *img = (Pixel *)srcPixels;
-    Pixel *maskImg = (Pixel *)maskPixels;
+        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) return;
+    uint8_t *img = (uint8_t *)srcPixels;
+    uint8_t *maskImg = (uint8_t *)maskPixels;
     int width = srcInfo.width, height = srcInfo.height;
     size_t n = (size_t)width * height;
     std::vector<uint8_t> mask(n);
     for (size_t i = 0; i < n; ++i)
-        mask[i] = (maskImg[i].r + maskImg[i].g + maskImg[i].b) > 127 ? 1 : 0;
+        mask[i] = (maskImg[i*4] + maskImg[i*4+1] + maskImg[i*4+2]) > 127 ? 1 : 0;
     guidedHealArea(img, mask.data(), width, height, (int)iterations);
     AndroidBitmap_unlockPixels(env, srcBitmap);
     AndroidBitmap_unlockPixels(env, maskBitmap);
