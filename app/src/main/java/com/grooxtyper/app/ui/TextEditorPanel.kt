@@ -822,7 +822,7 @@ private fun EffectTab(
     onBevelSize: (Float) -> Unit,
     bevelOpacity: Float,
     onBevelOpacity: (Float) -> Unit,
-    onOpenPerspectiveGrid: () -> Unit
+    onOpenPerspectiveGrid: () -> Unit = {},
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
