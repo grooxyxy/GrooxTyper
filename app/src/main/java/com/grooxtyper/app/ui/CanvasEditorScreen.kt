@@ -2715,9 +2715,9 @@ fun CanvasEditorScreen(
                     val n = 8
                     for (i in 0..n) {
                         val fx = l + (r - l) * i / n
-                        drawContext.canvas.nativeCanvas.drawLine(toScreen(Offset(fx,t)).x, toScreen(Offset(fx,t)).y, toScreen(Offset(fx,bt)).x, toScreen(Offset(fx,bt)).y, gp)
+                        val va=toScreen(Offset(fx,t)); val vb=toScreen(Offset(fx,bt)); drawContext.canvas.nativeCanvas.drawLine(va.x,va.y,vb.x,vb.y,gp)
                         val fy = t + (bt - t) * i / n
-                        drawContext.canvas.nativeCanvas.drawLine(toScreen(Offset(l,fy)).x, toScreen(Offset(l,fy)).y, toScreen(Offset(r,fy)).x, toScreen(Offset(r,fy)).y, gp)
+                        val ha=toScreen(Offset(l,fy)); val hb=toScreen(Offset(r,fy)); drawContext.canvas.nativeCanvas.drawLine(ha.x,ha.y,hb.x,hb.y,gp)
                     }
                     val bp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2.5f; color = 0xFF00E5FF.toInt() }
                     val corners = listOf(Offset(l,t),Offset(r,t),Offset(r,bt),Offset(l,bt)).map{toScreen(it)}
