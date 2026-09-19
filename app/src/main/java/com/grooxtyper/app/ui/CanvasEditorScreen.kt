@@ -708,6 +708,9 @@ fun CanvasEditorScreen(
     var showBrushSettings by remember { mutableStateOf(false) }
     var showTextEditor by remember { mutableStateOf(false) }
     var showRulerDialog by remember { mutableStateOf(false) }
+    // Mode atur penggaris (geser/putar) — saat aktif sapuan brush diabaikan
+    // supaya menata penggaris tidak ikut menggambar.
+    var rulerAdjustMode by remember { mutableStateOf(false) }
     var perspGridMode by remember { mutableStateOf(false) }
     var showExportMenu by remember { mutableStateOf(false) }
     // Dialog export: pilih format + atur kualitas, ada progres & hasil.
@@ -1503,6 +1506,34 @@ fun CanvasEditorScreen(
     }
 
     /**
+     * Kebalikan [screenToCanvasCoordinates] (pivot-aware). Overlay penggaris &
+     * grid perspektif dulu memakai `o * scale + offset` sehingga meleset dari
+     * kanvas begitu zoom ≠ 100% → penggaris terasa "tidak ada preview".
+     */
+    fun canvasToScreenPos(p: Offset): Offset {
+        val vw = viewportSize.width.toFloat()
+        val vh = viewportSize.height.toFloat()
+        val px = viewState.pivotFracX * vw
+        val py = viewState.pivotFracY * vh
+        val dx = (p.x - px) * viewState.scale
+        val dy = (p.y - py) * viewState.scale
+        val rad = Math.toRadians(viewState.rotation.toDouble())
+        val c = kotlin.math.cos(rad).toFloat()
+        val s = kotlin.math.sin(rad).toFloat()
+        return Offset(
+            px + viewState.offsetX + (dx * c - dy * s),
+            py + viewState.offsetY + (dx * s + dy * c)
+        )
+    }
+
+    /** Area kanvas yang sedang terlihat (dipakai untuk menaruh penggaris). */
+    fun visibleCanvasRect(): RectF {
+        val a = screenToCanvasCoordinates(0f, 0f)
+        val b = screenToCanvasCoordinates(viewportSize.width.toFloat(), viewportSize.height.toFloat())
+        return RectF(minOf(a.x, b.x), minOf(a.y, b.y), maxOf(a.x, b.x), maxOf(a.y, b.y))
+    }
+
+    /**
      * "To Canvas": kembalikan view agar seluruh kanvas pas & terpusat di
      * layar (dipakai saat user tak sengaja terlempar / kanvas hilang).
      * Dengan pivot 0.5/0.5 & rotasi 0: layar = pivot + offset +
@@ -1657,47 +1688,89 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode, perspGridMode) {
-                    if (!perspGridMode && brushEngine.rulerGuide.type != RulerType.STRAIGHT_LINE) return@pointerInput
+                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode, perspGridMode, rulerAdjustMode) {
                     if (perspGridMode && selectedTextBox == null) return@pointerInput
+                    if (!perspGridMode) {
+                        if (!rulerAdjustMode) return@pointerInput
+                        if (brushEngine.rulerGuide.type == RulerType.OFF) return@pointerInput
+                    }
+                    // 0=tidak ada, 1=ujung A, 2=ujung B, 3=geser, 4=radius lingkaran, 5=sudut perspektif
+                    var dragMode = 0
                     detectDragGestures(
-                        onDragStart = { },
+                        onDragStart = { pos ->
+                            dragMode = 0
+                            val cp = screenToCanvasCoordinates(pos.x, pos.y)
+                            val rg = brushEngine.rulerGuide
+                            if (perspGridMode) {
+                                dragMode = 5
+                            } else {
+                                val grab = 48f / viewState.scale.coerceAtLeast(0.05f)
+                                when (rg.type) {
+                                    RulerType.STRAIGHT_LINE -> {
+                                        val dA = (cp - rg.startPos).getDistance()
+                                        val dB = (cp - rg.endPos).getDistance()
+                                        val dM = (cp - rg.midPoint()).getDistance()
+                                        dragMode = when {
+                                            dA <= grab && dA <= dB -> 1
+                                            dB <= grab -> 2
+                                            dM <= grab * 1.4f -> 3
+                                            else -> 0
+                                        }
+                                    }
+                                    RulerType.CIRCLE -> {
+                                        val dC = (cp - rg.circleCenter).getDistance()
+                                        dragMode = when {
+                                            dC <= grab -> 3
+                                            kotlin.math.abs(dC - rg.circleRadius) <= grab -> 4
+                                            else -> 0
+                                        }
+                                    }
+                                    RulerType.OFF -> dragMode = 0
+                                }
+                            }
+                        },
                         onDrag = { change, drag ->
                             val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
+                            val rg = brushEngine.rulerGuide
                             if (perspGridMode) {
                                 val box = selectedTextBox ?: return@detectDragGestures
                                 val b = box.getBounds(); val pad = 24f
                                 val l = b.left - pad; val t = b.top - pad
-                                val r = b.right + pad; val bt = b.bottom + pad
+                                val rr = b.right + pad; val bt = b.bottom + pad
                                 val rad = 40f / viewState.scale
-                                val cy = (t + bt) / 2f; val cx = (l + r) / 2f
-                                val hh = (bt - t) / 2f; val hw = (r - l) / 2f
+                                val cy = (t + bt) / 2f; val cx = (l + rr) / 2f
+                                val hh = ((bt - t) / 2f).coerceAtLeast(1f); val hw = ((rr - l) / 2f).coerceAtLeast(1f)
                                 when {
-                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - r, cp.y - t) < rad ->
+                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - rr, cp.y - t) < rad ->
                                         box.perspY = ((cy - cp.y) / hh).coerceIn(-1f, 1f)
-                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - r, cp.y - bt) < rad ->
+                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - rr, cp.y - bt) < rad ->
                                         box.perspY = ((cp.y - cy) / hh).coerceIn(-1f, 1f)
                                     kotlin.math.hypot(cp.x - l, cp.y - cy) < rad ->
                                         box.perspX = ((cx - cp.x) / hw).coerceIn(-1f, 1f)
-                                    kotlin.math.hypot(cp.x - r, cp.y - cy) < rad ->
+                                    kotlin.math.hypot(cp.x - rr, cp.y - cy) < rad ->
                                         box.perspX = ((cp.x - cx) / hw).coerceIn(-1f, 1f)
                                 }
+                                // FIX: teks harus langsung ter-render ulang agar
+                                // perubahan keystone terlihat saat diseret.
+                                refreshCompositeCoalesced()
                                 change.consume()
                             } else {
-                                val mid = Offset(
-                                    (brushEngine.rulerGuide.startPos.x + brushEngine.rulerGuide.endPos.x) / 2f,
-                                    (brushEngine.rulerGuide.startPos.y + brushEngine.rulerGuide.endPos.y) / 2f
-                                )
-                                val rad = 30f / viewState.scale
-                                if (kotlin.math.hypot(cp.x - mid.x, cp.y - mid.y) < rad + 20f) {
-                                    brushEngine.rulerGuide.rotate(drag.x * 0.5f)
-                                    change.consume()
+                                val dvx = drag.x / viewState.scale.coerceAtLeast(0.05f)
+                                val dvy = drag.y / viewState.scale.coerceAtLeast(0.05f)
+                                when (dragMode) {
+                                    1 -> rg.startPos = cp
+                                    2 -> rg.endPos = cp
+                                    3 -> rg.move(dvx, dvy)
+                                    4 -> rg.circleRadius =
+                                        (cp - rg.circleCenter).getDistance().coerceIn(8f, 8000f)
+                                    else -> {}
                                 }
+                                if (dragMode != 0) change.consume()
                             }
                         }
                     )
                 }
-                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode) {
+                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode, rulerAdjustMode, perspGridMode) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -1844,6 +1917,12 @@ fun CanvasEditorScreen(
                                         // sampai jari diangkat (mencegah titik/goresan liar).
                                         lastCanvasPoint = null
                                         cursorPosition = null
+                                        change.consume()
+                                    } else if (rulerAdjustMode || (perspGridMode && selectedTextBox != null)) {
+                                        // Mode atur penggaris / grid perspektif: ini UI
+                                        // overlay, bukan menggambar → jangan gores kanvas.
+                                        cursorPosition = null
+                                        lastCanvasPoint = null
                                         change.consume()
                                     } else {
                                     cursorPosition = change.position
@@ -2662,30 +2741,72 @@ fun CanvasEditorScreen(
                 }
             }
 
-            // Ruler guide visual (garis/lingkaran) + handle rotasi
+            // Ruler guide visual (garis/lingkaran) + handle geser/putar.
+            // FIX: transform WAJIB pivot-aware; versi lama memakai
+            // `o * scale + offset` sehingga penggaris tergambar di luar posisi
+            // kanvas saat zoom ≠ 100% (inilah "tidak ada preview").
             if (brushEngine.rulerGuide.type != RulerType.OFF) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val cs = viewState.scale
-                    val ox = viewState.offsetX; val oy = viewState.offsetY
-                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
-                    val rp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; color = 0xAA00E5FF.toInt(); pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f,8f),0f) }
+                    fun toScreen(o: Offset) = canvasToScreenPos(o)
+                    val sc = viewState.scale.coerceAtLeast(0.05f)
+                    val adjust = rulerAdjustMode
+                    val rp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = if (adjust) 3f else 2f
+                        color = if (adjust) 0xFFFFC107.toInt() else 0xAA00E5FF.toInt()
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 8f), 0f)
+                    }
+                    val hp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.FILL
+                        color = if (adjust) 0xFFFFC107.toInt() else 0xFF00E5FF.toInt()
+                    }
                     when (brushEngine.rulerGuide.type) {
                         RulerType.STRAIGHT_LINE -> {
-                            val a = toScreen(brushEngine.rulerGuide.startPos); val b = toScreen(brushEngine.rulerGuide.endPos)
-                            drawContext.canvas.nativeCanvas.drawLine(a.x,a.y,b.x,b.y,rp)
-                            val mid = Offset((a.x+b.x)/2f,(a.y+b.y)/2f)
-                            val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
-                            drawContext.canvas.nativeCanvas.drawCircle(mid.x,mid.y,10f,hp)
-                            drawContext.canvas.nativeCanvas.drawCircle(a.x,a.y,8f,hp)
-                            drawContext.canvas.nativeCanvas.drawCircle(b.x,b.y,8f,hp)
+                            val a = toScreen(brushEngine.rulerGuide.startPos)
+                            val b = toScreen(brushEngine.rulerGuide.endPos)
+                            drawContext.canvas.nativeCanvas.drawLine(a.x, a.y, b.x, b.y, rp)
+                            val mid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
+                            drawContext.canvas.nativeCanvas.drawCircle(mid.x, mid.y, if (adjust) 14f else 8f, hp)
+                            drawContext.canvas.nativeCanvas.drawCircle(a.x, a.y, if (adjust) 16f else 8f, hp)
+                            drawContext.canvas.nativeCanvas.drawCircle(b.x, b.y, if (adjust) 16f else 8f, hp)
                         }
                         RulerType.CIRCLE -> {
                             val c = toScreen(brushEngine.rulerGuide.circleCenter)
-                            drawContext.canvas.nativeCanvas.drawCircle(c.x,c.y,brushEngine.rulerGuide.circleRadius*cs,rp)
-                            val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
-                            drawContext.canvas.nativeCanvas.drawCircle(c.x,c.y,8f,hp)
+                            drawContext.canvas.nativeCanvas.drawCircle(c.x, c.y, brushEngine.rulerGuide.circleRadius * sc, rp)
+                            drawContext.canvas.nativeCanvas.drawCircle(c.x, c.y, if (adjust) 14f else 8f, hp)
+                            if (adjust) {
+                                val edge = toScreen(
+                                    Offset(
+                                        brushEngine.rulerGuide.circleCenter.x + brushEngine.rulerGuide.circleRadius,
+                                        brushEngine.rulerGuide.circleCenter.y
+                                    )
+                                )
+                                drawContext.canvas.nativeCanvas.drawCircle(edge.x, edge.y, 14f, hp)
+                            }
                         }
-                        else -> {}
+                        RulerType.OFF -> {}
+                    }
+                }
+            }
+
+            // Toggle mode atur penggaris (hanya saat penggaris aktif).
+            if (!perspGridMode && brushEngine.rulerGuide.type != RulerType.OFF) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Button(
+                        onClick = {
+                            rulerAdjustMode = !rulerAdjustMode
+                            brushEngine.rulerAdjustMode = rulerAdjustMode
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (rulerAdjustMode) Color(0xFFFFC107) else Color(0xFF3A3A41)
+                        ),
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 140.dp)
+                    ) {
+                        Text(
+                            if (rulerAdjustMode) "Penggaris: GESER (tap = menggambar)" else "Penggaris: GAMBAR",
+                            fontSize = 12.sp,
+                            color = if (rulerAdjustMode) Color.Black else Color.White
+                        )
                     }
                 }
             }
@@ -2696,26 +2817,52 @@ fun CanvasEditorScreen(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val cs = viewState.scale
                     val ox = viewState.offsetX; val oy = viewState.offsetY
-                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
+                    fun toScreen(o: Offset) = canvasToScreenPos(o)
                     val b = box.getBounds()
                     val pad = 24f
-                    val l = b.left - pad; val t = b.top - pad; val r = b.right + pad; val bt = b.bottom + pad
+                    val l = b.left - pad; val t = b.top - pad
+                    val rr = b.right + pad; val bt = b.bottom + pad
+                    val hw = ((rr - l) / 2f).coerceAtLeast(1f)
+                    val hh = ((bt - t) / 2f).coerceAtLeast(1f)
+                    val cx = (l + rr) / 2f; val cy = (t + bt) / 2f
+                    // Trapesium keystone yang SAMA dengan TextRenderer, jadi grid ini
+                    // benar-benar mempratinjau hasil akhir (bukan kotak lurus).
+                    val dxT = box.perspX.coerceIn(-1f, 1f) * hw
+                    val dyL = box.perspY.coerceIn(-1f, 1f) * hh
+                    val corners = listOf(
+                        Offset(cx - hw + dxT, cy - hh + dyL),
+                        Offset(cx + hw - dxT, cy - hh - dyL),
+                        Offset(cx + hw + dxT, cy + hh + dyL),
+                        Offset(cx - hw - dxT, cy + hh - dyL)
+                    )
+                    fun bilerp(u: Float, v: Float): Offset {
+                        val top = Offset(
+                            corners[0].x + (corners[1].x - corners[0].x) * u,
+                            corners[0].y + (corners[1].y - corners[0].y) * u
+                        )
+                        val bot = Offset(
+                            corners[3].x + (corners[2].x - corners[3].x) * u,
+                            corners[3].y + (corners[2].y - corners[3].y) * u
+                        )
+                        return Offset(top.x + (bot.x - top.x) * v, top.y + (bot.y - top.y) * v)
+                    }
                     val gp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f; color = 0x88FFFFFF.toInt() }
                     val n = 8
-                    for (i in 0..n) {
-                        val fx = l + (r - l) * i / n
-                        val va=toScreen(Offset(fx,t)); val vb=toScreen(Offset(fx,bt)); drawContext.canvas.nativeCanvas.drawLine(va.x,va.y,vb.x,vb.y,gp)
-                        val fy = t + (bt - t) * i / n
-                        val ha=toScreen(Offset(l,fy)); val hb=toScreen(Offset(r,fy)); drawContext.canvas.nativeCanvas.drawLine(ha.x,ha.y,hb.x,hb.y,gp)
+                    for (i in 1 until n) {
+                        val f = i / n.toFloat()
+                        val va = toScreen(bilerp(f, 0f)); val vb = toScreen(bilerp(f, 1f))
+                        drawContext.canvas.nativeCanvas.drawLine(va.x, va.y, vb.x, vb.y, gp)
+                        val ha = toScreen(bilerp(0f, f)); val hb = toScreen(bilerp(1f, f))
+                        drawContext.canvas.nativeCanvas.drawLine(ha.x, ha.y, hb.x, hb.y, gp)
                     }
                     val bp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2.5f; color = 0xFF00E5FF.toInt() }
-                    val corners = listOf(Offset(l,t),Offset(r,t),Offset(r,bt),Offset(l,bt)).map{toScreen(it)}
+                    val sc2 = corners.map { toScreen(it) }
                     for (i in 0..3) {
-                        val a = corners[i]; val c = corners[(i+1)%4]
-                        drawContext.canvas.nativeCanvas.drawLine(a.x,a.y,c.x,c.y,bp)
+                        val a = sc2[i]; val c = sc2[(i + 1) % 4]
+                        drawContext.canvas.nativeCanvas.drawLine(a.x, a.y, c.x, c.y, bp)
                     }
                     val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
-                    corners.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x,it.y,12f,hp) }
+                    sc2.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x, it.y, 14f, hp) }
                 }
             }
 
@@ -3782,7 +3929,14 @@ fun CanvasEditorScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        brushEngine.rulerGuide.type = r
+                                        val rg = brushEngine.rulerGuide
+                                        rg.type = r
+                                        // FIX: taruh penggaris di area yang terlihat.
+                                        // Dulu default (100,100)-(500,500) sering di
+                                        // luar viewport → fitur dikira mati.
+                                        if (r != RulerType.OFF) rg.placeInRect(visibleCanvasRect())
+                                        rulerAdjustMode = r != RulerType.OFF
+                                        brushEngine.rulerAdjustMode = rulerAdjustMode
                                         showRulerDialog = false
                                     }
                                     .padding(12.dp),
@@ -3839,7 +3993,12 @@ fun CanvasEditorScreen(
                             multiBubbleDraft = ""
                             showMultiBubbleDialog = true
                         },
-                        onOpenPerspectiveGrid = { perspGridMode = true },
+                        onOpenPerspectiveGrid = {
+                            perspGridMode = true
+                            // Grid perspektif & mode atur penggaris tidak dipakai bersamaan.
+                            rulerAdjustMode = false
+                            brushEngine.rulerAdjustMode = false
+                        },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }

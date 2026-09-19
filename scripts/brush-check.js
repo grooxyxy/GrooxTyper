@@ -80,8 +80,26 @@ assert(brush.includes('BrushFrameThrottle'), 'brush punya BrushFrameThrottle ant
 assert(editor.includes('BrushHugeGuide.visibleRect'), 'editor oper visibleRect ke brush saat huge');
 assert(editor.includes('brushVisible'), 'editor hitung brushVisible sekali per event');
 
+// 6. Penggaris (preview + gores) dan brush Effect (blend/blur/dodge/burn) benar-benar berfungsi
+const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
+assert((brush.match(/applySmudgeStroke/g) || []).length >= 2, 'blend = smudge sejati (cap kanvas dari dab sebelumnya, bukan tint warna)');
+assert(brush.includes('smudgeBuf') && brush.includes('smudgeHasInk'), 'smudge punya buffer cap + status ink');
+assert(brush.includes('boxBlurBitmap') && brush.includes('boxBlurH') && brush.includes('boxBlurV'), 'blur = box blur 3 pass (piksel benar-benar diblur)');
+assert(!brush.includes('blurred!!, 0f, 0f, blurPaint'), 'blur tidak lagi memakai BlurMaskFilter untuk bitmap (no-op di Skia)');
+assert(brush.includes('BrushType.DODGE') && brush.includes('BrushType.BURN'), 'ada brush Dodge (Lighten) & Burn (Darken)');
+assert(brush.includes('PorterDuffXfermode(PorterDuff.Mode.ADD)'), 'dodge memakai ADD (menambah cahaya)');
+assert(brush.includes('PorterDuff.Mode.MULTIPLY'), 'burn/marker memakai MULTIPLY (menggelapkan)');
+assert(brush.includes('rulerLocked') && brush.includes('shouldLock'), 'ruler: kunci per-stroke (gores mengikuti penggaris)');
+assert(brush.includes('fun project('), 'ruler: proyeksi garis menerus (tidak dijepit ujung seperti versi lama)');
+assert(brush.includes('placeInRect'), 'ruler: bisa ditaruh di area yang terlihat');
+assert(brush.includes('rulerAdjustMode'), 'ruler: mode atur (geser) tanpa menggambar');
+assert(editor.includes('canvasToScreenPos'), 'overlay penggaris/grid pivot-aware (preview tampil saat zoom)');
+assert((textEditor.match(/onOpenPerspectiveGrid = onOpenPerspectiveGrid/g) || []).length >= 2, 'tombol grid perspektif terhubung di tab Efek (dulu no-op)');
+assert(editor.includes('fun bilerp'), 'grid perspektif menggambar trapesium keystone yang sebenarnya');
+assert(editor.includes('refreshCompositeCoalesced()') && editor.includes('perspGridMode = true'), 'grid perspektif aktif dari panel teks + preview live');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
-  console.log('brush-check PASSED: brush anti-delay/crash + heal brush siap + import 720x16000 heap-aware');
+  console.log('brush-check PASSED: brush anti-delay/crash + heal brush siap + import 720x16000 heap-aware + ruler/blend/blur sesuai namanya');
 }

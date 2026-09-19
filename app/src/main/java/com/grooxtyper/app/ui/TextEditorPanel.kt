@@ -484,7 +484,11 @@ fun TextEditorPanel(
                         bevelSize = bevelSize,
                         onBevelSize = { bevelSize = it; box.bevel?.size = it; push() },
                         bevelOpacity = bevelOpacity,
-                        onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() }
+                        onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() },
+                        // FIX: tombol "Buka Grid Perspektif" berada di tab Efek.
+                        // Sebelumnya parameter ini tidak dioper sehingga memakai
+                        // nilai default {} → tombol tampak "tidak berfungsi".
+                        onOpenPerspectiveGrid = onOpenPerspectiveGrid
                     )
                     3 -> StyleTab(
                         styleName = styleName,

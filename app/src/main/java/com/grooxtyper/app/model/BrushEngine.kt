@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.graphics.RectF
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
@@ -43,14 +44,18 @@ enum class BrushType(val displayName: String, val category: String) {
     FLAT("Flat Brush", "Paint"),
     ROUND("Round Brush", "Paint"),
     CRAYON("Crayon", "Paint"),
-    BLEND("Blend", "Paint"),
+    // Effect: brush olah-piksel yang benar-benar sesuai namanya.
+    // BLEND = smudge (menyeret cat), BLUR = blur nyata, DODGE/BURN = tonal.
+    BLEND("Blend (Smudge)", "Effect"),
+    BLUR("Blur", "Effect"),
+    DODGE("Dodge (Lighten)", "Effect"),
+    BURN("Burn (Darken)", "Effect"),
     // Air
     AIRBRUSH("Airbrush", "Air"),
     AIR_FAN("Fan Brush", "Air"),
     // Erase
     ERASER("Eraser", "Erase"),
     ERASER_SOFT("Soft Eraser", "Erase"),
-    BLUR("Blur", "Erase"),
     // Heal
     HEAL_PATCH("Heal Patch", "Heal")
 }
@@ -79,16 +84,81 @@ class StabilizerConfig(
     var strength by mutableFloatStateOf(strength)
 }
 
+private const val MAX_BLUR_SIDE = 512f
+
 class RulerGuide(
     type: RulerType = RulerType.OFF,
-    var startPos: Offset = Offset(100f, 100f),
-    var endPos: Offset = Offset(500f, 500f),
-    var circleCenter: Offset = Offset(300f, 300f),
-    var circleRadius: Float = 200f,
+    startPos: Offset = Offset(100f, 100f),
+    endPos: Offset = Offset(500f, 500f),
+    circleCenter: Offset = Offset(300f, 300f),
+    circleRadius: Float = 200f,
     rotationDeg: Float = 0f
 ) {
     var type by mutableStateOf(type)
     var rotationDeg by mutableFloatStateOf(rotationDeg)
+    // FIX: posisi penggaris WAJIB state Compose. Sebelumnya plain var sehingga
+    // preview tidak pernah ter-recompose (penggaris terasa "tidak ada").
+    var startPos by mutableStateOf(startPos)
+    var endPos by mutableStateOf(endPos)
+    var circleCenter by mutableStateOf(circleCenter)
+    var circleRadius by mutableFloatStateOf(circleRadius)
+
+    /** Toleransi kunci (px kanvas): stroke yang mulai dekat penggaris mengikuti
+     *  penggaris; yang jauh tetap bebas (perilaku penggaris fisik). */
+    var snapTolerance: Float = 90f
+
+    fun midPoint(): Offset = Offset((startPos.x + endPos.x) / 2f, (startPos.y + endPos.y) / 2f)
+
+    fun move(dx: Float, dy: Float) {
+        startPos = Offset(startPos.x + dx, startPos.y + dy)
+        endPos = Offset(endPos.x + dx, endPos.y + dy)
+        circleCenter = Offset(circleCenter.x + dx, circleCenter.y + dy)
+    }
+
+    /** Taruh penggaris di dalam area yang terlihat (dipanggil saat fitur nyala)
+     *  supaya penggaris langsung tampil, bukan tersembunyi di luar viewport. */
+    fun placeInRect(r: RectF) {
+        val cx = (r.left + r.right) / 2f
+        val cy = (r.top + r.bottom) / 2f
+        val halfW = (r.width() * 0.32f).coerceAtLeast(60f)
+        val rad = Math.toRadians(rotationDeg.toDouble())
+        val c = kotlin.math.cos(rad).toFloat()
+        val s = kotlin.math.sin(rad).toFloat()
+        startPos = Offset(cx - halfW * c, cy - halfW * s)
+        endPos = Offset(cx + halfW * c, cy + halfW * s)
+        circleCenter = Offset(cx, cy)
+        circleRadius = (minOf(r.width(), r.height()) * 0.3f).coerceAtLeast(40f)
+    }
+
+    /** Proyeksi TANPA syarat ke penggaris (garis dianggap menerus, ujung tidak
+     *  dijepit) — dipakai setelah stroke dikunci, jadi tidak ada goresan yang
+     *  "tertahan" di ujung penggaris seperti versi lama. */
+    fun project(p: Offset): Offset = when (type) {
+        RulerType.STRAIGHT_LINE -> {
+            val dx = endPos.x - startPos.x
+            val dy = endPos.y - startPos.y
+            val lenSq = dx * dx + dy * dy
+            if (lenSq == 0f) p else {
+                val t = ((p.x - startPos.x) * dx + (p.y - startPos.y) * dy) / lenSq
+                Offset(startPos.x + t * dx, startPos.y + t * dy)
+            }
+        }
+        RulerType.CIRCLE -> {
+            val dx = p.x - circleCenter.x
+            val dy = p.y - circleCenter.y
+            val dist = hypot(dx, dy)
+            if (dist == 0f) p
+            else Offset(circleCenter.x + (dx / dist) * circleRadius, circleCenter.y + (dy / dist) * circleRadius)
+        }
+        RulerType.OFF -> p
+    }
+
+    /** True bila titik awal stroke cukup dekat penggaris untuk dikunci. */
+    fun shouldLock(p: Offset, tolerance: Float = snapTolerance): Boolean {
+        if (type == RulerType.OFF) return false
+        if (type == RulerType.CIRCLE) return true
+        return (p - project(p)).getDistance() <= tolerance
+    }
 
     /** Rotasi ruler (derajat): STRAIGHT_LINE memutar garis di titik tengah,
      *  CIRCLE memutar titik awal pegangan radius (visual). */
@@ -106,26 +176,9 @@ class RulerGuide(
             startPos = rot(startPos); endPos = rot(endPos)
         }
     }
-    fun snapPoint(p: Offset): Offset {
-        return when (type) {
-            RulerType.STRAIGHT_LINE -> {
-                val dx = endPos.x - startPos.x
-                val dy = endPos.y - startPos.y
-                val lenSq = dx * dx + dy * dy
-                if (lenSq == 0f) return p
-                val t = max(0f, min(1f, ((p.x - startPos.x) * dx + (p.y - startPos.y) * dy) / lenSq))
-                Offset(startPos.x + t * dx, startPos.y + t * dy)
-            }
-            RulerType.CIRCLE -> {
-                val dx = p.x - circleCenter.x
-                val dy = p.y - circleCenter.y
-                val dist = hypot(dx, dy)
-                if (dist == 0f) return p
-                Offset(circleCenter.x + (dx / dist) * circleRadius, circleCenter.y + (dy / dist) * circleRadius)
-            }
-            RulerType.OFF -> p
-        }
-    }
+    /** Kompatibilitas: snap dengan gerbang toleransi (dipakai pemanggil lama). */
+    fun snapPoint(p: Offset, tolerance: Float = snapTolerance): Offset =
+        if (shouldLock(p, tolerance)) project(p) else p
 }
 
 class BrushEngine {
@@ -149,6 +202,28 @@ class BrushEngine {
     private var euroInit = false
     // Warna pickup smudge (dipertahankan sepanjang stroke, reset tiap stroke).
     private var blendPickup: Int? = null
+
+    /** Mode atur penggaris: saat true semua sapuan brush diabaikan supaya user
+     *  bisa menggeser/memutar penggaris tanpa tidak sengaja menggambar. */
+    var rulerAdjustMode by mutableStateOf(false)
+
+    // ---- Smudge (Blend): cap = potongan kanvas dari dab sebelumnya ----
+    private var smudgeBuf: Bitmap? = null
+    private var smudgeMask: Bitmap? = null
+    private var smudgeTemp: Bitmap? = null
+    private var smudgeDim = 0
+    private var smudgeHasInk = false
+    private var smudgeStamp = Paint(Paint.ANTI_ALIAS_FLAG)
+    private var smudgeRefill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val maskDstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
+
+    // ---- Blur nyata (box blur 3 pass ≈ Gaussian) ----
+    private var blurScratch: IntArray? = null
+    private var blurScratchB: IntArray? = null
+
+    // Kunci penggaris per-stroke (ala ibisPaint/Procreate): diputuskan saat
+    // stroke dimulai, dipertahankan sampai jari diangkat.
+    private var rulerLocked = false
 
     private fun lerpColor(a: Int, b: Int, t: Float): Int {
         val tt = t.coerceIn(0f, 1f)
@@ -197,7 +272,7 @@ class BrushEngine {
         return nc
     }
 
-    fun beginStroke() {
+    fun beginStroke(start: Offset? = null) {
         lastSmoothedPoint = null
         prevCurvePoint = null
         velocityEma = 0f
@@ -209,6 +284,9 @@ class BrushEngine {
         lastVelocity = Offset.Zero
         dirtyTiles.clear()
         dirtyTileBounds.setEmpty()
+        smudgeHasInk = false
+        rulerLocked = start != null &&
+            rulerGuide.shouldLock(start, max(rulerGuide.snapTolerance, size * 1.5f))
     }
 
     fun endStroke() {
@@ -218,7 +296,14 @@ class BrushEngine {
         euroInit = false
         blendPickup = null
         lastVelocity = Offset.Zero
+        smudgeHasInk = false
+        rulerLocked = false
     }
+
+    /** Snap penggaris (per-stroke). Bila stroke dikunci, proyeksi dipakai penuh
+     *  sehingga goresan lurus rapi; bila tidak, kanvas bebas. */
+    private fun snapGuided(p: Offset): Offset =
+        if (rulerLocked) rulerGuide.project(p) else p
 
     /** Prediksi titik berikut dari kecepatan (Ink prediction, murah, tanpa API baru). */
     fun predictNext(current: Offset, previous: Offset?): Offset {
@@ -375,6 +460,8 @@ class BrushEngine {
                 paint.strokeCap = Paint.Cap.SQUARE
                 paint.strokeJoin = Paint.Join.MITER
                 paint.alpha = (this@BrushEngine.opacity * 180).toInt().coerceIn(0, 255)
+                // Marker asli makin gelap saat tumpang tindih → MULTIPLY.
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
             }
             BrushType.FLAT -> {
                 paint.strokeCap = Paint.Cap.SQUARE
@@ -391,12 +478,30 @@ class BrushEngine {
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
                 paint.alpha = (this@BrushEngine.opacity * 150).toInt().coerceIn(0, 255)
+                // Grain: lihat drawDab (beberapa garis tipis ber-jitter tetap).
             }
             BrushType.BLEND -> {
-                // Smudge hemat: warna diambil per segmen (lihat bawah), bukan per piksel.
+                // Cap smudge diambil dari kanvas (applySmudgeStroke); paint ini
+                // hanya jalur dot/tap agar tetap terasa.
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
                 paint.alpha = (this@BrushEngine.opacity * 220).toInt().coerceIn(0, 255)
+            }
+            BrushType.DODGE -> {
+                // Dodge (Lighten): menambah cahaya (ADD) → area makin terang.
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.2f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 90).toInt().coerceIn(0, 255)
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
+            }
+            BrushType.BURN -> {
+                // Burn (Darken): menggelapkan bertumpuk seperti pensil shading.
+                if (!isHuge) paint.maskFilter = BlurMaskFilter(max(1f, size * 0.2f), BlurMaskFilter.Blur.NORMAL)
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.alpha = (this@BrushEngine.opacity * 150).toInt().coerceIn(0, 255)
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.MULTIPLY)
             }
             BrushType.AIRBRUSH -> {
                 if (!isHuge) paint.maskFilter = BlurMaskFilter(max(3f, size * 0.4f), BlurMaskFilter.Blur.NORMAL)
@@ -467,19 +572,26 @@ class BrushEngine {
         // tanpa efek samping UI.
         val useStabilizer = stabilizer.isEnabled && !isHuge
 
-        val smoothedP1 = smoothPoint(rulerGuide.snapPoint(p1), lastSmoothedPoint, useStabilizer)
-        val smoothedP2 = smoothPoint(rulerGuide.snapPoint(p2), smoothedP1, useStabilizer)
+        val smoothedP1 = smoothPoint(snapGuided(p1), lastSmoothedPoint, useStabilizer)
+        val smoothedP2 = smoothPoint(snapGuided(p2), smoothedP1, useStabilizer)
         lastSmoothedPoint = smoothedP2
 
         if (brushType == BrushType.BLUR) {
-            // Huge: blur per segmen sangat mahal (4 alokasi bitmap per dab).
-            // Lewati segmen loncat besar dan batasi luas region agar tidak OOM.
+            // Blur NYATA per segmen (box blur 3 pass). Region dibatasi keras di
+            // applyBlurStroke sehingga tetap responsif di 720x16000; hanya
+            // lompatan antar-event yang ekstrem yang dilewati.
             val jump = hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y)
-            if (isHuge && jump > 80f) {
-                // skip blur intermediate jika lompatan besar, tunggu pen lift
-            } else {
+            if (!(isHuge && jump > 160f)) {
                 applyBlurStroke(layer, smoothedP1, smoothedP2, isHuge)
             }
+            prevCurvePoint = smoothedP2
+            return
+        }
+        if (brushType == BrushType.BLEND) {
+            // Smudge sejati: cap diambil dari kanvas pada dab sebelumnya
+            // (referensi: losingfight.com "How to implement smudge and stamp
+            // tools"). Versi lama hanya menint warna → bukan smudge.
+            applySmudgeStroke(layer, smoothedP1, smoothedP2, isHuge)
             prevCurvePoint = smoothedP2
             return
         }
@@ -492,7 +604,7 @@ class BrushEngine {
         val curveControl: Offset?
         val curveEnd: Offset
         val prevCurve = prevCurvePoint
-        if (prevCurve != null && rulerGuide.type == RulerType.OFF) {
+        if (prevCurve != null && !rulerLocked) {
             curveControl = smoothedP1
             curveStart = Offset((prevCurve.x + smoothedP1.x) / 2f, (prevCurve.y + smoothedP1.y) / 2f)
             curveEnd = Offset((smoothedP1.x + smoothedP2.x) / 2f, (smoothedP1.y + smoothedP2.y) / 2f)
@@ -528,17 +640,7 @@ class BrushEngine {
         if (layer.isAlphaLocked) {
             paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
         }
-        // Blend/smudge hemat: 1x getPixel per segmen di titik awal (bukan per dab),
-        // campur warna brush dengan warna kanvas agar transisi menyatu.
-        if (brushType == BrushType.BLEND) {
-            val sx = smoothedP1.x.toInt().coerceIn(0, bmp.width - 1)
-            val sy = smoothedP1.y.toInt().coerceIn(0, bmp.height - 1)
-            val sampled = runCatching { bmp.getPixel(sx, sy) }.getOrNull()
-            if (sampled != null && (sampled ushr 24) > 8) {
-                blendPickup = lerpColor(blendPickup ?: sampled, sampled, 0.25f)
-            }
-            paint.color = lerpColor(blendPickup ?: color, color, 0.45f)
-        }
+        // (BLEND/smudge ditangani applySmudgeStroke di atas, bukan tint warna.)
 
         val distance = hypot(smoothedP2.x - smoothedP1.x, smoothedP2.y - smoothedP1.y)
 
@@ -726,22 +828,57 @@ class BrushEngine {
                 }
                 canvas.drawLine(x1, y1, x2, y2, highlight)
             }
+        } else if (brushType == BrushType.CRAYON || brushType == BrushType.PENCIL) {
+            // Grain krayon/pensil: beberapa garis tipis ber-jitter, jitter-nya
+            // deterministik dari posisi (hash) supaya goresan tidak "berkedip".
+            val grain = if (brushType == BrushType.CRAYON) 4 else 3
+            val baseW = paint.strokeWidth
+            val baseA = paint.alpha
+            val amp = if (brushType == BrushType.CRAYON) baseW * 0.35f else baseW * 0.22f
+            paint.strokeWidth = baseW * (if (brushType == BrushType.CRAYON) 0.55f else 0.45f)
+            for (g in 0 until grain) {
+                val jx = jitter(x1, y1, g * 2 + 1) * amp
+                val jy = jitter(x2, y2, g * 2 + 2) * amp
+                paint.alpha = (baseA * (if (g == 0) 0.8f else 0.45f)).toInt().coerceIn(1, 255)
+                canvas.drawLine(x1 + jx, y1 + jy, x2 + jx, y2 + jy, paint)
+            }
+            paint.strokeWidth = baseW
+            paint.alpha = baseA
         } else {
             canvas.drawLine(x1, y1, x2, y2, paint)
         }
     }
 
+    /** Jitter deterministik (-0.5..0.5) dari posisi; bukan Random agar hasil
+     *  goresan stabil saat kanvas di-render ulang / undo. */
+    private fun jitter(x: Float, y: Float, seed: Int): Float {
+        var h = (x.toInt() * 374761393) xor (y.toInt() * 668265263) xor (seed * 1274126177)
+        h = h xor (h ushr 13)
+        h *= 1274126177
+        h = h xor (h ushr 16)
+        return (((h ushr 8) and 0xFF) / 255f) - 0.5f
+    }
+
     private fun applyBlurStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
         val bmp = layer.getPersistentBitmap()
-        // Radius mengikuti ukuran brush agar efek blur benar-benar terlihat
-        // (sebelumnya size/2 terlalu halus sehingga dikira tidak berfungsi).
-        val radius = max(8f, size)
+        // Radius blur yang benar-benar terlihat.
+        // CATATAN PENTING: Skia BlurMaskFilter TIDAK mem-blur piksel bitmap
+        // (hanya alpha mask geometri) — inilah sebab brush Blur versi lama
+        // terlihat "tidak berfungsi" (hasilnya identik dengan aslinya).
+        // Di sini piksel benar-benar diblur: box blur 3 pass ≈ Gaussian.
+        val radius = max(2f, size * 0.6f)
         val pad = (size + radius * 2f + 4f)
 
-        val leftF = min(p1.x, p2.x) - pad
-        val topF = min(p1.y, p2.y) - pad
-        val rightF = max(p1.x, p2.x) + pad
-        val bottomF = max(p1.y, p2.y) + pad
+        // Region dibatasi (cap sisi). Batas lama 140_000L px² membatalkan
+        // sapuan normal di kanvas 720x16000; cap sisi ini setara tapi tidak
+        // pernah menelan sapuan wajar.
+        val maxSide = if (isHuge) 256f else MAX_BLUR_SIDE
+        val mx = (p1.x + p2.x) / 2f
+        val my = (p1.y + p2.y) / 2f
+        val leftF = max(min(p1.x, p2.x) - pad, mx - maxSide / 2f)
+        val topF = max(min(p1.y, p2.y) - pad, my - maxSide / 2f)
+        val rightF = min(max(p1.x, p2.x) + pad, mx + maxSide / 2f)
+        val bottomF = min(max(p1.y, p2.y) + pad, my + maxSide / 2f)
 
         val left = leftF.toInt().coerceIn(0, bmp.width - 1)
         val top = topF.toInt().coerceIn(0, bmp.height - 1)
@@ -750,9 +887,6 @@ class BrushEngine {
         val w = right - left
         val h = bottom - top
         if (w <= 0 || h <= 0) return
-        // Batas lama 140_000L dinaikkan agar sapuan normal tak sunyi;
-        // region raksasa dipotong tengah agar tetap aman di huge canvas.
-        if (isHuge && w.toLong() * h.toLong() > 300_000L) return
 
         // Hanya proses dirty rect, bukan seluruh kanvas (hemat CPU/GC per segmen).
         // Semua alokasi dilindungi OOM + recycle di finally agar tidak bocor.
@@ -763,11 +897,8 @@ class BrushEngine {
         try {
             region = Bitmap.createBitmap(bmp, left, top, w, h)
             blurred = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            val blurCanvas = Canvas(blurred!!)
-            val blurPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                maskFilter = BlurMaskFilter(radius, BlurMaskFilter.Blur.NORMAL)
-            }
-            blurCanvas.drawBitmap(region!!, 0f, 0f, blurPaint)
+            // Blur piksel nyata (bukan BlurMaskFilter pada bitmap = no-op).
+            boxBlurBitmap(region!!, blurred!!, radius.toInt().coerceIn(1, 64))
 
             maskBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val maskCanvas = Canvas(maskBmp!!)
@@ -777,6 +908,8 @@ class BrushEngine {
                 strokeJoin = Paint.Join.ROUND
                 strokeWidth = size * 1.2f
                 color = Color.BLACK
+                // MaskFilter pada GEOMETRI (garis) memang bekerja → tepi mask lembut.
+                maskFilter = BlurMaskFilter(max(1f, size * 0.25f), BlurMaskFilter.Blur.NORMAL)
             }
             maskCanvas.drawLine(p1.x - left, p1.y - top, p2.x - left, p2.y - top, strokePaint)
 
@@ -797,6 +930,185 @@ class BrushEngine {
             runCatching { blurred?.recycle() }
             runCatching { maskBmp?.recycle() }
             runCatching { tempLayer?.recycle() }
+        }
+    }
+
+    /**
+     * Blur piksel nyata (box blur 3 pass ≈ Gaussian) untuk region kecil.
+     * Rata-rata dihitung di ruang premultiplied supaya piksel transparan tidak
+     * memunculkan pinggiran gelap. Scratch array dipakai ulang (tanpa alokasi
+     * per segmen) agar tidak ada GC churn saat menggores panjang.
+     */
+    private fun boxBlurBitmap(src: Bitmap, dst: Bitmap, radius: Int) {
+        val w = src.width
+        val h = src.height
+        val n = w * h
+        if (n <= 0 || dst.width != w || dst.height != h) return
+        var a = blurScratch
+        if (a == null || a.size < n) { a = IntArray(n); blurScratch = a }
+        var b = blurScratchB
+        if (b == null || b.size < n) { b = IntArray(n); blurScratchB = b }
+        val px = a
+        val tmp = b
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        val r = radius.coerceIn(1, 64)
+        repeat(3) {
+            boxBlurH(px, tmp, w, h, r)
+            boxBlurV(tmp, px, w, h, r)
+        }
+        dst.setPixels(px, 0, w, 0, 0, w, h)
+    }
+
+    private fun boxBlurH(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val div = (2 * r + 1).toFloat()
+        for (y in 0 until h) {
+            val row = y * w
+            var sa = 0f; var sr = 0f; var sg = 0f; var sb = 0f
+            for (i in -r..r) {
+                val c = src[row + i.coerceIn(0, w - 1)]
+                val al = ((c ushr 24) and 0xFF).toFloat()
+                sa += al
+                sr += ((c ushr 16) and 0xFF) * al
+                sg += ((c ushr 8) and 0xFF) * al
+                sb += (c and 0xFF) * al
+            }
+            for (x in 0 until w) {
+                val alo = sa / div
+                dst[row + x] = if (alo <= 0.5f) 0 else {
+                    val ao = alo.coerceIn(0f, 255f).toInt()
+                    val ro = (sr / sa).coerceIn(0f, 255f).toInt()
+                    val go = (sg / sa).coerceIn(0f, 255f).toInt()
+                    val bo = (sb / sa).coerceIn(0f, 255f).toInt()
+                    (ao shl 24) or (ro shl 16) or (go shl 8) or bo
+                }
+                val outC = src[row + (x - r).coerceIn(0, w - 1)]
+                val inC = src[row + (x + r + 1).coerceIn(0, w - 1)]
+                val ao1 = ((outC ushr 24) and 0xFF).toFloat()
+                val ai1 = ((inC ushr 24) and 0xFF).toFloat()
+                sa += ai1 - ao1
+                sr += ((inC ushr 16) and 0xFF) * ai1 - ((outC ushr 16) and 0xFF) * ao1
+                sg += ((inC ushr 8) and 0xFF) * ai1 - ((outC ushr 8) and 0xFF) * ao1
+                sb += (inC and 0xFF) * ai1 - (outC and 0xFF) * ao1
+            }
+        }
+    }
+
+    private fun boxBlurV(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int) {
+        val div = (2 * r + 1).toFloat()
+        for (x in 0 until w) {
+            var sa = 0f; var sr = 0f; var sg = 0f; var sb = 0f
+            for (i in -r..r) {
+                val c = src[i.coerceIn(0, h - 1) * w + x]
+                val al = ((c ushr 24) and 0xFF).toFloat()
+                sa += al
+                sr += ((c ushr 16) and 0xFF) * al
+                sg += ((c ushr 8) and 0xFF) * al
+                sb += (c and 0xFF) * al
+            }
+            for (y in 0 until h) {
+                val alo = sa / div
+                dst[y * w + x] = if (alo <= 0.5f) 0 else {
+                    val ao = alo.coerceIn(0f, 255f).toInt()
+                    val ro = (sr / sa).coerceIn(0f, 255f).toInt()
+                    val go = (sg / sa).coerceIn(0f, 255f).toInt()
+                    val bo = (sb / sa).coerceIn(0f, 255f).toInt()
+                    (ao shl 24) or (ro shl 16) or (go shl 8) or bo
+                }
+                val outC = src[(y - r).coerceIn(0, h - 1) * w + x]
+                val inC = src[(y + r + 1).coerceIn(0, h - 1) * w + x]
+                val ao1 = ((outC ushr 24) and 0xFF).toFloat()
+                val ai1 = ((inC ushr 24) and 0xFF).toFloat()
+                sa += ai1 - ao1
+                sr += ((inC ushr 16) and 0xFF) * ai1 - ((outC ushr 16) and 0xFF) * ao1
+                sg += ((inC ushr 8) and 0xFF) * ai1 - ((outC ushr 8) and 0xFF) * ao1
+                sb += (inC and 0xFF) * ai1 - (outC and 0xFF) * ao1
+            }
+        }
+    }
+
+    /** Siapkan (sekali per ukuran) cap smudge + mask lingkaran + temp. */
+    private fun ensureSmudgeScratch(dim: Int): Boolean {
+        if (dim <= 0) return false
+        val b0 = smudgeBuf; val m0 = smudgeMask; val t0 = smudgeTemp
+        if (smudgeDim == dim && b0 != null && !b0.isRecycled && m0 != null && !m0.isRecycled && t0 != null && !t0.isRecycled) return true
+        runCatching { b0?.recycle() }
+        runCatching { m0?.recycle() }
+        runCatching { t0?.recycle() }
+        smudgeBuf = null; smudgeMask = null; smudgeTemp = null; smudgeDim = 0
+        return try {
+            val buf = Bitmap.createBitmap(dim, dim, Bitmap.Config.ARGB_8888)
+            val mask = Bitmap.createBitmap(dim, dim, Bitmap.Config.ARGB_8888)
+            val temp = Bitmap.createBitmap(dim, dim, Bitmap.Config.ARGB_8888)
+            val r = dim / 2f
+            val rg = android.graphics.RadialGradient(
+                r, r, r * 0.95f,
+                0xFFFFFFFF.toInt(), 0x00FFFFFF,
+                android.graphics.Shader.TileMode.CLAMP
+            )
+            Canvas(mask).drawCircle(r, r, r * 0.95f, Paint(Paint.ANTI_ALIAS_FLAG).apply { shader = rg })
+            smudgeBuf = buf; smudgeMask = mask; smudgeTemp = temp; smudgeDim = dim
+            true
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace(); false
+        } catch (e: Exception) {
+            e.printStackTrace(); false
+        }
+    }
+
+    /**
+     * SMUDGE (brush "Blend"): cap = potongan kanvas sebesar ujung brush pada dab
+     * sebelumnya, distempel ke dab sekarang dengan alpha = kekuatan, lalu cap
+     * diperbarui dari kanvas (rate tetap) untuk dab berikutnya. Ini algoritma
+     * smudge standar: kekuatan/tekanan ⇔ transparansi cap, semakin kuat semakin
+     * banyak cat terseret (losingfight.com, "How to implement smudge").
+     */
+    private fun applySmudgeStroke(layer: DrawingLayer, p1: Offset, p2: Offset, isHuge: Boolean = false) {
+        val bmp = layer.getPersistentBitmap()
+        val radius = (size / 2f).coerceIn(4f, 128f)
+        val dim = (radius.toInt() * 2).coerceAtLeast(8)
+        if (!ensureSmudgeScratch(dim)) return
+        val buf = smudgeBuf ?: return
+        val mask = smudgeMask ?: return
+        val temp = smudgeTemp ?: return
+        val bufCanvas = Canvas(buf)
+        val tempCanvas = Canvas(temp)
+        val canvas = Canvas(bmp)
+        val strength = (opacity * 0.65f).coerceIn(0.05f, 1f)
+        smudgeStamp.alpha = (strength * 255).toInt().coerceIn(1, 255)
+        smudgeRefill.alpha = 128
+
+        val dist = hypot(p2.x - p1.x, p2.y - p1.y)
+        val spacing = max(1.5f, radius * 0.5f)
+        val steps = ceil((dist / spacing).toDouble()).toInt().coerceIn(1, if (isHuge) 48 else 256)
+        if (bmp.width < dim || bmp.height < dim) return
+        try {
+            for (i in 1..steps) {
+                val t = i / steps.toFloat()
+                val x = p1.x + (p2.x - p1.x) * t
+                val y = p1.y + (p2.y - p1.y) * t
+                val left = (x - radius).toInt().coerceIn(0, bmp.width - dim)
+                val top = (y - radius).toInt().coerceIn(0, bmp.height - dim)
+                if (!smudgeHasInk) {
+                    // Dab pertama hanya mengambil cap (belum melukis) — sesuai
+                    // perilaku smudge standar.
+                    bufCanvas.drawColor(0, PorterDuff.Mode.CLEAR)
+                    bufCanvas.drawBitmap(bmp, Rect(left, top, left + dim, top + dim), Rect(0, 0, dim, dim), null)
+                    smudgeHasInk = true
+                    continue
+                }
+                // 1) cap × mask lingkaran → temp, lalu stempel ke kanvas.
+                tempCanvas.drawColor(0, PorterDuff.Mode.CLEAR)
+                tempCanvas.drawBitmap(buf, 0f, 0f, null)
+                tempCanvas.drawBitmap(mask, 0f, 0f, maskDstIn)
+                canvas.drawBitmap(temp, left.toFloat(), top.toFloat(), smudgeStamp)
+                // 2) segarkan cap dari kanvas agar smear berlanjut ke dab berikut.
+                bufCanvas.drawBitmap(bmp, Rect(left, top, left + dim, top + dim), Rect(0, 0, dim, dim), smudgeRefill)
+            }
+            layer.markDirty()
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 }
