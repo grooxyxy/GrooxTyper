@@ -25,3 +25,6 @@ app/src/main/assets/models/koharu/*.onnx
 
 # Duplikat unduhan model di root (40MB) — jangan commit, pakai assets saja.
 koharu-yolo26s-seg/
+
+# Kotlin daemon logs (lokal, jangan di-commit)
+.kotlin/
