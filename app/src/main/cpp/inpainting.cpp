@@ -672,3 +672,61 @@ Java_com_grooxtyper_app_native_NativeEngine_nativeInpaintPyramid(
     AndroidBitmap_unlockPixels(env, srcBitmap);
     AndroidBitmap_unlockPixels(env, maskBitmap);
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_grooxtyper_app_native_NativeEngine_nativeGaussianBlurArea(
+        JNIEnv *env, jobject, jobject srcBitmap, jobject maskBitmap, jint radius) {
+    AndroidBitmapInfo srcInfo, maskInfo;
+    if (AndroidBitmap_getInfo(env, srcBitmap, &srcInfo) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Blur: Failed to get bitmap info"); return;
+    }
+    if (srcInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
+        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        LOGE("Blur: Bitmaps must be RGBA_8888"); return;
+    }
+    void *srcPixels, *maskPixels;
+    if (AndroidBitmap_lockPixels(env, srcBitmap, &srcPixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Blur: Failed to lock pixels"); return;
+    }
+    Pixel *img = (Pixel *)srcPixels;
+    Pixel *maskImg = (Pixel *)maskPixels;
+    int width = srcInfo.width, height = srcInfo.height;
+    size_t n = (size_t)width * height;
+    std::vector<uint8_t> mask(n);
+    for (size_t i = 0; i < n; ++i)
+        mask[i] = (maskImg[i].r + maskImg[i].g + maskImg[i].b) > 127 ? 1 : 0;
+    gaussianBlurArea(img, mask.data(), width, height, (int)radius);
+    AndroidBitmap_unlockPixels(env, srcBitmap);
+    AndroidBitmap_unlockPixels(env, maskBitmap);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_grooxtyper_app_native_NativeEngine_nativeGuidedHealArea(
+        JNIEnv *env, jobject, jobject srcBitmap, jobject maskBitmap, jint iterations) {
+    AndroidBitmapInfo srcInfo, maskInfo;
+    if (AndroidBitmap_getInfo(env, srcBitmap, &srcInfo) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        AndroidBitmap_getInfo(env, maskBitmap, &maskInfo) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Guided: Failed to get bitmap info"); return;
+    }
+    if (srcInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888 ||
+        maskInfo.format != ANDROID_BITMAP_FORMAT_RGBA_8888) {
+        LOGE("Guided: Bitmaps must be RGBA_8888"); return;
+    }
+    void *srcPixels, *maskPixels;
+    if (AndroidBitmap_lockPixels(env, srcBitmap, &srcPixels) != ANDROID_BITMAP_RESULT_SUCCESS ||
+        AndroidBitmap_lockPixels(env, maskBitmap, &maskPixels) != ANDROID_BITMAP_RESULT_SUCCESS) {
+        LOGE("Guided: Failed to lock pixels"); return;
+    }
+    Pixel *img = (Pixel *)srcPixels;
+    Pixel *maskImg = (Pixel *)maskPixels;
+    int width = srcInfo.width, height = srcInfo.height;
+    size_t n = (size_t)width * height;
+    std::vector<uint8_t> mask(n);
+    for (size_t i = 0; i < n; ++i)
+        mask[i] = (maskImg[i].r + maskImg[i].g + maskImg[i].b) > 127 ? 1 : 0;
+    guidedHealArea(img, mask.data(), width, height, (int)iterations);
+    AndroidBitmap_unlockPixels(env, srcBitmap);
+    AndroidBitmap_unlockPixels(env, maskBitmap);
+}

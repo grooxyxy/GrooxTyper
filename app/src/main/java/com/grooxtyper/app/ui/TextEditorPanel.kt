@@ -102,6 +102,7 @@ fun TextEditorPanel(
     onOpenMultiBubble: () -> Unit,
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
+    onOpenPerspectiveGrid: () -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -454,10 +455,7 @@ fun TextEditorPanel(
                         onScaleX = { scaleX = it; box.textScaleX = it; push() },
                         textOpacity = textOpacity,
                         onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
-                        perspX = perspX,
-                        onPerspX = { perspX = it; box.perspX = it; push() },
-                        perspY = perspY,
-                        onPerspY = { perspY = it; box.perspY = it; push() },
+
                         uppercase = uppercase,
                         onUppercase = { uppercase = it; box.uppercase = it; push() },
                         underline = underline,
@@ -824,10 +822,7 @@ private fun EffectTab(
     onBevelSize: (Float) -> Unit,
     bevelOpacity: Float,
     onBevelOpacity: (Float) -> Unit,
-    perspX: Float,
-    onPerspX: (Float) -> Unit,
-    perspY: Float,
-    onPerspY: (Float) -> Unit
+    onOpenPerspectiveGrid: () -> Unit
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
@@ -914,12 +909,13 @@ private fun EffectTab(
         valueRange = -1f..1f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
-    Text("Kiri–kanan ${(perspY * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+    Text("Kiri–kanan", color = Color.Gray, fontSize = 12.sp)
     Slider(
-        value = perspY, onValueChange = onPerspY,
+        value = 0f, onValueChange = {},
         valueRange = -1f..1f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Kapital semua", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
         Switch(

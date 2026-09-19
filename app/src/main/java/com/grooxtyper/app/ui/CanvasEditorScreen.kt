@@ -706,6 +706,7 @@ fun CanvasEditorScreen(
     var showBrushSettings by remember { mutableStateOf(false) }
     var showTextEditor by remember { mutableStateOf(false) }
     var showRulerDialog by remember { mutableStateOf(false) }
+    var perspGridMode by remember { mutableStateOf(false) }
     var showExportMenu by remember { mutableStateOf(false) }
     // Dialog export: pilih format + atur kualitas, ada progres & hasil.
     var showExportDialog by remember { mutableStateOf(false) }
@@ -1654,6 +1655,59 @@ fun CanvasEditorScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode, perspGridMode) {
+                    // Mode grid perspektif: drag 4 sudut untuk atur keystone teks.
+                    if (perspGridMode && selectedTextBox != null) {
+                        detectTapGestures { }
+                        detectDragGestures(
+                            onDragStart = { },
+                            onDrag = { change, drag ->
+                                val box = selectedTextBox ?: return@detectDragGestures
+                                val b = box.getBounds(); val pad = 24f
+                                val l = b.left - pad; val t = b.top - pad
+                                val r = b.right + pad; val bt = b.bottom + pad
+                                val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
+                                val rad = 40f / viewState.scale
+                                val cy = (t + bt) / 2f; val cx = (l + r) / 2f
+                                val hh = (bt - t) / 2f; val hw = (r - l) / 2f
+                                when {
+                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - r, cp.y - t) < rad -> {
+                                        box.perspY = ((cy - cp.y) / hh).coerceIn(-1f, 1f)
+                                    }
+                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - r, cp.y - bt) < rad -> {
+                                        box.perspY = ((cp.y - cy) / hh).coerceIn(-1f, 1f)
+                                    }
+                                    kotlin.math.hypot(cp.x - l, cp.y - cy) < rad -> {
+                                        box.perspX = ((cx - cp.x) / hw).coerceIn(-1f, 1f)
+                                    }
+                                    kotlin.math.hypot(cp.x - r, cp.y - cy) < rad -> {
+                                        box.perspX = ((cp.x - cx) / hw).coerceIn(-1f, 1f)
+                                    }
+                                }
+                                change.consume()
+                            }
+                        )
+                        return@pointerInput
+                    }
+                    // Drag titik tengah garis ruler untuk rotasi.
+                    if (brushEngine.rulerGuide.type == RulerType.STRAIGHT_LINE) {
+                        detectDragGestures(
+                            onDragStart = { },
+                            onDrag = { change, drag ->
+                                val mid = Offset(
+                                    (brushEngine.rulerGuide.startPos.x + brushEngine.rulerGuide.endPos.x) / 2f,
+                                    (brushEngine.rulerGuide.startPos.y + brushEngine.rulerGuide.endPos.y) / 2f
+                                )
+                                val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
+                                val rad = 30f / viewState.scale
+                                if (kotlin.math.hypot(cp.x - mid.x, cp.y - mid.y) < rad + 20f) {
+                                    brushEngine.rulerGuide.rotate(drag.x * 0.5f)
+                                    change.consume()
+                                }
+                            }
+                        )
+                    }
+                }
                 .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode) {
                     awaitPointerEventScope {
                         while (true) {
@@ -2606,6 +2660,73 @@ fun CanvasEditorScreen(
                     val b = maxOf(bs.y, bc.y)
                     drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, fillPaint)
                     drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, boxPaint)
+                }
+            }
+
+            // Tombol Selesai mode grid perspektif
+            if (perspGridMode) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Button(
+                        onClick = { perspGridMode = false },
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 96.dp)
+                    ) { Text("Selesai Perspektif", fontSize = 12.sp) }
+                }
+            }
+
+            // Ruler guide visual (garis/lingkaran) + handle rotasi
+            if (brushEngine.rulerGuide.type != RulerType.OFF) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cs = viewState.scale
+                    val ox = viewState.offsetX; val oy = viewState.offsetY
+                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
+                    val rp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2f; color = 0xAA00E5FF.toInt(); pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f,8f),0f) }
+                    when (brushEngine.rulerGuide.type) {
+                        RulerType.STRAIGHT_LINE -> {
+                            val a = toScreen(brushEngine.rulerGuide.startPos); val b = toScreen(brushEngine.rulerGuide.endPos)
+                            drawContext.canvas.nativeCanvas.drawLine(a.x,a.y,b.x,b.y,rp)
+                            val mid = Offset((a.x+b.x)/2f,(a.y+b.y)/2f)
+                            val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
+                            drawContext.canvas.nativeCanvas.drawCircle(mid.x,mid.y,10f,hp)
+                            drawContext.canvas.nativeCanvas.drawCircle(a.x,a.y,8f,hp)
+                            drawContext.canvas.nativeCanvas.drawCircle(b.x,b.y,8f,hp)
+                        }
+                        RulerType.CIRCLE -> {
+                            val c = toScreen(brushEngine.rulerGuide.circleCenter)
+                            drawContext.canvas.nativeCanvas.drawCircle(c.x,c.y,brushEngine.rulerGuide.circleRadius*cs,rp)
+                            val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
+                            drawContext.canvas.nativeCanvas.drawCircle(c.x,c.y,8f,hp)
+                        }
+                        else -> {}
+                    }
+                }
+            }
+
+            // Perspective grid overlay (mode aktif): grid pada bounds teks + 4 handle sudut
+            if (perspGridMode && selectedTextBox != null) {
+                val box = selectedTextBox!!
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val cs = viewState.scale
+                    val ox = viewState.offsetX; val oy = viewState.offsetY
+                    fun toScreen(o: Offset) = Offset(o.x * cs + ox, o.y * cs + oy)
+                    val b = box.getBounds()
+                    val pad = 24f
+                    val l = b.left - pad; val t = b.top - pad; val r = b.right + pad; val bt = b.bottom + pad
+                    val gp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f; color = 0x88FFFFFF }
+                    val n = 8
+                    for (i in 0..n) {
+                        val fx = l + (r - l) * i / n
+                        drawContext.canvas.nativeCanvas.drawLine(toScreen(Offset(fx,t)).x, toScreen(Offset(fx,t)).y, toScreen(Offset(fx,bt)).x, toScreen(Offset(fx,bt)).y, gp)
+                        val fy = t + (bt - t) * i / n
+                        drawContext.canvas.nativeCanvas.drawLine(toScreen(Offset(l,fy)).x, toScreen(Offset(l,fy)).y, toScreen(Offset(r,fy)).x, toScreen(Offset(r,fy)).y, gp)
+                    }
+                    val bp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2.5f; color = 0xFF00E5FF.toInt() }
+                    val corners = listOf(Offset(l,t),Offset(r,t),Offset(r,bt),Offset(l,bt)).map{toScreen(it)}
+                    for (i in 0..3) {
+                        val a = corners[i]; val c = corners[(i+1)%4]
+                        drawContext.canvas.nativeCanvas.drawLine(a.x,a.y,c.x,c.y,bp)
+                    }
+                    val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
+                    corners.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x,it.y,12f,hp) }
                 }
             }
 
@@ -3682,6 +3803,16 @@ fun CanvasEditorScreen(
                                 }
                             }
                         }
+                        if (brushEngine.rulerGuide.type == RulerType.STRAIGHT_LINE) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Rotasi garis ${brushEngine.rulerGuide.rotationDeg.toInt()}°", color = Color.Gray, fontSize = 12.sp)
+                            Slider(
+                                value = brushEngine.rulerGuide.rotationDeg,
+                                onValueChange = { v -> brushEngine.rulerGuide.rotate(v - brushEngine.rulerGuide.rotationDeg) },
+                                valueRange = 0f..360f,
+                                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                            )
+                        }
                     }
                 },
                 confirmButton = { TextButton(onClick = { showRulerDialog = false }) { Text("Close", color = Color.Gray) } },
@@ -3717,6 +3848,7 @@ fun CanvasEditorScreen(
                             multiBubbleDraft = ""
                             showMultiBubbleDialog = true
                         },
+                        onOpenPerspectiveGrid = { perspGridMode = true },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }

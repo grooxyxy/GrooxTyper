@@ -84,9 +84,28 @@ class RulerGuide(
     var startPos: Offset = Offset(100f, 100f),
     var endPos: Offset = Offset(500f, 500f),
     var circleCenter: Offset = Offset(300f, 300f),
-    var circleRadius: Float = 200f
+    var circleRadius: Float = 200f,
+    rotationDeg: Float = 0f
 ) {
     var type by mutableStateOf(type)
+    var rotationDeg by mutableFloatStateOf(rotationDeg)
+
+    /** Rotasi ruler (derajat): STRAIGHT_LINE memutar garis di titik tengah,
+     *  CIRCLE memutar titik awal pegangan radius (visual). */
+    fun rotate(deltaDeg: Float) {
+        rotationDeg = ((rotationDeg + deltaDeg) % 360f + 360f) % 360f
+        if (type == RulerType.STRAIGHT_LINE) {
+            val cx = (startPos.x + endPos.x) / 2f
+            val cy = (startPos.y + endPos.y) / 2f
+            val rad = Math.toRadians(deltaDeg.toDouble())
+            val cosR = cos(rad).toFloat(); val sinR = sin(rad).toFloat()
+            fun rot(o: Offset): Offset {
+                val dx = o.x - cx; val dy = o.y - cy
+                return Offset(cx + dx * cosR - dy * sinR, cy + dx * sinR + dy * cosR)
+            }
+            startPos = rot(startPos); endPos = rot(endPos)
+        }
+    }
     fun snapPoint(p: Offset): Offset {
         return when (type) {
             RulerType.STRAIGHT_LINE -> {

@@ -466,6 +466,29 @@ class InpaintingManager {
                     android.util.Log.w("Inpaint", "heal pyramid gagal, fallback Telea")
                 }
             }
+            // Heal BLUR_AREA / GUIDED untuk area luas (latar manga/webtoon).
+            if (healMethod == HealMethod.BLUR_AREA || healMethod == HealMethod.GUIDED) {
+                try {
+                    val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                    val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                    try {
+                        val (argb, tmp) = ensureArgbMask(maskCrop)
+                        try {
+                            if (healMethod == HealMethod.BLUR_AREA) {
+                                NativeEngine.nativeGaussianBlurArea(srcCrop, argb, 24)
+                            } else {
+                                NativeEngine.nativeGuidedHealArea(srcCrop, argb, 0)
+                            }
+                        } finally { if (tmp) runCatching { argb.recycle() } }
+                        android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                        android.util.Log.i("Inpaint", "heal ${healMethod} ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                        return true
+                    } finally {
+                        runCatching { srcCrop.recycle() }
+                        runCatching { maskCrop.recycle() }
+                    }
+                } catch (e: Exception) { e.printStackTrace() }
+            }
             try {
                 val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
                 val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
