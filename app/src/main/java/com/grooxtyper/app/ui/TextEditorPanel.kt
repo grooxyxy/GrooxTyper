@@ -991,6 +991,7 @@ private fun EffectTab(
 
 @Composable
 private fun StyleTab(
+    onOpenPerspectiveGrid: () -> Unit = {},
     styleName: String,
     onStyleName: (String) -> Unit,
     stylePrefix: String,
