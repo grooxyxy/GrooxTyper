@@ -104,6 +104,8 @@ import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -1656,57 +1658,44 @@ fun CanvasEditorScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode, perspGridMode) {
-                    // Mode grid perspektif: drag 4 sudut untuk atur keystone teks.
-                    if (perspGridMode && selectedTextBox != null) {
-                        detectTapGestures { }
-                        detectDragGestures(
-                            onDragStart = { },
-                            onDrag = { change, drag ->
+                    if (!perspGridMode && brushEngine.rulerGuide.type != RulerType.STRAIGHT_LINE) return@pointerInput
+                    if (perspGridMode && selectedTextBox == null) return@pointerInput
+                    detectDragGestures(
+                        onDragStart = { },
+                        onDrag = { change, drag ->
+                            val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
+                            if (perspGridMode) {
                                 val box = selectedTextBox ?: return@detectDragGestures
                                 val b = box.getBounds(); val pad = 24f
                                 val l = b.left - pad; val t = b.top - pad
                                 val r = b.right + pad; val bt = b.bottom + pad
-                                val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
                                 val rad = 40f / viewState.scale
                                 val cy = (t + bt) / 2f; val cx = (l + r) / 2f
                                 val hh = (bt - t) / 2f; val hw = (r - l) / 2f
                                 when {
-                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - r, cp.y - t) < rad -> {
+                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - r, cp.y - t) < rad ->
                                         box.perspY = ((cy - cp.y) / hh).coerceIn(-1f, 1f)
-                                    }
-                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - r, cp.y - bt) < rad -> {
+                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - r, cp.y - bt) < rad ->
                                         box.perspY = ((cp.y - cy) / hh).coerceIn(-1f, 1f)
-                                    }
-                                    kotlin.math.hypot(cp.x - l, cp.y - cy) < rad -> {
+                                    kotlin.math.hypot(cp.x - l, cp.y - cy) < rad ->
                                         box.perspX = ((cx - cp.x) / hw).coerceIn(-1f, 1f)
-                                    }
-                                    kotlin.math.hypot(cp.x - r, cp.y - cy) < rad -> {
+                                    kotlin.math.hypot(cp.x - r, cp.y - cy) < rad ->
                                         box.perspX = ((cp.x - cx) / hw).coerceIn(-1f, 1f)
-                                    }
                                 }
                                 change.consume()
-                            }
-                        )
-                        return@pointerInput
-                    }
-                    // Drag titik tengah garis ruler untuk rotasi.
-                    if (brushEngine.rulerGuide.type == RulerType.STRAIGHT_LINE) {
-                        detectDragGestures(
-                            onDragStart = { },
-                            onDrag = { change, drag ->
+                            } else {
                                 val mid = Offset(
                                     (brushEngine.rulerGuide.startPos.x + brushEngine.rulerGuide.endPos.x) / 2f,
                                     (brushEngine.rulerGuide.startPos.y + brushEngine.rulerGuide.endPos.y) / 2f
                                 )
-                                val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
                                 val rad = 30f / viewState.scale
                                 if (kotlin.math.hypot(cp.x - mid.x, cp.y - mid.y) < rad + 20f) {
                                     brushEngine.rulerGuide.rotate(drag.x * 0.5f)
                                     change.consume()
                                 }
                             }
-                        )
-                    }
+                        }
+                    )
                 }
                 .pointerInput(activeTool, selectedTextBox, viewportSize, bubbleEraseMode) {
                     awaitPointerEventScope {
@@ -2711,7 +2700,7 @@ fun CanvasEditorScreen(
                     val b = box.getBounds()
                     val pad = 24f
                     val l = b.left - pad; val t = b.top - pad; val r = b.right + pad; val bt = b.bottom + pad
-                    val gp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f; color = 0x88FFFFFF }
+                    val gp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f; color = 0x88FFFFFF.toInt() }
                     val n = 8
                     for (i in 0..n) {
                         val fx = l + (r - l) * i / n
