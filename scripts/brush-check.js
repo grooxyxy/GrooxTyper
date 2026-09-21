@@ -71,6 +71,18 @@ assert(workflow.includes('models/mg.onnx'), 'CI bundle mg.onnx ke assets');
 assert(gitignore.includes('app/src/main/assets/models/mg.onnx'), 'mg.onnx tidak di-commit (bundle via CI)');
 assert(inpaint.includes('inpaintMiganDirty'), 'InpaintingManager punya inpaintMiganDirty');
 
+// 3c. AI Inpaint via Agnes AI (tanpa dependency baru, key di perangkat)
+assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt')), 'AgnesInpainter.kt ada');
+assert(brush.includes('AI_INPAINT'), 'brush AI Inpaint terdaftar');
+assert(editor.includes('strokeIsAi') && editor.includes('inpaintAiDirty'), 'editor routing AI Inpaint');
+const manifest = read(path.join(ROOT, 'app/src/main/AndroidManifest.xml'));
+assert(manifest.includes('android.permission.INTERNET'), 'manifest izin INTERNET untuk AI');
+const srcFiles = ['app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt',
+  'app/src/main/java/com/grooxtyper/app/ui/CanvasEditorScreen.kt',
+  'app/src/main/java/com/grooxtyper/app/model/InpaintingManager.kt',
+  '.github/workflows/android.yml'].map(p => read(path.join(ROOT, p)).includes('sk-'));
+assert(!srcFiles.some(Boolean), 'tidak ada API key ter-commit di sumber');
+
 // 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
 assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');
 assert(imageImport.includes('heapImportBudgetBytes'), 'import hitung budget byte heap (720x16000 lolos di HP normal)');

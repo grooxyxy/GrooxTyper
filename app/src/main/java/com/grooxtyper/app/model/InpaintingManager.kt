@@ -580,6 +580,111 @@ class InpaintingManager {
     }
 
     /**
+     * AI Inpaint satu sapuan: kirim crop + mask ke Agnes AI, blit hasilnya.
+     * [apiKey] dari AgnesKeyStore (pengaturan perangkat). Tanpa key JELAS
+     * ditolak dengan error (tidak diam). Fallback Content-Aware Fill offline
+     * bila jaringan/AI gagal agar fitur tak pernah mati diam.
+     */
+    suspend fun inpaintAiDirty(
+        src: Bitmap,
+        mask: Bitmap,
+        dirty: android.graphics.RectF,
+        apiKey: String,
+        onProgress: ((Float) -> Unit)? = null
+    ): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        try {
+            val l = dirty.left.toInt().coerceIn(0, src.width - 1)
+            val t = dirty.top.toInt().coerceIn(0, src.height - 1)
+            val r = dirty.right.toInt().coerceIn(1, src.width)
+            val b = dirty.bottom.toInt().coerceIn(1, src.height)
+            if (r - l < 4 || b - t < 4) {
+                android.util.Log.w("Inpaint", "ai: dirty terlalu kecil, skip")
+                return false
+            }
+            val bw = r - l
+            val bh = b - t
+            val adaptivePad = max(64, min(max(bw, bh) + 32, 192))
+            val cl = maxOf(0, l - adaptivePad)
+            val ct = maxOf(0, t - adaptivePad)
+            val cr = minOf(src.width, r + adaptivePad)
+            val cb = minOf(src.height, b + adaptivePad)
+            val cw = cr - cl
+            val ch = cb - ct
+            if (cw <= 8 || ch <= 8) {
+                android.util.Log.w("Inpaint", "ai: crop terlalu kecil ${cw}x${ch}, skip")
+                return false
+            }
+            if (dilateMask) {
+                val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
+                if (maskCropPre != null) {
+                    expandEraseMask(maskCropPre, max(bw, bh))
+                    try {
+                        val dst = Canvas(mask)
+                        val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+                        dst.drawRect(cl.toFloat(), ct.toFloat(), cr.toFloat(), cb.toFloat(), clear)
+                        dst.drawBitmap(maskCropPre, cl.toFloat(), ct.toFloat(), null)
+                    } catch (e: Exception) { e.printStackTrace() }
+                    runCatching { maskCropPre.recycle() }
+                }
+            }
+            try {
+                val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                try {
+                    val out = com.grooxtyper.app.ml.AgnesInpainter.inpaint(apiKey, srcCrop, maskCrop, onProgress)
+                    if (out != null) {
+                        android.graphics.Canvas(src).drawBitmap(out, cl.toFloat(), ct.toFloat(), null)
+                        runCatching { out.recycle() }
+                        android.util.Log.i("Inpaint", "ai ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                        return true
+                    }
+                    android.util.Log.w("Inpaint", "AI skip: ${com.grooxtyper.app.ml.AgnesInpainter.lastError}")
+                } finally {
+                    runCatching { srcCrop.recycle() }
+                    runCatching { maskCrop.recycle() }
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return false
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.util.Log.w("Inpaint", "ai gagal, fallback CAF")
+            }
+            // Fallback offline: Content-Aware Fill pada crop yang sama.
+            try {
+                val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                try {
+                    val filled = PatchMatchInpainter.fillCropBitmap(srcCrop, maskCrop, onProgress)
+                    if (filled != null) {
+                        android.graphics.Canvas(src).drawBitmap(filled, cl.toFloat(), ct.toFloat(), null)
+                        runCatching { filled.recycle() }
+                        android.util.Log.i("Inpaint", "ai CAF-fallback ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                        return true
+                    }
+                    return false
+                } finally {
+                    runCatching { srcCrop.recycle() }
+                    runCatching { maskCrop.recycle() }
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return false
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            return false
+        }
+    }
+
+    /**
      * Inpainting bertarget: temukan semua region mask (kotak pembungkus
      * komponen yang saling dekat), lalu inpaint hanya region itu.
      * 10-50x lebih sedikit piksel disentuh dibanding grid tile penuh.

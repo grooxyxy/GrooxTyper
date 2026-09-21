@@ -121,6 +121,7 @@ import com.grooxtyper.app.ml.MLScript
 import com.grooxtyper.app.ml.MLTextDetector
 import com.grooxtyper.app.ml.BubbleDetector
 import com.grooxtyper.app.ml.BubbleModel
+import com.grooxtyper.app.ml.AgnesKeyStore
 import com.grooxtyper.app.ml.readingOrder
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushHugeGuide
@@ -1771,6 +1772,11 @@ fun CanvasEditorScreen(
     var strokeIsHeal by remember { mutableStateOf(false) }
     // Kunci engine hapus saat press: true = Heal MiGAN, false = Content-Aware Fill.
     var strokeIsMigan by remember { mutableStateOf(false) }
+    // Kunci AI Inpaint (Agnes) saat press.
+    var strokeIsAi by remember { mutableStateOf(false) }
+    // Draf API key Agnes (disimpan ke SharedPreferences saat disimpan).
+    var agnesKeyDraft by remember { mutableStateOf("") }
+    var agnesKeyLoaded by remember { mutableStateOf(false) }
     var lockedStrokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Antrean heal tunggal (conflate): sapuan saat commit jalan digabung, tak dibuang.
     var pendingHealMask by remember { mutableStateOf<Bitmap?>(null) }
@@ -1778,7 +1784,7 @@ fun CanvasEditorScreen(
     var pendingHealLayerId by remember { mutableStateOf<String?>(null) }
 
     /** Luncurkan commit hapus; mask dimiliki eksklusif oleh job (jangan disentuh UI lagi). */
-    fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer, useMigan: Boolean = false) {
+    fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer, useMigan: Boolean = false, useAi: Boolean = false) {
         isHealing = true
         healError = null
         busyFrac = 0f
@@ -1791,7 +1797,17 @@ fun CanvasEditorScreen(
                 if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
             }
             try {
-                ok = if (useMigan) {
+                ok = if (useAi) {
+                    val key = AgnesKeyStore.getKey(context.applicationContext)
+                    if (key.isBlank()) {
+                        err = "API key Agnes kosong — isi dulu di pengaturan brush AI"
+                        false
+                    } else {
+                        inpaintingManager.inpaintAiDirty(
+                            targetLayer.getPersistentBitmap(), mask, RectF(dirty), key, prog
+                        )
+                    }
+                } else if (useMigan) {
                     inpaintingManager.inpaintMiganDirty(
                         targetLayer.getPersistentBitmap(), mask, RectF(dirty),
                         context.applicationContext, prog
@@ -1822,7 +1838,7 @@ fun CanvasEditorScreen(
                         pendingHealMask = null
                         pendingHealDirty = null
                         pendingHealLayerId = null
-                        launchHealCommit(pm, pd, pl, useMigan)
+                        launchHealCommit(pm, pd, pl, useMigan, useAi)
                     } else {
                         runCatching { pm?.recycle() }
                         pendingHealMask = null
@@ -1861,6 +1877,7 @@ fun CanvasEditorScreen(
         if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
             brushEngine.brushType != BrushType.OBJECT_ERASER &&
             brushEngine.brushType != BrushType.HEAL_MIGAN &&
+            brushEngine.brushType != BrushType.AI_INPAINT &&
             !pressMoved && !colorPickActive && strokeLayer != null && strokeLength == 0f
         ) {
             val sl = strokeLayer
@@ -2035,6 +2052,7 @@ fun CanvasEditorScreen(
                                 lockedStrokeLayer = null
                                 strokeIsHeal = false
                                 strokeIsMigan = false
+                                strokeIsAi = false
                                 brushEngine.endStroke()
                                 colorPickActive = false
                                 pressId++
@@ -2387,6 +2405,7 @@ fun CanvasEditorScreen(
                                             lockedStrokeLayer = activeLayer
                                             strokeIsHeal = true
                                             strokeIsMigan = brushEngine.brushType == BrushType.HEAL_MIGAN
+                                            strokeIsAi = brushEngine.brushType == BrushType.AI_INPAINT
                                             pressId++
                                             pressStartScreen = change.position
                                             pressMoved = false
@@ -2425,7 +2444,8 @@ fun CanvasEditorScreen(
                                         // Hapus Objek / Heal MiGAN via tool BRUSH: alihkan ke
                                         // akumulasi mask inpaint agar berfungsi di kedua tool.
                                         if (brushEngine.brushType == BrushType.OBJECT_ERASER ||
-                                            brushEngine.brushType == BrushType.HEAL_MIGAN
+                                            brushEngine.brushType == BrushType.HEAL_MIGAN ||
+                                            brushEngine.brushType == BrushType.AI_INPAINT
                                         ) {
                                             if (lastCanvasPoint == null) {
                                                 val activeLayer = layerManager.ensureDrawingLayer()
@@ -2433,6 +2453,7 @@ fun CanvasEditorScreen(
                                                 lockedStrokeLayer = activeLayer
                                                 strokeIsHeal = true
                                                 strokeIsMigan = brushEngine.brushType == BrushType.HEAL_MIGAN
+                                            strokeIsAi = brushEngine.brushType == BrushType.AI_INPAINT
                                                 pressId++
                                                 pressStartScreen = change.position
                                                 pressMoved = false
@@ -2477,6 +2498,7 @@ fun CanvasEditorScreen(
                                             lockedStrokeLayer = activeLayer
                                             strokeIsHeal = false
                                             strokeIsMigan = false
+                                            strokeIsAi = false
                                             // Kunci tipe brush sekali saat stroke dimulai,
                                             // bukan per-move (menghindari recompose tiap event).
                                             if (activeTool == ActiveTool.ERASER) {
@@ -2577,13 +2599,15 @@ fun CanvasEditorScreen(
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
                                     val wasHealBrush = wasBrush && (brushEngine.brushType == BrushType.OBJECT_ERASER ||
-                                        brushEngine.brushType == BrushType.HEAL_MIGAN)
+                                        brushEngine.brushType == BrushType.HEAL_MIGAN ||
+                                        brushEngine.brushType == BrushType.AI_INPAINT)
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
                                     // Commit hapus: serah-terima swap (O(1), tanpa copy/fill full di Main).
                                     val wasHeal = strokeIsHeal
                                     val wasMigan = strokeIsMigan
+                                    val wasAi = strokeIsAi
                                     val commitLayer = lockedStrokeLayer ?: layerManager.getActiveLayer()
                                     if (wasHeal && inpaintMask != null && inpaintDirty != null) {
                                         val maskOwned = inpaintMask
@@ -2623,7 +2647,7 @@ fun CanvasEditorScreen(
                                                     pendingHealLayerId = targetLayer.id
                                                 }
                                             } else {
-                                                launchHealCommit(maskOwned, dirtyOwned, targetLayer, wasMigan)
+                                                launchHealCommit(maskOwned, dirtyOwned, targetLayer, wasMigan, wasAi)
                                             }
                                         } else {
                                             runCatching { maskOwned?.recycle() }
@@ -2635,6 +2659,7 @@ fun CanvasEditorScreen(
                                     }
                                     strokeIsHeal = false
                                     strokeIsMigan = false
+                                    strokeIsAi = false
                                     lockedStrokeLayer = null
                                     colorPickActive = false
                                     pressId++
@@ -2687,6 +2712,7 @@ fun CanvasEditorScreen(
                                 lockedStrokeLayer = null
                                 strokeIsHeal = false
                                 strokeIsMigan = false
+                                strokeIsAi = false
                                 brushEngine.endStroke()
                                 twoFingerActive = false
                                 rotAccum = 0f
@@ -2766,7 +2792,8 @@ fun CanvasEditorScreen(
                 // Tampil juga saat brush OBJECT_ERASER agar sapuan terlihat live.
                 val healBrushActive = (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
                     (brushEngine.brushType == BrushType.OBJECT_ERASER ||
-                        brushEngine.brushType == BrushType.HEAL_MIGAN)
+                        brushEngine.brushType == BrushType.HEAL_MIGAN ||
+                        brushEngine.brushType == BrushType.AI_INPAINT)
                 if (inpaintMask != null && (activeTool == ActiveTool.INPAINT || healBrushActive)) {
                     val maskBmp = inpaintMask
                     if (maskBmp != null && !maskBmp.isRecycled) {
@@ -3224,18 +3251,60 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Penghapus tanpa opsi: sapu → commit otomatis mengisi area.
-                // OBJECT_ERASER = Content-Aware Fill, HEAL_MIGAN = model MiGAN.
+                // Penghapus: sapu → commit otomatis mengisi area.
+                // OBJECT_ERASER = Content-Aware Fill, HEAL_MIGAN = model MiGAN,
+                // AI_INPAINT = Agnes AI (butuh API key + internet).
+                val aiBrushActive = brushEngine.brushType == BrushType.AI_INPAINT &&
+                    activeTool != ActiveTool.INPAINT
                 if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.OBJECT_ERASER ||
-                    brushEngine.brushType == BrushType.HEAL_MIGAN
+                    brushEngine.brushType == BrushType.HEAL_MIGAN || aiBrushActive
                 ) {
+                    if (!agnesKeyLoaded) {
+                        agnesKeyLoaded = true
+                        agnesKeyDraft = AgnesKeyStore.getKey(context)
+                    }
                     Text(
                         if (brushEngine.brushType == BrushType.HEAL_MIGAN && activeTool != ActiveTool.INPAINT)
                             "Sapu area objek — commit via model MiGAN on-device."
+                        else if (aiBrushActive)
+                            "Sapu area objek — commit via Agnes AI (butuh internet + API key)."
                         else "Sapu area objek — commit otomatis mengisi tekstur & gradasi sekitar.",
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
                     )
+                    if (aiBrushActive) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(start = 78.dp, end = 8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = agnesKeyDraft,
+                                onValueChange = { agnesKeyDraft = it },
+                                label = { Text("API key Agnes") },
+                                singleLine = true,
+                                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = Color.White, fontSize = 11.sp
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Button(
+                                onClick = {
+                                    AgnesKeyStore.saveKey(context, agnesKeyDraft)
+                                    healError = null
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                            ) { Text("Simpan", color = Color.White, fontSize = 11.sp) }
+                        }
+                        val hasKey = AgnesKeyStore.getKey(context).isNotBlank()
+                        Text(
+                            if (hasKey) "API key tersimpan di perangkat ✓" else "Belum ada API key — tempel lalu Simpan.",
+                            color = if (hasKey) Color(0xFF4CAF50) else Color.Gray,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(start = 78.dp)
+                        )
+                    }
                 }
             }
         }
