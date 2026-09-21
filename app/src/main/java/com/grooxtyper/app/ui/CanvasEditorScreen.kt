@@ -430,8 +430,8 @@ fun CanvasEditorScreen(
         listOf(
             "Tips: zoom-in 100–200% agar sapuan presisi",
             "Tips: sapuan pendek lebih cepat daripada satu sapuan panjang",
-            "Tips: mode Texture menjaga screentone latar",
-            "Tips: hasil heal bisa di-undo kapan pun",
+            "Tips: sapu sedikit lebih lebar dari objek yang dihapus",
+            "Tips: hasil hapus objek bisa di-undo kapan pun",
             "Tips: deteksi bubble paling akurat di area terang"
         )
     }
@@ -1571,18 +1571,18 @@ fun CanvasEditorScreen(
                 if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
             }
             try {
-                ok = inpaintingManager.inpaintHealDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), prog)
-                if (!ok) err = "Heal dilewati: mask kosong/ROI terlalu kecil"
+                ok = inpaintingManager.inpaintObjectDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), prog)
+                if (!ok) err = "Hapus objek dilewati: mask kosong/ROI terlalu kecil"
                 else {
                     targetLayer.markDirty()
                     targetLayer.tileMap.importFromBitmap(targetLayer.getPersistentBitmap())
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                err = "Heal gagal: ${e.message ?: "error"}"
+                err = "Hapus objek gagal: ${e.message ?: "error"}"
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
-                err = "Heal gagal: memori habis, coba sapuan lebih kecil"
+                err = "Hapus objek gagal: memori habis, coba sapuan lebih kecil"
             } finally {
                 runCatching { mask.recycle() }
                 val msg = err
@@ -1632,7 +1632,7 @@ fun CanvasEditorScreen(
         val isHugeForPick = canvasWidth.toLong() * canvasHeight > 4_000_000L
         delay(if (isHugeForPick) 1000L else 600L)
         if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
-            brushEngine.brushType != BrushType.HEAL_PATCH &&
+            brushEngine.brushType != BrushType.OBJECT_ERASER &&
             !pressMoved && !colorPickActive && strokeLayer != null && strokeLength == 0f
         ) {
             val sl = strokeLayer
@@ -2172,7 +2172,7 @@ fun CanvasEditorScreen(
                                                 refreshCanvasState++
                                             }
                                             else {
-                                                healError = "Heal gagal dimulai: memori habis, coba sapuan lebih kecil"
+                                                healError = "Hapus objek gagal dimulai: memori habis, coba sapuan lebih kecil"
                                             }
                                         } else {
                                             val maskPair = ensureInpaintMask()
@@ -2192,9 +2192,9 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        // Heal brush via tool BRUSH (tipe HEAL_PATCH): alihkan ke
+                                        // Hapus Objek via tool BRUSH (tipe OBJECT_ERASER): alihkan ke
                                         // akumulasi mask inpaint agar berfungsi di kedua tool.
-                                        if (brushEngine.brushType == BrushType.HEAL_PATCH) {
+                                        if (brushEngine.brushType == BrushType.OBJECT_ERASER) {
                                             if (lastCanvasPoint == null) {
                                                 val activeLayer = layerManager.ensureDrawingLayer()
                                                 strokeLayer = activeLayer
@@ -2215,7 +2215,7 @@ fun CanvasEditorScreen(
                                                     refreshCanvasState++
                                                 }
                                                 else {
-                                                    healError = "Heal gagal dimulai: memori habis, coba sapuan lebih kecil"
+                                                    healError = "Hapus objek gagal dimulai: memori habis, coba sapuan lebih kecil"
                                                 }
                                             } else {
                                                 val maskPair = ensureInpaintMask()
@@ -2342,7 +2342,7 @@ fun CanvasEditorScreen(
                                 } else {
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
-                                    val wasHealBrush = wasBrush && brushEngine.brushType == BrushType.HEAL_PATCH
+                                    val wasHealBrush = wasBrush && brushEngine.brushType == BrushType.OBJECT_ERASER
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
@@ -2525,9 +2525,9 @@ fun CanvasEditorScreen(
                 }
 
                 // Overlay mask inpaint (pink) — viewport culled, di atas komposit tapi di bawah teks.
-                // Tampil juga saat brush HEAL_PATCH agar sapuan heal terlihat live.
+                // Tampil juga saat brush OBJECT_ERASER agar sapuan terlihat live.
                 val healBrushActive = (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
-                    brushEngine.brushType == BrushType.HEAL_PATCH
+                    brushEngine.brushType == BrushType.OBJECT_ERASER
                 if (inpaintMask != null && (activeTool == ActiveTool.INPAINT || healBrushActive)) {
                     val maskBmp = inpaintMask
                     if (maskBmp != null && !maskBmp.isRecycled) {
@@ -2985,40 +2985,11 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Heal 2 opsi tanpa model: Struktur (NS isophote) vs Tekstur/Gradasi (pyramid push-pull + grain).
-                if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.HEAL_PATCH) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Spacer(modifier = Modifier.width(38.dp))
-                        Text("Heal", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(40.dp))
-                        for (hm in com.grooxtyper.app.model.InpaintingManager.HealMethod.values()) {
-                            val sel = inpaintingManager.healMethod == hm
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (sel) Accent else Color(0xFF2C2C2E))
-                                    .clickable { inpaintingManager.healMethod = hm }
-                                    .padding(vertical = 6.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    hm.displayName,
-                                    color = Color.White, fontSize = 10.sp,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        }
-                    }
+                // Hapus Objek tanpa opsi tanpa model: sapu → Content-Aware Fill
+                // (PatchMatch + seamless blend) mengisi tekstur/gradasi sekitar.
+                if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.OBJECT_ERASER) {
                     Text(
-                        when (inpaintingManager.healMethod) {
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.STRUKTUR -> "Struktur: garis tersambung (Navier-Stokes)."
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.TEXTURE -> "Tekstur/Gradasi: pyramid fill mulus + grain, kuat di mask besar."
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.BLUR_AREA -> "Blur Area: cepat & mulus untuk area luas (latar manga/webtoon)."
-                            com.grooxtyper.app.model.InpaintingManager.HealMethod.GUIDED -> "Guided: isi area luas mengikuti struktur, garis tak blur."
-                        },
+                        "Sapu area objek — commit otomatis mengisi tekstur & gradasi sekitar.",
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
                     )
@@ -3693,14 +3664,14 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Accent else Color.White)
             }
 
-            // Inpaint PatchMatch (heal) — brush yg menghapus objek & isi tekstur sekitar
+            // Inpaint Content-Aware Fill — brush penghapus objek (tekstur sekitar tersalin, gradasi tersambung)
             IconButton(onClick = {
                 activeTool = ActiveTool.INPAINT
                 showBrushSettings = false
-                brushEngine.brushType = BrushType.HEAL_PATCH
+                brushEngine.brushType = BrushType.OBJECT_ERASER
                 layerManager.ensureDrawingLayer()
             }) {
-                Icon(Icons.Default.AutoFixHigh, contentDescription = "Heal Brush", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
+                Icon(Icons.Default.AutoFixHigh, contentDescription = "Hapus Objek", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
             }
 
             // Color circle

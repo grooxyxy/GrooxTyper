@@ -9,19 +9,10 @@ object NativeEngine {
 
     external fun nativeInpaintTelea(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double)
 
-    /** Navier-Stokes isophote onion-peel (opsi heal STRUKTUR). iterations<=0 = otomatis. */
-    external fun nativeInpaintNS(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Double, iterations: Int)
-
     /**
-     * Pyramid push-pull inpainting (opsi heal TEKSTUR/GRADASI + seleksi):
-     * mengisi lubang dari konteks multi-skala (gradasi tersambung mulus pada
-     * mask besar) lalu mensintesis grain dari statistik cincin sekitar lubang.
+     * Pyramid push-pull inpainting (inpaint seleksi): mengisi lubang dari
+     * konteks multi-skala (gradasi tersambung mulus pada mask besar) lalu
+     * mensintesis grain dari statistik cincin sekitar lubang.
      */
     external fun nativeInpaintPyramid(srcBitmap: Bitmap, maskBitmap: Bitmap, maxLevels: Int, grainScale: Double)
-
-    /** Blur Gaussian area (heal area luas): cepat, mulus, untuk latar manga/webtoon. */
-    external fun nativeGaussianBlurArea(srcBitmap: Bitmap, maskBitmap: Bitmap, radius: Int)
-
-    /** Guided heal area: isi lubang mengikuti struktur lokal, edge-preserving. */
-    external fun nativeGuidedHealArea(srcBitmap: Bitmap, maskBitmap: Bitmap, iterations: Int)
 }

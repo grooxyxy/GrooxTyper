@@ -16,12 +16,13 @@ function assert(cond, msg) {
 const ROOT = path.resolve(__dirname, '..');
 const brush = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BrushEngine.kt'));
 const patch = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PatchMatchInpainter.kt'));
+const seamless = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SeamlessBlender.kt'));
 const inpaint = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/InpaintingManager.kt'));
 const editor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/CanvasEditorScreen.kt'));
 const imageImport = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ImageImport.kt'));
 const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ProjectManager.kt'));
 
-for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager]]) {
+for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager]]) {
   const open = (text.match(/{/g) || []).length;
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
@@ -40,23 +41,26 @@ assert(editor.includes('deferRefresh'), 'editor blit mendukung deferRefresh (bat
 assert(editor.includes('didBlit'), 'editor batch 1 recompose per touch event');
 assert(editor.includes('maxInterp'), 'editor batasi interpolasi luar di huge canvas');
 assert(editor.includes('recycleInpaintMask'), 'editor bebaskan mask 46MB setelah commit');
-assert(editor.includes('wasHeal'), 'editor commit heal untuk INPAINT + HEAL_PATCH');
-assert(editor.includes('inpaintHealDirty'), 'editor commit crop dirty saja (anti-46MB scan)');
+assert(editor.includes('wasHeal'), 'editor commit hapus-objek untuk INPAINT + OBJECT_ERASER');
+assert(editor.includes('inpaintObjectDirty'), 'editor commit crop dirty saja (anti-46MB scan)');
 
-// 3. Heal brush better-than-Photoshop
-assert(patch.includes('enum class HealMode'), 'heal punya HealMode enum');
-assert(patch.includes('PRESERVE_STRUCTURE'), 'heal punya mode Preserve Structure');
-assert(patch.includes('PRESERVE_TEXTURE'), 'heal punya mode Preserve Texture');
-assert(patch.includes('gradWeight'), 'heal jarak patch sadar gradien (tajam vs PS)');
-assert(inpaint.includes('healMode'), 'InpaintingManager expose healMode');
-assert(inpaint.includes('inpaintHealDirty'), 'InpaintingManager punya inpaintHealDirty');
-assert(editor.includes('HealMethod.values()'), 'UI 2 opsi heal tanpa model (Cepat/Texture)');
+// 3. Hapus Objek: Content-Aware Fill tunggal tanpa model tanpa opsi
+assert(brush.includes('OBJECT_ERASER'), 'brush Hapus Objek terdaftar (HEAL_PATCH dibuang)');
+assert(!brush.includes('HEAL_PATCH'), 'brush Heal Patch dihapus');
+assert(!patch.includes('enum class HealMode'), 'HealMode enum dihapus (satu pipeline)');
+assert(!patch.includes('HealMethod'), 'PatchMatch bebas HealMethod');
+assert(patch.includes('SeamlessBlender'), 'jahitan diblend mulus via SeamlessBlender (gradasi+tekstur)');
+assert(patch.includes('fillCropBitmap'), 'PatchMatch sediakan fillCropBitmap untuk commit crop');
+assert(!editor.includes('HealMethod.values()'), 'pemilih opsi heal dihapus dari UI');
+assert(inpaint.includes('inpaintObjectDirty'), 'InpaintingManager punya inpaintObjectDirty');
+assert(!inpaint.includes('HealMethod') && !inpaint.includes('healMode'), 'InpaintingManager bebas opsi heal');
+assert(!inpaint.includes('nativeInpaintNS'), 'Navier-Stokes native dihapus');
+assert(!inpaint.includes('nativeGaussianBlurArea') && !inpaint.includes('nativeGuidedHealArea'), 'native Blur/Guided area dihapus');
 assert(editor.includes('Inpaint Seleksi'), 'UI punya aksi Inpaint Seleksi');
 assert(!editor.includes('MiGan'), 'UI bebas referensi MiGan (model dihapus)');
 assert(!fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt')), 'MiganInpainter.kt dihapus');
 assert(!fs.existsSync(path.join(ROOT, 'app/src/main/assets/models/mg.onnx')), 'model mg.onnx dihapus dari assets');
-assert(inpaint.includes('nativeInpaintPyramid'), 'heal tekstur/gradasi + seleksi memakai pyramid push-pull native (mask besar)');
-assert(inpaint.includes('nativeInpaintNS'), 'heal struktur memakai Navier-Stokes native');
+assert(inpaint.includes('nativeInpaintPyramid'), 'inpaint seleksi memakai pyramid push-pull native (mask besar)');
 
 // 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
 assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');
@@ -101,5 +105,5 @@ assert(editor.includes('refreshCompositeCoalesced()') && editor.includes('perspG
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
-  console.log('brush-check PASSED: brush anti-delay/crash + heal brush siap + import 720x16000 heap-aware + ruler/blend/blur sesuai namanya');
+  console.log('brush-check PASSED: brush anti-delay/crash + hapus objek siap + import 720x16000 heap-aware + ruler/blend/blur sesuai namanya');
 }

@@ -56,8 +56,8 @@ enum class BrushType(val displayName: String, val category: String) {
     // Erase
     ERASER("Eraser", "Erase"),
     ERASER_SOFT("Soft Eraser", "Erase"),
-    // Heal
-    HEAL_PATCH("Heal Patch", "Heal")
+    // Hapus objek (Content-Aware Fill tanpa model)
+    OBJECT_ERASER("Hapus Objek", "Hapus")
 }
 
 enum class RulerType {
@@ -527,8 +527,8 @@ class BrushEngine {
             BrushType.BLUR -> {
                 // Handled separately
             }
-            BrushType.HEAL_PATCH -> {
-                // Ditangani di CanvasEditorScreen via PatchMatch, bukan draw langsung
+            BrushType.OBJECT_ERASER -> {
+                // Ditangani di CanvasEditorScreen via Content-Aware Fill, bukan draw langsung
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
                 paint.alpha = 0
             }
@@ -565,8 +565,8 @@ class BrushEngine {
     }
 
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f, visibleRect: RectF? = null) {
-        // Heal patch tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
-        if (brushType == BrushType.HEAL_PATCH) return
+        // Hapus Objek tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
+        if (brushType == BrushType.OBJECT_ERASER) return
 
         val bmp = layer.getPersistentBitmap()
         val isHuge = bmp.width.toLong() * bmp.height > HUGE_CANVAS_PIXELS
@@ -1132,8 +1132,8 @@ class BrushEngine {
  *    otomatis di huge, blur live dibatasi 140_000px).
  * 3. Sapuan panjang: sistem interpolasi max 24 titik luar + 32 steps dalam
  *    (tidak menumpuk 2000+ drawLine per event).
- * 4. Heal Patch: sapu untuk akumulasi mask, commit PatchMatch hanya crop
- *    dirty (bukan scan 46MB), mask 46MB di-recycle setelah commit.
+ * 4. Hapus Objek: sapu untuk akumulasi mask, commit Content-Aware Fill
+ *    hanya crop dirty (bukan scan 46MB), mask 46MB di-recycle setelah commit.
  * 5. Bila patah-patah: kecilkan size (<32px), pakai 1 layer (fast-path blit
  *    ~50x50px vs render 46MB), tutup teks/blend di luar area.
  */

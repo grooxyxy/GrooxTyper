@@ -14,21 +14,19 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 /**
- * Inpainting PatchMatch — port dari VasiliasTyper PatchMatchInpainter
+ * Content-Aware Fill — port dari VasiliasTyper PatchMatchInpainter
  * (multi-scale pyramid + constraint-aware + nearest-background guide +
- * Gaussian voting + feather) dengan modifikasi Groox:
- * - API tetap kompatibel bitmap-mask (putih = lubang) untuk heal brush.
- * - HealMode memengaruhi gradWeight/constraint (melampaui Photoshop).
+ * Gaussian voting) dengan modifikasi Groox:
+ * - API bitmap-mask (putih = lubang) untuk brush Hapus Objek.
+ * - Satu pipeline tunggal tanpa opsi: jarak patch sadar-gradien tetap
+ *   (garis manga tajam) + variansi screentone (halftone tidak blur).
+ * - Jahitan disambung SeamlessBlender (koreksi offset Laplace/SOR,
+ *   bukan feather): gradasi tersambung mulus, tekstur tidak dikaburkan.
  * - Guard 720x16000: ROI crop + downscale bila >2MP, strip scan hemat 46MB.
  *
- * Tidak pakai native/OpenCV: murni Kotlin + IntArray.
+ * Tidak pakai native/OpenCV/model ML: murni Kotlin + IntArray/FloatArray,
+ * deterministik di semua device.
  */
-enum class HealMode(val displayName: String, val desc: String) {
-    CONTENT_AWARE("Content-Aware", "Seimbang warna + tekstur"),
-    PRESERVE_STRUCTURE("Preserve Structure", "Garis manga tetap tajam"),
-    PRESERVE_TEXTURE("Preserve Texture", "Screentone/kertas mulus"),
-    MANGA_SEAMLESS("Manga Seamless", "Garis + screentone seimbang (terbaik)")
-}
 
 object PatchMatchInpainter {
 
@@ -56,11 +54,9 @@ object PatchMatchInpainter {
     /**
      * Inpaint [src] di area [mask] (putih = lubang). Hasil ditulis balik ke [src].
      * [mask] dan [src] harus seukuran kanvas. Hanya area crop yang diproses.
-     * [mode] memilih strategi patch agar melampaui Photoshop untuk manga.
-     * Implementasi sekarang multi-scale + guide + constraint (fix noise).
+     * Pipeline tunggal: NNF multi-skala + voting Gaussian + seamless blend.
      */
-    /** Mode tunggal heal: manga-seamless (garis + screentone). Tanpa opsi. */
-    fun inpaint(src: Bitmap, mask: Bitmap, feather: Boolean = true, mode: HealMode = HealMode.MANGA_SEAMLESS, onProgress: ((Float) -> Unit)? = null): Boolean {
+    fun inpaint(src: Bitmap, mask: Bitmap, onProgress: ((Float) -> Unit)? = null): Boolean {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return false
@@ -95,13 +91,8 @@ object PatchMatchInpainter {
         val bw = maxX - minX + 1
         val bh = maxY - minY + 1
         val adaptivePad = max(CONTEXT_PAD, min(max(bw, bh), 256))
-        // HealMode: STRUCTURE butuh konteks lebih besar untuk garis panjang
-        val pad = when (mode) {
-            HealMode.PRESERVE_STRUCTURE -> adaptivePad + 24
-            HealMode.PRESERVE_TEXTURE -> (adaptivePad * 0.85f).toInt().coerceAtLeast(48)
-            HealMode.MANGA_SEAMLESS -> adaptivePad + 12
-            else -> adaptivePad
-        }
+        // Konteks luas agar patch menemukan background asli, bukan tepi objek.
+        val pad = adaptivePad + 12
         val rx = (minX - pad).coerceIn(0, w - 1)
         val ry = (minY - pad).coerceIn(0, h - 1)
         val rw = ((maxX + pad).coerceAtMost(w - 1) - rx + 1).coerceAtLeast(1)
@@ -134,18 +125,12 @@ object PatchMatchInpainter {
             srcCrop = sW; maskCrop = mW
         }
         try {
-            // Build Region dari maskCrop untuk pipeline Vasilias (lebih akurat)
-            val region = bitmapMaskToRegion(maskCrop)
-            if (region.isEmpty) {
-                android.util.Log.w("PatchMatch", "inpaint: region kosong, skip")
+            // NNF fill + seamless blend dalam satu panggilan (cek mask kosong
+            // dilakukan di dalam fillCropBitmap).
+            val result = fillCropBitmap(srcCrop, maskCrop, onProgress)
+            if (result == null) {
+                android.util.Log.w("PatchMatch", "inpaint: fill null, skip")
                 srcCrop.recycle(); maskCrop.recycle(); return false
-            }
-            // Panggil pipeline multi-scale Vasilias yang anti-noise
-            val result = if (feather) {
-                // Feather true -> gunakan pipeline lengkap dengan boundary feather
-                processWithMode(srcCrop, region, mode, onProgress)
-            } else {
-                processWithModeNoFeather(srcCrop, region, mode, onProgress)
             }
             // Kembalikan ke src skala penuh
             val toBlit = if (scale != 1f) {
@@ -194,48 +179,25 @@ object PatchMatchInpainter {
 
     private fun isMaskPixel(p: Int): Boolean = (p ushr 24) > 30
 
-    private fun processWithMode(srcCrop: Bitmap, region: Region, mode: HealMode, onProgress: ((Float) -> Unit)? = null): Bitmap {
-        // Delegasikan ke Vasilias pipeline dengan penyesuaian HealMode
-        // HealMode memengaruhi gradWeight via patchDistance yang kita modifikasi
-        // untuk STRUCTURE/TEXTURE. Kita simpan mode global untuk patchDistance.
-        currentHealMode = mode
-        val res = processInternal(srcCrop, region, onProgress)
-        currentHealMode = HealMode.CONTENT_AWARE
-        return res
-    }
-
-    private fun processWithModeNoFeather(srcCrop: Bitmap, region: Region, mode: HealMode, onProgress: ((Float) -> Unit)? = null): Bitmap {
-        // Tanpa feather: tetap pakai pipeline tapi matikan feather di akhir
-        // Sederhana: panggil proses lalu tanpa feather (kita akan skip featherBoundary)
-        currentHealMode = mode
-        // Untuk no-feather, kita set flag sementara
-        val prevFeather = featherEnabled
-        featherEnabled = false
-        val res = processInternal(srcCrop, region, onProgress)
-        featherEnabled = prevFeather
-        currentHealMode = HealMode.CONTENT_AWARE
-        return res
-    }
-
-    // ── State untuk HealMode (gradWeight) ────────────────────────────────
-    private var currentHealMode: HealMode = HealMode.CONTENT_AWARE
-    private var featherEnabled: Boolean = true
-    // gradWeight dipakai di patchDistance (dipertahankan untuk brush-check)
-    private val gradWeight: Float
-        get() = when (currentHealMode) {
-            HealMode.PRESERVE_STRUCTURE -> 3.0f
-            HealMode.PRESERVE_TEXTURE -> 0.5f
-            HealMode.MANGA_SEAMLESS -> 2.0f
-            else -> 1.0f
+    /**
+     * Isi [srcCrop] pada [maskCrop] (wajib seukuran): NNF multi-skala +
+     * seamless blend. Mengembalikan bitmap BARU (input tidak diubah).
+     * Null bila mask kosong/gagal — caller memakai fallback.
+     */
+    fun fillCropBitmap(srcCrop: Bitmap, maskCrop: Bitmap, onProgress: ((Float) -> Unit)? = null): Bitmap? {
+        if (srcCrop.width <= 0 || srcCrop.height <= 0 ||
+            srcCrop.width != maskCrop.width || srcCrop.height != maskCrop.height
+        ) return null
+        return try {
+            val region = bitmapMaskToRegion(maskCrop)
+            if (region.isEmpty) return null
+            processInternal(srcCrop, region, onProgress)
+        } catch (_: Exception) {
+            null
+        } catch (_: OutOfMemoryError) {
+            null
         }
-    // screentoneWeight: MANGA_SEAMLESS + TEXTURE menjaga pola halftone (Xie et al.)
-    private val screentoneWeight: Float
-        get() = when (currentHealMode) {
-            HealMode.MANGA_SEAMLESS -> 0.6f
-            HealMode.PRESERVE_TEXTURE -> 0.8f
-            HealMode.PRESERVE_STRUCTURE -> 0.15f
-            else -> 0.35f
-        }
+    }
 
     // ── Vasilias pipeline (disalin, sedikit adaptasi) ─────────────────────
     private fun processInternal(bitmap: Bitmap, region: Region, onProgress: ((Float) -> Unit)? = null): Bitmap {
@@ -258,8 +220,11 @@ object PatchMatchInpainter {
         if (!mask.any { it }) return bitmap.copy(Bitmap.Config.ARGB_8888, false)
 
         val out = multiScaleInpaint(pixels, mask, rw, rh, onProgress)
+        // Sambung jahitan via seamless blend (gradasi+tekstur), bukan feather.
+        // Null (OOM) → pakai hasil mentah sebagai fallback.
+        val blended = SeamlessBlender.blend(pixels, out, mask, rw, rh) ?: out
         val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-        result.setPixels(out, 0, rw, rx, ry, rw, rh)
+        result.setPixels(blended, 0, rw, rx, ry, rw, rh)
         return result
     }
 
@@ -449,7 +414,7 @@ object PatchMatchInpainter {
             }
         }
 
-        if (featherEnabled) featherBoundary(out, mask, w, h)
+        // Tanpa feather: jahitan ditangani SeamlessBlender di processInternal.
         return out
     }
 
@@ -555,10 +520,10 @@ object PatchMatchInpainter {
         var sum = 0.0
         var count = 0
         // Manga-aware (Criminisi isophote + Xie screentone): warna + Sobel gradien + variansi halftone.
-        // Referensi: Barnes PatchMatch, Criminisi exemplar priority, Xie SIGGRAPH21 disentangle garis/screentone,
-        // Telea/NS insight (anphiriel: Telea kecil-halus, NS/PatchMatch tekstur-luas), LaMa/MI-GAN on-device butuh model 200MB (ditolak agar tetap ringan).
-        val gw = gradWeight
-        val sw = screentoneWeight
+        // Referensi: Barnes PatchMatch, Criminisi exemplar priority, Xie SIGGRAPH21 disentangle garis/screentone.
+        // Bobot tunggal (setara mode terbaik lama): gradien 2x agar garis tajam, halftone dijaga.
+        val gw = 2.0f
+        val sw = 0.6f
         var tMean = 0.0
         var sMean = 0.0
         var tCount = 0
@@ -581,7 +546,7 @@ object PatchMatchInpainter {
                 val weight = 1.0 / (1 + abs(dx) + abs(dy))
                 sum += (dr * dr + dg * dg + db * db) * weight
                 // Sobel gradien: selisih tepi target vs sumber ( garis manga tetap nyambung ).
-                if (gw != 1.0f || currentHealMode == HealMode.MANGA_SEAMLESS || currentHealMode == HealMode.CONTENT_AWARE) {
+                run {
                     val tLum = (0.299 * Color.red(a) + 0.587 * Color.green(a) + 0.114 * Color.blue(a))
                     val sLum = (0.299 * Color.red(b) + 0.587 * Color.green(b) + 0.114 * Color.blue(b))
                     val tGx = lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2 + 1, ty2) - lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2 - 1, ty2)
@@ -589,13 +554,7 @@ object PatchMatchInpainter {
                     val tGy = lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2, ty2 + 1) - lumAt(if (mask[t]) guidePixels else pixels, mask, guidePixels, w, h, tx2, ty2 - 1)
                     val sGy = lumAt(pixels, null, null, w, h, sx2, sy2 + 1) - lumAt(pixels, null, null, w, h, sx2, sy2 - 1)
                     val gDiff = abs(tGx - sGx) + abs(tGy - sGy)
-                    val gScale = when (currentHealMode) {
-                        HealMode.PRESERVE_STRUCTURE -> (gw - 1f).coerceAtLeast(0f) * 2.0f + 1.0f
-                        HealMode.MANGA_SEAMLESS -> 2.0f
-                        HealMode.PRESERVE_TEXTURE -> 0.4f
-                        else -> 0.9f
-                    }
-                    sum += gDiff * gScale * weight * 0.6
+                    sum += gDiff * gw * weight * 0.6
                     tMean += tLum * weight
                     sMean += sLum * weight
                     tCount++
@@ -738,40 +697,6 @@ object PatchMatchInpainter {
             }
         }
         return pixels[idx]
-    }
-
-    private fun featherBoundary(pixels: IntArray, mask: BooleanArray, w: Int, h: Int) {
-        val tmp = pixels.copyOf()
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val i = y * w + x
-                if (!mask[i]) continue
-                var r = 0f; var g = 0f; var b = 0f; var c = 0f
-                for (dy in -1..1) {
-                    for (dx in -1..1) {
-                        val nx = x + dx
-                        val ny = y + dy
-                        if (nx !in 0 until w || ny !in 0 until h) continue
-                        val ni = ny * w + nx
-                        if (mask[ni]) continue
-                        val col = tmp[ni]
-                        val weight = if (dx == 0 && dy == 0) 2f else 1f
-                        r += Color.red(col) * weight
-                        g += Color.green(col) * weight
-                        b += Color.blue(col) * weight
-                        c += weight
-                    }
-                }
-                if (c > 0f) {
-                    val orig = tmp[i]
-                    val blend = 0.72f
-                    val nr = (((r / c) * blend) + Color.red(orig) * (1f - blend)).roundToInt().coerceIn(0, 255)
-                    val ng = (((g / c) * blend) + Color.green(orig) * (1f - blend)).roundToInt().coerceIn(0, 255)
-                    val nb = (((b / c) * blend) + Color.blue(orig) * (1f - blend)).roundToInt().coerceIn(0, 255)
-                    pixels[i] = Color.rgb(nr, ng, nb)
-                }
-            }
-        }
     }
 
     private fun buildConstraintLabels(pixels: IntArray, w: Int, h: Int): ByteArray {

@@ -57,7 +57,7 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
    blur live dibatasi 140k px, steps di-cap 32).
 3. Sapuan cepat tidak patah: interpolasi luar max 24 titik + inner 32 steps,
    stabilizer lokal (tanpa recompose storm), clip ke dirty-rect segmen.
-4. Heal brush 2 opsi tanpa model: TEKSTUR/GRADASI via pyramid push-pull native + sintesis grain (default, dirancang untuk mask besar: gradasi tersambung mulus, kertas/screentone tak plong) atau STRUKTUR via Navier-Stokes isophote onion-peel (garis tersambung, hanya membaca tetangga terisi): sapu untuk kumpulkan
+4. Hapus Objek (Content-Aware Fill tanpa model tanpa opsi): PatchMatch NNF menyalin tekstur sekitar + SeamlessBlender (koreksi offset Laplace/SOR) menyambung gradasi mulus tanpa mengaburkan: sapu untuk kumpulkan
    mask → commit crop dirty + antrean conflate bila sibuk.
    Inpaint Seleksi memakai pyramid push-pull pada crop + fallback Telea.
 5. Tips anti-lag: 1 drawing layer (fast-path blit ~50px vs render 46MB),
