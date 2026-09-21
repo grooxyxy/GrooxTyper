@@ -928,9 +928,9 @@ fun CanvasEditorScreen(
     var showScriptEditor by remember { mutableStateOf(false) }
     var scriptDraft by remember { mutableStateOf("") }
     var scriptEntries by remember { mutableStateOf(listOf<ScriptEntry>()) }
-    // Mode penempatan script: false = Style Rules (prefix -> preset + fitToRect),
-    // true = Auto Typesetting (font, wrap, alignment, padding, posisi otomatis).
-    var scriptAutoTypeset by remember { mutableStateOf(false) }
+    // Mode penempatan script (tunggal, gabungan): Style Rules menentukan
+    // style (prefix -> preset font/warna/efek), lalu Auto Typesetting
+    // menghitung geometri (font, wrap, alignment, padding, posisi) otomatis.
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
     fun resetScriptUsage() { scriptEntries = scriptEntries.map { it.copy(used = false) } }
 
@@ -1246,17 +1246,11 @@ fun CanvasEditorScreen(
                 )
                 template?.let { box.applyStyleFrom(it) }
                 box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
-                if (scriptAutoTypeset) {
-                    // Auto Typesetting + Style Rules: prefix menentukan font,
-                    // warna & efek; ukuran, wrap & posisi tetap dihitung otomatis.
-                    val styled = applyAllStylesTo(box)
-                    if (!styled) box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
-                    com.grooxtyper.app.model.AutoTypesetter.fit(box, inset, keepStyle = styled)
-                } else {
-                    applyAllStylesTo(box)
-                    box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
-                    box.fitToRect(inset)
-                }
+                // Gabungan: Style Rules menentukan style, Auto Typesetting
+                // menghitung ukuran, wrap & posisi otomatis.
+                val styled = applyAllStylesTo(box)
+                if (!styled) box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
+                com.grooxtyper.app.model.AutoTypesetter.fit(box, inset, keepStyle = styled)
                 val created = layerManager.addTextLayer(box)
                 undoRedoManager.pushLayerAdd(created.id)
                 // Tandai terpakai berdasar id
@@ -1284,15 +1278,11 @@ fun CanvasEditorScreen(
             )
             template?.let { box.applyStyleFrom(it) }
             box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
-            if (scriptAutoTypeset) {
-                val styled = applyAllStylesTo(box)
-                if (!styled) box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
-                com.grooxtyper.app.model.AutoTypesetter.fit(box, bounds, keepStyle = styled)
-            } else {
-                applyAllStylesTo(box)
-                box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
-                box.fitToRect(bounds)
-            }
+            // Gabungan: Style Rules menentukan style, Auto Typesetting
+            // menghitung ukuran, wrap & posisi otomatis.
+            val styled = applyAllStylesTo(box)
+            if (!styled) box.color = contrastTextColorAt(bounds.centerX(), bounds.centerY())
+            com.grooxtyper.app.model.AutoTypesetter.fit(box, bounds, keepStyle = styled)
             val created = layerManager.addTextLayer(box)
             undoRedoManager.pushLayerAdd(created.id)
             val srcIdx = scriptEntries.indexOfFirst { it.id == entry.id }
@@ -4598,10 +4588,7 @@ fun CanvasEditorScreen(
                             StatusPill("${scriptEntries.size} baris")
                             StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
                             StatusPill("${detectedBubbles.size} bubble")
-                            StatusPill(
-                                if (scriptAutoTypeset) "mode: auto" else "mode: rules",
-                                highlight = scriptAutoTypeset
-                            )
+                            StatusPill("mode: rules+auto", highlight = true)
                             StatusPill(
                                 if (selectionEngine.hasSelection) "seleksi ✓" else "tanpa seleksi",
                                 highlight = selectionEngine.hasSelection
@@ -4645,50 +4632,21 @@ fun CanvasEditorScreen(
                             color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        // Mode tunggal gabungan: Style Rules + Auto Typesetting
+                        // selalu aktif bersamaan (tanpa pilihan ganda).
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0xFF1F3D2B))
+                                .border(1.dp, Accent, RoundedCornerShape(10.dp))
+                                .padding(10.dp)
                         ) {
-                            // Mode 1: Style Rules — prefix memilih preset style.
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (!scriptAutoTypeset) Color(0xFF1F3D2B) else PanelBg)
-                                    .border(
-                                        1.dp,
-                                        if (!scriptAutoTypeset) Accent else Color(0xFF38383A),
-                                        RoundedCornerShape(10.dp)
-                                    )
-                                    .clickable { scriptAutoTypeset = false }
-                                    .padding(10.dp)
-                            ) {
-                                Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Prefix memilih preset style, lalu teks di-fit ke bubble.",
-                                    color = Color.Gray, fontSize = 10.sp
-                                )
-                            }
-                            // Mode 2: Auto Typesetting — semua dihitung otomatis.
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (scriptAutoTypeset) Color(0xFF1F3D2B) else PanelBg)
-                                    .border(
-                                        1.dp,
-                                        if (scriptAutoTypeset) Accent else Color(0xFF38383A),
-                                        RoundedCornerShape(10.dp)
-                                    )
-                                    .clickable { scriptAutoTypeset = true }
-                                    .padding(10.dp)
-                            ) {
-                                Text("Auto Typesetting", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Otomatis pilih ukuran font, line break, alignment, padding & posisi agar pas di bubble.",
-                                    color = Color.Gray, fontSize = 10.sp
-                                )
-                            }
+                            Text("Style Rules + Auto Typesetting", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(
+                                "Prefix memilih preset style (font, warna, efek), lalu ukuran font, line break, alignment, padding & posisi dihitung otomatis agar pas di bubble.",
+                                color = Color.Gray, fontSize = 10.sp
+                            )
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -4763,8 +4721,7 @@ fun CanvasEditorScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 Text(
-                                    if (scriptAutoTypeset) "Dilewati pada mode Auto Typesetting"
-                                    else if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
+                                    if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
                                     else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
                                     color = Color.Gray, fontSize = 11.sp
                                 )
