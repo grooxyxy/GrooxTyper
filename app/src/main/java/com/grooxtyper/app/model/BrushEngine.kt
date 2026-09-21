@@ -57,7 +57,9 @@ enum class BrushType(val displayName: String, val category: String) {
     ERASER("Eraser", "Erase"),
     ERASER_SOFT("Soft Eraser", "Erase"),
     // Hapus objek (Content-Aware Fill tanpa model)
-    OBJECT_ERASER("Hapus Objek", "Hapus")
+    OBJECT_ERASER("Hapus Objek", "Hapus"),
+    // Heal model (MiGAN on-device, di-bundle saat build CI)
+    HEAL_MIGAN("Heal MiGAN", "Hapus")
 }
 
 enum class RulerType {
@@ -532,6 +534,11 @@ class BrushEngine {
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
                 paint.alpha = 0
             }
+            BrushType.HEAL_MIGAN -> {
+                // Ditangani di CanvasEditorScreen via MiGAN on-device, bukan draw langsung
+                paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                paint.alpha = 0
+            }
         }
         cachedPaint = Paint(paint)
         cachedPaintKey = key
@@ -565,8 +572,8 @@ class BrushEngine {
     }
 
     fun strokeSegmentOnLayer(layer: DrawingLayer, p1: Offset, p2: Offset, progressFraction: Float = 1.0f, visibleRect: RectF? = null) {
-        // Hapus Objek tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
-        if (brushType == BrushType.OBJECT_ERASER) return
+        // Hapus Objek / Heal MiGAN tidak menggambar langsung; akumulasi mask di CanvasEditorScreen
+        if (brushType == BrushType.OBJECT_ERASER || brushType == BrushType.HEAL_MIGAN) return
 
         val bmp = layer.getPersistentBitmap()
         val isHuge = bmp.width.toLong() * bmp.height > HUGE_CANVAS_PIXELS

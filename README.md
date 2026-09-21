@@ -57,7 +57,7 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
    blur live dibatasi 140k px, steps di-cap 32).
 3. Sapuan cepat tidak patah: interpolasi luar max 24 titik + inner 32 steps,
    stabilizer lokal (tanpa recompose storm), clip ke dirty-rect segmen.
-4. Hapus Objek (Content-Aware Fill tanpa model tanpa opsi): PatchMatch NNF menyalin tekstur sekitar + SeamlessBlender (koreksi offset Laplace/SOR) menyambung gradasi mulus tanpa mengaburkan: sapu untuk kumpulkan
+4. Hapus Objek (Content-Aware Fill tanpa model tanpa opsi): PatchMatch NNF menyalin tekstur sekitar + SeamlessBlender (koreksi offset Laplace/SOR) menyambung gradasi mulus tanpa mengaburkan. Heal MiGAN (model on-device Picsart MI-GAN MIT, di-bundle saat build CI): sapu untuk kumpulkan
    mask → commit crop dirty + antrean conflate bila sibuk.
    Inpaint Seleksi memakai pyramid push-pull pada crop + fallback Telea.
 5. Tips anti-lag: 1 drawing layer (fast-path blit ~50px vs render 46MB),
@@ -113,3 +113,14 @@ Panel **Script → Bubble** memakai satu mode gabungan (tanpa pilihan ganda):
   (font terbesar, penalti baris terakhir terlalu pendek). Bila rule cocok
   (`keepStyle = true`), alignment milik Style Rules dipertahankan.
   Implementasi: `app/src/main/java/com/grooxtyper/app/model/AutoTypesetter.kt`.
+
+## Mode Script-Teks: susun naskah di atas teks terdeteksi
+
+Tombol **Teks** di panel Script membuka mode kedua: **Deteksi Teks**
+(ML Kit) menggabung teks berdekatan jadi satu bubble, lalu setiap bubble
+dipaparkan sebagai kolom per baris (terdeteksi | naskah, bersandingan).
+Kolom bisa diedit teksnya, dicoret (checkbox), atau dihapus. Isi naskah
+manual atau via **Pasangkan** (dari antrean berdasar urutan); pil
+`Sesuai ✓` menyala bila tiap kolom terpilih sudah bernaskah. **Jalankan**
+menghapus (inpaint) teks terdeteksi terpilih lalu me-render naskah 1-ke-1
+di kolom yang sama dengan ukuran font mengikuti teks aslinya.

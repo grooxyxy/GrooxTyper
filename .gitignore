@@ -24,6 +24,11 @@ obj/
 # .github/workflows/android.yml). Batas <50MB terpenuhi.
 app/src/main/assets/models/bd.onnx
 
+# Model heal (~27MB MiGAN pipeline v2 ONNX, MIT Picsart AI Research)
+# tidak di-commit; di-bundle saat build di GitHub Actions (lihat
+# .github/workflows/android.yml). Batas <50MB terpenuhi.
+app/src/main/assets/models/mg.onnx
+
 # Model bubble 40MB (koharu ONNX) tidak di-commit agar repo ramping & push
 # cepat; runtime fallback ke heuristik bila aset absen (build tetap hijau).
 app/src/main/assets/models/koharu/*.onnx

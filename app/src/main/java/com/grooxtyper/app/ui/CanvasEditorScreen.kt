@@ -78,6 +78,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.RadioButton
@@ -176,6 +178,16 @@ data class ScriptEntry(
     val id: String = java.util.UUID.randomUUID().toString(),
     val text: String,
     var used: Boolean = false
+)
+
+/** Satu baris teks terdeteksi (satu bubble) untuk mode Script-Teks. */
+data class DetectedRow(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    var box: RectF,
+    var text: String,
+    var fontSize: Float,
+    var selected: Boolean = true,
+    var script: String = ""
 )
 
 /** Parse teks mentah script menjadi daftar baris (filter Page header kosong). */
@@ -934,6 +946,17 @@ fun CanvasEditorScreen(
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
     fun resetScriptUsage() { scriptEntries = scriptEntries.map { it.copy(used = false) } }
 
+    // Mode panel Script: false = Bubble (bubble detector + antrean baris),
+    // true = Teks Terdeteksi (deteksi teks ML Kit → gabung berdekatan → kolom per baris).
+    var scriptTextMode by remember { mutableStateOf(false) }
+    // Baris teks terdeteksi (satu bubble = satu baris): teks/box bisa diedit,
+    // baris bisa dihapus atau dicoret dari render (selected).
+    var detectedRows by remember { mutableStateOf(listOf<DetectedRow>()) }
+    var detectingText by remember { mutableStateOf(false) }
+    // Naskah terpasang per baris terdeteksi (diisi otomatis dari antrean
+    // berdasar urutan, bisa diedit manual agar jumlahnya sesuai).
+    fun pairedRowCount(): Int = detectedRows.count { it.selected && it.script.isNotBlank() }
+
     // Bubble detector: model ONNX (YOLOv11n-seg) yang bisa dipilih user.
     // Inferensi on-device via ONNX Runtime; heuristik hanya fallback.
     val bubbleDetector = remember { BubbleDetector() }
@@ -1298,6 +1321,201 @@ fun CanvasEditorScreen(
         return createdCount
     }
 
+    /**
+     * Gabung region teks yang berdekatan jadi satu bubble: rect diperluas
+     * 0.5x tinggi ke segala arah; yang bersinggungan di-union hingga stabil.
+     * Teks gabungan diurut baca manga (atas→bawah, kanan→kiri).
+     */
+    fun mergeNearbyRegions(regions: List<DetectedTextRegion>): List<DetectedTextRegion> {
+        if (regions.isEmpty()) return emptyList()
+        data class Group(var box: RectF, val members: MutableList<DetectedTextRegion>)
+        val groups = regions.map { r ->
+            val b = r.boundingBox
+            Group(
+                RectF(b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat()),
+                mutableListOf(r)
+            )
+        }.toMutableList()
+        fun padded(g: Group): RectF {
+            val pad = (g.box.height() * 0.5f).coerceAtLeast(4f)
+            return RectF(g.box.left - pad, g.box.top - pad, g.box.right + pad, g.box.bottom + pad)
+        }
+        var changed = true
+        while (changed) {
+            changed = false
+            outer@ for (i in groups.indices) {
+                for (j in i + 1 until groups.size) {
+                    if (RectF.intersects(padded(groups[i]), padded(groups[j]))) {
+                        groups[i].box.union(groups[j].box)
+                        groups[i].members += groups[j].members
+                        groups.removeAt(j)
+                        changed = true
+                        break@outer
+                    }
+                }
+            }
+        }
+        return groups.map { g ->
+            val ordered = g.members.sortedWith { a, b ->
+                if (readingBefore(a.boundingBox, b.boundingBox)) -1 else 1
+            }
+            val b = g.box
+            DetectedTextRegion(
+                text = ordered.joinToString(" ") { it.text }.trim(),
+                boundingBox = android.graphics.Rect(
+                    b.left.toInt(), b.top.toInt(), b.right.toInt(), b.bottom.toInt()
+                ),
+                cornerPoints = null,
+                script = g.members.first().script
+            )
+        }
+    }
+
+    /** Urutan baca manga untuk dua rect: atas dulu, lalu kanan dulu. */
+    fun readingBefore(a: android.graphics.Rect, b: android.graphics.Rect): Boolean {
+        val tol = minOf(a.height(), b.height()) * 0.6f
+        if (kotlin.math.abs(a.exactCenterY() - b.exactCenterY()) > tol) {
+            return a.exactCenterY() < b.exactCenterY()
+        }
+        return a.exactCenterX() > b.exactCenterX()
+    }
+
+    /** Deteksi seluruh teks di layer aktif → gabung berdekatan → kolom per baris. */
+    fun runScriptTextDetect() {
+        scope.launch {
+            val active = layerManager.getActiveLayer() ?: return@launch
+            detectingText = true
+            try {
+                val regions = withContext(Dispatchers.Default) {
+                    mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                }
+                val merged = mergeNearbyRegions(regions)
+                val unused = unusedScriptEntries()
+                detectedRows = merged.mapIndexed { idx, r ->
+                    val bh = r.boundingBox.height().toFloat().coerceAtLeast(8f)
+                    DetectedRow(
+                        box = RectF(
+                            r.boundingBox.left.toFloat(), r.boundingBox.top.toFloat(),
+                            r.boundingBox.right.toFloat(), r.boundingBox.bottom.toFloat()
+                        ),
+                        text = r.text,
+                        fontSize = (bh * 0.9f).coerceIn(8f, 320f),
+                        selected = true,
+                        script = unused.getOrNull(idx)?.text ?: ""
+                    )
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                healError = "Deteksi teks gagal: ${e.message ?: "error"}"
+            } finally {
+                detectingText = false
+                refreshComposite()
+            }
+        }
+    }
+
+    /** Isi ulang kolom naskah dari antrean berdasar urutan (yang kosong saja). */
+    fun pairScriptsToRows() {
+        val unused = unusedScriptEntries()
+        detectedRows = detectedRows.mapIndexed { idx, row ->
+            if (row.script.isBlank()) row.copy(script = unused.getOrNull(idx)?.text ?: "") else row
+        }
+    }
+
+    /**
+     * Jalankan mode Teks: hapus (inpaint) teks terdeteksi yang dipilih user,
+     * lalu render naskah pasangan 1-ke-1 di kolom yang sama dengan ukuran
+     * font mengikuti teks terdeteksinya.
+     */
+    fun runTextScript() {
+        val rows = detectedRows.filter { it.selected && it.script.isNotBlank() }
+        if (rows.isEmpty()) return
+        val active = layerManager.getActiveLayer() ?: return
+        scope.launch(Dispatchers.Default) {
+            val src = active.getPersistentBitmap()
+            // 1) Mask gabungan semua kolom terpilih → hapus sekaligus.
+            val fullMask = try {
+                Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return@launch
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return@launch
+            }
+            try {
+                val cv = android.graphics.Canvas(fullMask)
+                val paint = android.graphics.Paint().apply {
+                    style = android.graphics.Paint.Style.FILL
+                    color = android.graphics.Color.WHITE
+                }
+                for (row in rows) {
+                    val b = row.box
+                    cv.drawRect(b.left - 2f, b.top - 2f, b.right + 2f, b.bottom + 2f, paint)
+                }
+                undoRedoManager.saveSnapshot(active)
+                val template = selectedTextBox?.copy()
+                // Hapus semua kolom terpilih dulu (berat, di background).
+                for (row in rows) {
+                    val b = row.box
+                    val bounds = RectF(
+                        (b.left - 2f).coerceAtLeast(0f), (b.top - 2f).coerceAtLeast(0f),
+                        (b.right + 2f).coerceAtMost(src.width.toFloat()),
+                        (b.bottom + 2f).coerceAtMost(src.height.toFloat())
+                    )
+                    inpaintingManager.inpaintSelection(active, fullMask, bounds)
+                }
+                // Render naskah 1-ke-1 di kolom yang sama (state UI di Main).
+                withContext(Dispatchers.Main) {
+                    var last: TextBox? = null
+                    var lastLayerId = ""
+                    for (row in rows) {
+                        val b = row.box
+                        val box = TextBox(
+                            text = row.script,
+                            position = Offset(b.centerX(), b.centerY()),
+                            color = brushEngine.color
+                        )
+                        template?.let { box.applyStyleFrom(it) }
+                        box.color = contrastTextColorAt(b.centerX(), b.centerY())
+                        box.rotation = 0f
+                        box.scale = 1f
+                        box.textScaleX = 1f
+                        box.fontSize = row.fontSize
+                        box.boxWidth = b.width().coerceAtLeast(24f)
+                        box.align = com.grooxtyper.app.model.TextAlignMode.CENTER
+                        // Pengaman: bila meluap, kecilkan agar tetap dalam kolom.
+                        val (cw, ch) = box.contentSize()
+                        if (cw > b.width() || ch > b.height()) {
+                            box.fitToRect(RectF(b.left, b.top, b.right, b.bottom))
+                        }
+                        val created = layerManager.addTextLayer(box)
+                        undoRedoManager.pushLayerAdd(created.id)
+                        last = box
+                        lastLayerId = created.id
+                    }
+                    // Tandai antrean yang terpakai (berdasar urutan) + kosongkan
+                    // pilihan agar tidak ke-render ganda.
+                    val unused = unusedScriptEntries()
+                    for (i in rows.indices) {
+                        val srcIdx = scriptEntries.indexOfFirst { it.id == unused.getOrNull(i)?.id }
+                        if (srcIdx >= 0) scriptEntries[srcIdx].used = true
+                    }
+                    scriptEntries = scriptEntries.toList()
+                    detectedRows = detectedRows.map { it.copy(selected = false) }
+                    last?.let {
+                        selectedTextBox = it
+                        layerManager.activeLayerId = lastLayerId
+                        activeTool = ActiveTool.TEXT
+                    }
+                    refreshComposite()
+                }
+            } finally {
+                runCatching { fullMask.recycle() }
+            }
+        }
+    }
+
     /** Layer id untuk snapshot undo teks (undo mencari berdasar layer id). */
     fun textLayerIdOf(box: TextBox): String =
         layerManager.findTextLayerByBoxId(box.id)?.id ?: box.id
@@ -1551,27 +1769,36 @@ fun CanvasEditorScreen(
     var strokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Kunci status heal + layer saat press agar release tak terpengaruh ganti tool/layer.
     var strokeIsHeal by remember { mutableStateOf(false) }
+    // Kunci engine hapus saat press: true = Heal MiGAN, false = Content-Aware Fill.
+    var strokeIsMigan by remember { mutableStateOf(false) }
     var lockedStrokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Antrean heal tunggal (conflate): sapuan saat commit jalan digabung, tak dibuang.
     var pendingHealMask by remember { mutableStateOf<Bitmap?>(null) }
     var pendingHealDirty by remember { mutableStateOf<RectF?>(null) }
     var pendingHealLayerId by remember { mutableStateOf<String?>(null) }
 
-    /** Luncurkan commit heal; mask dimiliki eksklusif oleh job (jangan disentuh UI lagi). */
-    fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer) {
+    /** Luncurkan commit hapus; mask dimiliki eksklusif oleh job (jangan disentuh UI lagi). */
+    fun launchHealCommit(mask: Bitmap, dirty: RectF, targetLayer: DrawingLayer, useMigan: Boolean = false) {
         isHealing = true
         healError = null
         busyFrac = 0f
         scope.launch(Dispatchers.Default) {
             var ok = false
             var err: String? = null
-            // Lapor progres PatchMatch (dibatasi agar tak spam recompose).
+            // Lapor progres inpaint (dibatasi agar tak spam recompose).
             val prog: (Float) -> Unit = { f ->
                 val c = f.coerceIn(0f, 1f)
                 if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
             }
             try {
-                ok = inpaintingManager.inpaintObjectDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), prog)
+                ok = if (useMigan) {
+                    inpaintingManager.inpaintMiganDirty(
+                        targetLayer.getPersistentBitmap(), mask, RectF(dirty),
+                        context.applicationContext, prog
+                    )
+                } else {
+                    inpaintingManager.inpaintObjectDirty(targetLayer.getPersistentBitmap(), mask, RectF(dirty), prog)
+                }
                 if (!ok) err = "Hapus objek dilewati: mask kosong/ROI terlalu kecil"
                 else {
                     targetLayer.markDirty()
@@ -1595,7 +1822,7 @@ fun CanvasEditorScreen(
                         pendingHealMask = null
                         pendingHealDirty = null
                         pendingHealLayerId = null
-                        launchHealCommit(pm, pd, pl)
+                        launchHealCommit(pm, pd, pl, useMigan)
                     } else {
                         runCatching { pm?.recycle() }
                         pendingHealMask = null
@@ -1633,6 +1860,7 @@ fun CanvasEditorScreen(
         delay(if (isHugeForPick) 1000L else 600L)
         if ((activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
             brushEngine.brushType != BrushType.OBJECT_ERASER &&
+            brushEngine.brushType != BrushType.HEAL_MIGAN &&
             !pressMoved && !colorPickActive && strokeLayer != null && strokeLength == 0f
         ) {
             val sl = strokeLayer
@@ -1797,15 +2025,16 @@ fun CanvasEditorScreen(
 
                             if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
                                 // Gesture berubah jadi pan/zoom: akhiri stroke yang tertunda.
-                                // Heal yang setengah jadi dibuang eksplisit agar tak menggantung.
+                                // Sapuan penghapus yang setengah jadi dibuang eksplisit agar tak menggantung.
                                 if (strokeIsHeal) {
                                     recycleInpaintMask()
-                                    healError = "Sapuan heal dibatalkan (pinch/pan)"
+                                    healError = "Sapuan penghapus dibatalkan (pinch/pan)"
                                 }
                                 strokeLayer?.let { brushEngine.syncTiles(it) }
                                 strokeLayer = null
                                 lockedStrokeLayer = null
                                 strokeIsHeal = false
+                                strokeIsMigan = false
                                 brushEngine.endStroke()
                                 colorPickActive = false
                                 pressId++
@@ -2157,6 +2386,7 @@ fun CanvasEditorScreen(
                                             strokeLayer = activeLayer
                                             lockedStrokeLayer = activeLayer
                                             strokeIsHeal = true
+                                            strokeIsMigan = brushEngine.brushType == BrushType.HEAL_MIGAN
                                             pressId++
                                             pressStartScreen = change.position
                                             pressMoved = false
@@ -2192,14 +2422,17 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
-                                        // Hapus Objek via tool BRUSH (tipe OBJECT_ERASER): alihkan ke
+                                        // Hapus Objek / Heal MiGAN via tool BRUSH: alihkan ke
                                         // akumulasi mask inpaint agar berfungsi di kedua tool.
-                                        if (brushEngine.brushType == BrushType.OBJECT_ERASER) {
+                                        if (brushEngine.brushType == BrushType.OBJECT_ERASER ||
+                                            brushEngine.brushType == BrushType.HEAL_MIGAN
+                                        ) {
                                             if (lastCanvasPoint == null) {
                                                 val activeLayer = layerManager.ensureDrawingLayer()
                                                 strokeLayer = activeLayer
                                                 lockedStrokeLayer = activeLayer
                                                 strokeIsHeal = true
+                                                strokeIsMigan = brushEngine.brushType == BrushType.HEAL_MIGAN
                                                 pressId++
                                                 pressStartScreen = change.position
                                                 pressMoved = false
@@ -2243,6 +2476,7 @@ fun CanvasEditorScreen(
                                             strokeLayer = activeLayer
                                             lockedStrokeLayer = activeLayer
                                             strokeIsHeal = false
+                                            strokeIsMigan = false
                                             // Kunci tipe brush sekali saat stroke dimulai,
                                             // bukan per-move (menghindari recompose tiap event).
                                             if (activeTool == ActiveTool.ERASER) {
@@ -2342,12 +2576,14 @@ fun CanvasEditorScreen(
                                 } else {
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
-                                    val wasHealBrush = wasBrush && brushEngine.brushType == BrushType.OBJECT_ERASER
+                                    val wasHealBrush = wasBrush && (brushEngine.brushType == BrushType.OBJECT_ERASER ||
+                                        brushEngine.brushType == BrushType.HEAL_MIGAN)
                                     strokeLayer?.let { brushEngine.syncTiles(it) }
                                     strokeLayer = null
                                     brushEngine.endStroke()
-                                    // Commit heal: serah-terima swap (O(1), tanpa copy/fill full di Main).
+                                    // Commit hapus: serah-terima swap (O(1), tanpa copy/fill full di Main).
                                     val wasHeal = strokeIsHeal
+                                    val wasMigan = strokeIsMigan
                                     val commitLayer = lockedStrokeLayer ?: layerManager.getActiveLayer()
                                     if (wasHeal && inpaintMask != null && inpaintDirty != null) {
                                         val maskOwned = inpaintMask
@@ -2387,7 +2623,7 @@ fun CanvasEditorScreen(
                                                     pendingHealLayerId = targetLayer.id
                                                 }
                                             } else {
-                                                launchHealCommit(maskOwned, dirtyOwned, targetLayer)
+                                                launchHealCommit(maskOwned, dirtyOwned, targetLayer, wasMigan)
                                             }
                                         } else {
                                             runCatching { maskOwned?.recycle() }
@@ -2398,6 +2634,7 @@ fun CanvasEditorScreen(
                                         recycleInpaintMask()
                                     }
                                     strokeIsHeal = false
+                                    strokeIsMigan = false
                                     lockedStrokeLayer = null
                                     colorPickActive = false
                                     pressId++
@@ -2449,6 +2686,7 @@ fun CanvasEditorScreen(
                                 strokeLayer = null
                                 lockedStrokeLayer = null
                                 strokeIsHeal = false
+                                strokeIsMigan = false
                                 brushEngine.endStroke()
                                 twoFingerActive = false
                                 rotAccum = 0f
@@ -2527,7 +2765,8 @@ fun CanvasEditorScreen(
                 // Overlay mask inpaint (pink) — viewport culled, di atas komposit tapi di bawah teks.
                 // Tampil juga saat brush OBJECT_ERASER agar sapuan terlihat live.
                 val healBrushActive = (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) &&
-                    brushEngine.brushType == BrushType.OBJECT_ERASER
+                    (brushEngine.brushType == BrushType.OBJECT_ERASER ||
+                        brushEngine.brushType == BrushType.HEAL_MIGAN)
                 if (inpaintMask != null && (activeTool == ActiveTool.INPAINT || healBrushActive)) {
                     val maskBmp = inpaintMask
                     if (maskBmp != null && !maskBmp.isRecycled) {
@@ -2985,11 +3224,15 @@ fun CanvasEditorScreen(
                         textAlign = androidx.compose.ui.text.style.TextAlign.End
                     )
                 }
-                // Hapus Objek tanpa opsi tanpa model: sapu → Content-Aware Fill
-                // (PatchMatch + seamless blend) mengisi tekstur/gradasi sekitar.
-                if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.OBJECT_ERASER) {
+                // Penghapus tanpa opsi: sapu → commit otomatis mengisi area.
+                // OBJECT_ERASER = Content-Aware Fill, HEAL_MIGAN = model MiGAN.
+                if (activeTool == ActiveTool.INPAINT || brushEngine.brushType == BrushType.OBJECT_ERASER ||
+                    brushEngine.brushType == BrushType.HEAL_MIGAN
+                ) {
                     Text(
-                        "Sapu area objek — commit otomatis mengisi tekstur & gradasi sekitar.",
+                        if (brushEngine.brushType == BrushType.HEAL_MIGAN && activeTool != ActiveTool.INPAINT)
+                            "Sapu area objek — commit via model MiGAN on-device."
+                        else "Sapu area objek — commit otomatis mengisi tekstur & gradasi sekitar.",
                         color = Color.Gray, fontSize = 10.sp,
                         modifier = Modifier.padding(start = 78.dp)
                     )
@@ -4543,17 +4786,35 @@ fun CanvasEditorScreen(
         if (showScriptPanel) {
             val unusedCount = scriptEntries.count { !it.used }
             val canRun = unusedCount > 0 && (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection)
+            val canRunText = detectedRows.any { it.selected && it.script.isNotBlank() }
             AlertDialog(
                 onDismissRequest = { showScriptPanel = false },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Description, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Script → Bubble", color = Color.White, fontWeight = FontWeight.Bold)
+                        Text(if (scriptTextMode) "Script → Teks" else "Script → Bubble", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 },
                 text = {
                     Column {
+                        // Pilih mode: Bubble (detektor bubble) atau Teks (deteksi teks ML Kit).
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { scriptTextMode = false },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = if (!scriptTextMode) Accent else PanelBg)
+                            ) { Text("Bubble", color = Color.White, fontSize = 12.sp) }
+                            Button(
+                                onClick = { scriptTextMode = true },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = if (scriptTextMode) Accent else PanelBg)
+                            ) { Text("Teks", color = Color.White, fontSize = 12.sp) }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
                         // Status ringkas: pil + bar progres sebaris.
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -4562,6 +4823,9 @@ fun CanvasEditorScreen(
                             StatusPill("${scriptEntries.size} baris")
                             StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
                             StatusPill("${detectedBubbles.size} bubble")
+                            if (scriptTextMode) {
+                                StatusPill("${detectedRows.size} teks", highlight = detectedRows.isNotEmpty())
+                            }
                             if (selectionEngine.hasSelection) {
                                 StatusPill("seleksi ✓", highlight = true)
                             }
@@ -4608,6 +4872,7 @@ fun CanvasEditorScreen(
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
+                        if (!scriptTextMode) {
                         Text(
                             "Penempatan",
                             color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
@@ -4670,6 +4935,7 @@ fun CanvasEditorScreen(
                                 }
                             }
                         }
+                        } // if (!scriptTextMode) penempatan
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             "Sumber naskah",
@@ -4724,6 +4990,7 @@ fun CanvasEditorScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
+                        if (!scriptTextMode) {
                         if (scriptEntries.isEmpty()) {
                             Text(
                                 "Contoh format: satu baris = satu bubble. Header 'Page X' otomatis diabaikan. Lihat folder contoh/script.txt.",
@@ -4800,12 +5067,134 @@ fun CanvasEditorScreen(
                                 }
                             }
                         }
+                        } // if (!scriptTextMode) daftar bubble
+                        if (scriptTextMode) {
+                            val selN = detectedRows.count { it.selected }
+                            val pairN = pairedRowCount()
+                            val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "Teks Terdeteksi",
+                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { runScriptTextDetect() },
+                                    enabled = !detectingText,
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                                ) {
+                                    Text(
+                                        if (detectingText) "Mendeteksi…" else "Deteksi Teks",
+                                        color = Color.White, fontSize = 12.sp
+                                    )
+                                }
+                                ScriptActionButton(
+                                    label = "Pasangkan",
+                                    icon = Icons.Default.Refresh,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { pairScriptsToRows() }
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                StatusPill("$selN dipilih", highlight = selN > 0)
+                                StatusPill("$pairN bernaskah", highlight = pairN > 0)
+                                StatusPill(
+                                    if (matchOk) "Sesuai ✓" else "Belum sesuai",
+                                    highlight = matchOk
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            if (detectedRows.isEmpty()) {
+                                Text(
+                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai.",
+                                    color = Color.Gray, fontSize = 11.sp
+                                )
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(220.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    itemsIndexed(detectedRows) { idx, row ->
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(if (row.selected) Color(0xFF1F3D2B) else PanelBg)
+                                                .border(
+                                                    1.dp,
+                                                    if (row.selected) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                                    RoundedCornerShape(10.dp)
+                                                )
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        ) {
+                                            // Kolom terdeteksi (kiri): bisa diedit & dicoret.
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Checkbox(
+                                                    checked = row.selected,
+                                                    onCheckedChange = {
+                                                        detectedRows = detectedRows.map {
+                                                            if (it.id == row.id) it.copy(selected = !it.selected) else it
+                                                        }
+                                                    },
+                                                    colors = CheckboxDefaults.colors(checkedColor = Accent)
+                                                )
+                                                OutlinedTextField(
+                                                    value = row.text,
+                                                    onValueChange = { v ->
+                                                        detectedRows = detectedRows.map {
+                                                            if (it.id == row.id) it.copy(text = v) else it
+                                                        }
+                                                    },
+                                                    label = { Text("Terdeteksi #${idx + 1} • ≈${row.fontSize.toInt()}px") },
+                                                    singleLine = true,
+                                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                                        color = if (row.selected) Color.White else Color.Gray,
+                                                        fontSize = 12.sp
+                                                    ),
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                IconButton(
+                                                    onClick = {
+                                                        detectedRows = detectedRows.filter { it.id != row.id }
+                                                    }
+                                                ) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "Hapus kolom", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                            // Kolom naskah pasangan (kanan, bersandingan).
+                                            OutlinedTextField(
+                                                value = row.script,
+                                                onValueChange = { v ->
+                                                    detectedRows = detectedRows.map {
+                                                        if (it.id == row.id) it.copy(script = v) else it
+                                                    }
+                                                },
+                                                placeholder = { Text("Naskah kolom ini…") },
+                                                maxLines = 2,
+                                                textStyle = androidx.compose.ui.text.TextStyle(
+                                                    color = Color.White, fontSize = 12.sp
+                                                ),
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 confirmButton = {
                     Button(
-                        onClick = { runScript() },
-                        enabled = canRun,
+                        onClick = { if (scriptTextMode) runTextScript() else runScript() },
+                        enabled = if (scriptTextMode) canRunText else canRun,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent)
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))

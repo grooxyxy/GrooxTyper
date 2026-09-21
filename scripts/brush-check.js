@@ -57,10 +57,19 @@ assert(!inpaint.includes('HealMethod') && !inpaint.includes('healMode'), 'Inpain
 assert(!inpaint.includes('nativeInpaintNS'), 'Navier-Stokes native dihapus');
 assert(!inpaint.includes('nativeGaussianBlurArea') && !inpaint.includes('nativeGuidedHealArea'), 'native Blur/Guided area dihapus');
 assert(editor.includes('Inpaint Seleksi'), 'UI punya aksi Inpaint Seleksi');
-assert(!editor.includes('MiGan'), 'UI bebas referensi MiGan (model dihapus)');
-assert(!fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt')), 'MiganInpainter.kt dihapus');
-assert(!fs.existsSync(path.join(ROOT, 'app/src/main/assets/models/mg.onnx')), 'model mg.onnx dihapus dari assets');
+assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt')), 'MiganInpainter.kt ada');
+assert(!fs.existsSync(path.join(ROOT, 'app/src/main/assets/models/mg.onnx')), 'model mg.onnx tidak di-commit (bundle via CI)');
 assert(inpaint.includes('nativeInpaintPyramid'), 'inpaint seleksi memakai pyramid push-pull native (mask besar)');
+
+// 3b. Heal brush model MiGAN (download saat build CI, <50MB)
+const workflow = read(path.join(ROOT, '.github/workflows/android.yml'));
+const gitignore = read(path.join(ROOT, '.gitignore'));
+assert(brush.includes('HEAL_MIGAN'), 'brush Heal MiGAN terdaftar');
+assert(editor.includes('HEAL_MIGAN'), 'editor routing Heal MiGAN');
+assert(workflow.includes('andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx'), 'CI download MiGAN pipeline v2');
+assert(workflow.includes('models/mg.onnx'), 'CI bundle mg.onnx ke assets');
+assert(gitignore.includes('app/src/main/assets/models/mg.onnx'), 'mg.onnx tidak di-commit (bundle via CI)');
+assert(inpaint.includes('inpaintMiganDirty'), 'InpaintingManager punya inpaintMiganDirty');
 
 // 4. Import gambar besar 720x16000 (adaptasi Vasilias FileManager/BitmapSafety)
 assert(imageImport.includes('canvasPixelBudget'), 'import heap-aware via canvasPixelBudget (adaptasi BitmapSafety)');

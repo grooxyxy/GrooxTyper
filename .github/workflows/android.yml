@@ -51,6 +51,14 @@ jobs:
           echo "bubble model size: $SIZE bytes"
           test "$SIZE" -lt 52428800
 
+      - name: Download heal model (MiGAN pipeline v2 -> ONNX, <50MB)
+        run: |
+          curl -sL --retry 3 -o app/src/main/assets/models/mg.onnx "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx"
+          ls -la app/src/main/assets/models/mg.onnx
+          SIZE=$(stat -c%s app/src/main/assets/models/mg.onnx)
+          echo "migan model size: $SIZE bytes"
+          test "$SIZE" -lt 52428800
+
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 

@@ -1,5 +1,6 @@
 package com.grooxtyper.app.model
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
@@ -442,6 +443,136 @@ class InpaintingManager {
         } catch (e: Exception) {
             e.printStackTrace()
             try { inpaintBitmapDirect(src, mask); return true } catch (_: Exception) { return false }
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            return false
+        }
+    }
+
+    /**
+     * Heal brush MiGAN satu sapuan: inpaint model on-device (Picsart MI-GAN,
+     * MIT, `models/mg.onnx` di-bundle saat build CI) hanya di dalam [dirty].
+     * [appContext] untuk memuat session (lazy, sekali). Fallback Telea bila
+     * session/model gagal agar fitur tak pernah mati diam.
+     */
+    suspend fun inpaintMiganDirty(
+        src: Bitmap,
+        mask: Bitmap,
+        dirty: android.graphics.RectF,
+        appContext: Context?,
+        onProgress: ((Float) -> Unit)? = null
+    ): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        try {
+            val l = dirty.left.toInt().coerceIn(0, src.width - 1)
+            val t = dirty.top.toInt().coerceIn(0, src.height - 1)
+            val r = dirty.right.toInt().coerceIn(1, src.width)
+            val b = dirty.bottom.toInt().coerceIn(1, src.height)
+            if (r - l < 4 || b - t < 4) {
+                android.util.Log.w("Inpaint", "migan: dirty terlalu kecil, skip")
+                return false
+            }
+            // Crop sempit + pad sedang (MiGAN fully-convolutional; crop raksasa
+            // di-downscale agar inferensi on-device tidak OOM).
+            val bw = r - l
+            val bh = b - t
+            val adaptivePad = max(64, min(max(bw, bh) + 32, 192))
+            val cl = maxOf(0, l - adaptivePad)
+            val ct = maxOf(0, t - adaptivePad)
+            val cr = minOf(src.width, r + adaptivePad)
+            val cb = minOf(src.height, b + adaptivePad)
+            val cw = cr - cl
+            val ch = cb - ct
+            if (cw <= 8 || ch <= 8) {
+                android.util.Log.w("Inpaint", "migan: crop terlalu kecil ${cw}x${ch}, skip")
+                return false
+            }
+            if (dilateMask) {
+                val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
+                if (maskCropPre != null) {
+                    expandEraseMask(maskCropPre, max(bw, bh))
+                    try {
+                        val dst = Canvas(mask)
+                        val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+                        dst.drawRect(cl.toFloat(), ct.toFloat(), cr.toFloat(), cb.toFloat(), clear)
+                        dst.drawBitmap(maskCropPre, cl.toFloat(), ct.toFloat(), null)
+                    } catch (e: Exception) { e.printStackTrace() }
+                    runCatching { maskCropPre.recycle() }
+                }
+            }
+            var scale = 1f
+            var workW = cw
+            var workH = ch
+            if (cw.toLong() * ch > 700_000L) {
+                scale = 0.5f
+                workW = max(16, (cw * scale).toInt())
+                workH = max(16, (ch * scale).toInt())
+            }
+            try {
+                onProgress?.invoke(0.15f)
+                var srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                var maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                if (scale != 1f) {
+                    val sW = Bitmap.createScaledBitmap(srcCrop, workW, workH, true)
+                    val mW = Bitmap.createScaledBitmap(maskCrop, workW, workH, true)
+                    srcCrop.recycle(); maskCrop.recycle()
+                    srcCrop = sW; maskCrop = mW
+                }
+                try {
+                    if (appContext != null && com.grooxtyper.app.ml.MiganInpainter.ensureSession(appContext)) {
+                        val out = com.grooxtyper.app.ml.MiganInpainter.inpaint(srcCrop, maskCrop)
+                        if (out != null) {
+                            val toBlit = if (scale != 1f) {
+                                val up = Bitmap.createScaledBitmap(out, cw, ch, true)
+                                out.recycle()
+                                up
+                            } else out
+                            android.graphics.Canvas(src).drawBitmap(toBlit, cl.toFloat(), ct.toFloat(), null)
+                            runCatching { toBlit.recycle() }
+                            onProgress?.invoke(1f)
+                            android.util.Log.i("Inpaint", "migan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                            return true
+                        }
+                        android.util.Log.w("Inpaint", "MiGan skip: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
+                    } else {
+                        android.util.Log.w("Inpaint", "MiGan session gagal: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
+                    }
+                } finally {
+                    runCatching { srcCrop.recycle() }
+                    runCatching { maskCrop.recycle() }
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return false
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.util.Log.w("Inpaint", "migan gagal, fallback Telea")
+            }
+            // Fallback Telea pada crop yang sama.
+            try {
+                val srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                val maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                try {
+                    val (argb, tmp) = ensureArgbMask(maskCrop)
+                    try { NativeEngine.nativeInpaintTelea(srcCrop, argb, 3.0) }
+                    finally { if (tmp) runCatching { argb.recycle() } }
+                    android.graphics.Canvas(src).drawBitmap(srcCrop, cl.toFloat(), ct.toFloat(), null)
+                    android.util.Log.i("Inpaint", "migan Telea-fallback ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                    return true
+                } finally {
+                    runCatching { srcCrop.recycle() }
+                    runCatching { maskCrop.recycle() }
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                return false
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return false
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
             return false
