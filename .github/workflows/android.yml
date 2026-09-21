@@ -21,6 +21,9 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      - name: Setup Android SDK (sdkmanager di PATH)
+        uses: android-actions/setup-android@v3
+
       - name: Accept licenses
         run: yes | sdkmanager --licenses || true
 
