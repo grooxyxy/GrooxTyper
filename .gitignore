@@ -19,6 +19,11 @@ local.properties
 *.so
 obj/
 
+# Model bubble (~20MB Kiuyha YOLO26s ONNX) tidak di-commit agar repo ramping
+# & push cepat; di-bundle saat build di GitHub Actions (lihat
+# .github/workflows/android.yml). Batas <50MB terpenuhi.
+app/src/main/assets/models/bd.onnx
+
 # Model bubble 40MB (koharu ONNX) tidak di-commit agar repo ramping & push
 # cepat; runtime fallback ke heuristik bila aset absen (build tetap hijau).
 app/src/main/assets/models/koharu/*.onnx

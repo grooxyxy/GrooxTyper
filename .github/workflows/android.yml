@@ -36,17 +36,17 @@ jobs:
           path: ~/.cache/pip
           key: pip-ultralytics-v1
 
-      - name: Download & export bubble model (MangaLens YOLO11n-seg -> ONNX, <50MB)
+      - name: Download & export bubble model (Kiuyha YOLO26s -> ONNX, <50MB)
         run: |
           pip install --quiet ultralytics
-          curl -sL --retry 3 -o /tmp/mangalens.pt "https://huggingface.co/huyvux3005/manga109-segmentation-bubble/resolve/main/best.pt"
-          ls -la /tmp/mangalens.pt
+          curl -sL --retry 3 -o /tmp/kiuyha-yolo26s.pt "https://huggingface.co/Kiuyha/Manga-Bubble-YOLO/resolve/main/weights/yolo26s.pt"
+          ls -la /tmp/kiuyha-yolo26s.pt
           python3 -c "
           from ultralytics import YOLO
-          m = YOLO('/tmp/mangalens.pt')
+          m = YOLO('/tmp/kiuyha-yolo26s.pt')
           print('exported:', m.export(format='onnx', imgsz=640, dynamic=False, opset=17))
           "
-          mv /tmp/mangalens.onnx app/src/main/assets/models/bd.onnx
+          mv /tmp/kiuyha-yolo26s.onnx app/src/main/assets/models/bd.onnx
           SIZE=$(stat -c%s app/src/main/assets/models/bd.onnx)
           echo "bubble model size: $SIZE bytes"
           test "$SIZE" -lt 52428800

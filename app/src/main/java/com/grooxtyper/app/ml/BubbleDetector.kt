@@ -18,7 +18,7 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BUBBLE -> `models/bd.onnx` (YOLO26-nano detect end-to-end NMS-free,
+ * BUBBLE -> `models/bd.onnx` (Kiuyha YOLO26-small detect end-to-end NMS-free,
  * 1 kelas text, input 640x640, single output (1,300,6) = x1,y1,x2,y2,score,cls).
  * Model DIEKSEKUSI LANGSUNG di perangkat via ONNX Runtime Mobile.
  * Nama file disamarkan agar tak terekspos di APK.
@@ -33,7 +33,7 @@ enum class BubbleModel(
 ) {
     BUBBLE(
         "Bubble Detector • on-device",
-        "MangaLens YOLO11n-seg (mAP50 99.1) via ONNX Runtime, input 640x640",
+        "Kiuyha YOLO26s (mAP50 0.961) via ONNX Runtime, input 640x640",
         "models/bd.onnx"
     )
 }
@@ -56,11 +56,14 @@ object YoloBubbleModel {
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model aktif: MangaLens YOLO11n-seg (Apache-2.0, huyvux3005/manga109-
- *   segmentation-bubble, mAP50 box 99.1% / mask 99.1%), 1 kelas bubble,
- *   input 640x640, output (1,37,8400) + protos (1,32,160,160) → box + mask.
- *   Model (~13MB ONNX) di-download & di-export saat build di GitHub Actions,
- *   tidak di-commit ke repo (batas <50MB terpenuhi).
+ * - Model aktif: Kiuyha YOLO26s detect end-to-end NMS-free (Apache-2.0,
+ *   Kiuyha/Manga-Bubble-YOLO, 1 kelas text, mAP50 0.961, latih 1280
+ *   dijalankan 640), input 640x640, single output (1,300,6) =
+ *   x1,y1,x2,y2,score,cls → box (mask=null, tanpa NMS karena head
+ *   sudah one-to-one).
+ *   Model (~20MB ONNX hasil export .pt 20MB) di-download & di-export
+ *   saat build di GitHub Actions, tidak di-commit ke repo
+ *   (batas <50MB terpenuhi).
  * - Legacy: YOLO seg 1-class, output (1,37,8400) + protos (1,32,160,160)
  *   dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi

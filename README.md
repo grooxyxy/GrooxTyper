@@ -65,13 +65,18 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Konversi model (detect)
 
-Model aktif bubble detector adalah YOLO end-to-end NMS-free 1-class
-(text), dilatih 1280 dijalankan 640, task detect. Contoh export bila melatih ulang via Ultralytics:
+Model aktif bubble detector adalah Kiuyha YOLO26s end-to-end NMS-free
+1-class (text, Apache-2.0, `Kiuyha/Manga-Bubble-YOLO`, mAP50 0.961),
+dilatih 1280 dijalankan 640, task detect, output (1,300,6).
+CI men-download `.pt` (~20MB) lalu export agar input 640x640 sesuai
+`BubbleDetector.INPUT_SIZE` (tanpa ubah decoder `decodeE2E`):
 
 ```bash
 pip install ultralytics onnx onnxruntime
-python -c "from ultralytics import YOLO; YOLO('best.pt').export(format='onnx', imgsz=640, opset=17, simplify=True)"
-# hasil: app/src/main/assets/models/bd.onnx (nama disamarkan)
+curl -sL -o yolo26s.pt "https://huggingface.co/Kiuyha/Manga-Bubble-YOLO/resolve/main/weights/yolo26s.pt"
+python -c "from ultralytics import YOLO; YOLO('yolo26s.pt').export(format='onnx', imgsz=640, dynamic=False, opset=17)"
+# hasil: app/src/main/assets/models/bd.onnx (nama disamarkan, ~20MB <50MB,
+# di-bundle saat GitHub Actions, tidak di-commit)
 ```
 
 ## Build
