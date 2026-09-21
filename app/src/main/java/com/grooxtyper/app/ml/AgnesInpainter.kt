@@ -187,10 +187,11 @@ object AgnesInpainter {
                 put("model", MODEL)
                 put(
                     "prompt",
-                    "Remove the object marked in red completely. Reconstruct the background " +
-                        "behind it to match the surrounding texture, gradient, lighting and art style " +
-                        "seamlessly (manga/comic artwork). Keep everything outside the red mark " +
-                        "pixel-identical. Same dimensions, no new objects, no text."
+                    "Remove ONLY the red-marked text and lettering completely. Reconstruct the " +
+                        "background behind it to match the surrounding texture, gradient, lighting " +
+                        "and manga art style seamlessly. Every pixel outside the red mark must stay " +
+                        "pixel-identical: do not redraw, restyle, add, or move anything else. " +
+                        "Same dimensions. No new objects, no new text, no watermark."
                 )
                 put("size", "${w}x$h")
                 put("extra_body", JSONObject().apply {

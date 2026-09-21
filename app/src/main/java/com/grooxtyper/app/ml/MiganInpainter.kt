@@ -111,14 +111,25 @@ object MiganInpainter {
             // Jalur utama: array multidimensi. Cadangan: buffer mentah bila
             // getValue() gagal/tak sesuai (tetap tanpa crash, error presisi).
             val outTensor = result[0]
-            try {
-                val bmp = toBitmap(outTensor.value, w, h)
-                if (bmp != null) return bmp
+            val bmp = try {
+                toBitmap(outTensor.value, w, h)
             } catch (e: Exception) {
                 e.printStackTrace()
                 lastError = "Parse output MiGan gagal: ${e.message}"
+                null
+            } ?: fromByteBuffer(outTensor as? OnnxTensor, w, h)
+            if (bmp == null) return null
+            // Guard halusinasi: piksel VALID (di luar lubang) wajib nyaris
+            // identik dengan input (pipeline resmi me-blend output). Bila
+            // jauh berbeda → model mengarang (khas lubang raksasa di manga
+            // yang di luar distribusi Places2) → tolak, fallback.
+            if (!sanityOk(sp, mp, bmp, w, h)) {
+                runCatching { bmp.recycle() }
+                if (lastError == null) lastError = "Hasil MiGan tak wajar (halusinasi), fallback"
+                return null
             }
-            return fromByteBuffer(outTensor as? OnnxTensor, w, h)
+            lastError = null
+            return bmp
         } catch (e: Exception) {
             e.printStackTrace()
             lastError = "Inferensi MiGan gagal: ${e.message ?: e.javaClass.simpleName}"
@@ -131,6 +142,49 @@ object MiganInpainter {
             runCatching { imgTensor?.close() }
             runCatching { maskTensor?.close() }
             runCatching { result?.close() }
+        }
+    }
+
+    /**
+     * Cek kewarasan output: rata-rata selisih absolut pada piksel VALID
+     * (sampling stride 4 agar murah) harus kecil. Sampel valid < 100
+     * (lubang menutup nyaris seluruh crop) juga ditolak — GAN tak bisa
+     * dipercaya tanpa konteks cukup.
+     */
+    private fun sanityOk(sp: IntArray, mp: IntArray, bmp: Bitmap, w: Int, h: Int): Boolean {
+        return try {
+            val op = IntArray(w * h)
+            bmp.getPixels(op, 0, w, 0, 0, w, h)
+            var sum = 0L
+            var n = 0L
+            var y = 0
+            while (y < h) {
+                var x = 0
+                while (x < w) {
+                    val i = y * w + x
+                    if ((mp[i] ushr 24) <= 30) {
+                        val a = sp[i]
+                        val b = op[i]
+                        sum += kotlin.math.abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)).toLong() +
+                            kotlin.math.abs(((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)).toLong() +
+                            kotlin.math.abs((a and 0xFF) - (b and 0xFF)).toLong()
+                        n++
+                    }
+                    x += 4
+                }
+                y += 4
+            }
+            if (n < 100) {
+                lastError = "Lubang terlalu besar untuk MiGan (konteks minim), fallback"
+                return false
+            }
+            (sum / (n * 3)) <= 14L
+        } catch (e: Exception) {
+            e.printStackTrace()
+            true // ragu-ragu → jangan blokir; composite lubang membatasi damage
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            true
         }
     }
 

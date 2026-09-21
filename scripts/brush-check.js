@@ -62,6 +62,8 @@ assert(!fs.existsSync(path.join(ROOT, 'app/src/main/assets/models/mg.onnx')), 'm
 assert(inpaint.includes('nativeInpaintPyramid'), 'inpaint seleksi memakai pyramid push-pull native (mask besar)');
 
 // 3b. Heal brush model MiGAN (download saat build CI, <50MB)
+const miganSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt'));
+const agnesSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt'));
 const workflow = read(path.join(ROOT, '.github/workflows/android.yml'));
 const gitignore = read(path.join(ROOT, '.gitignore'));
 assert(brush.includes('HEAL_MIGAN'), 'brush Heal MiGAN terdaftar');
@@ -70,6 +72,9 @@ assert(workflow.includes('andraniksargsyan/migan/resolve/main/migan_pipeline_v2.
 assert(workflow.includes('models/mg.onnx'), 'CI bundle mg.onnx ke assets');
 assert(gitignore.includes('app/src/main/assets/models/mg.onnx'), 'mg.onnx tidak di-commit (bundle via CI)');
 assert(inpaint.includes('inpaintMiganDirty'), 'InpaintingManager punya inpaintMiganDirty');
+assert(miganSrc.includes('sanityOk'), 'MiGAN tolak halusinasi via sanity check piksel valid');
+assert(inpaint.includes('compositeHoleOnly'), 'commit tempel khusus-lubang (valid tak tersentuh)');
+assert(agnesSrc.includes('red-marked text'), 'prompt AI khusus hapus teks');
 
 // 3c. AI Inpaint via Agnes AI (tanpa dependency baru, key di perangkat)
 assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt')), 'AgnesInpainter.kt ada');

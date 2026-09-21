@@ -510,36 +510,51 @@ class InpaintingManager {
             }
             try {
                 onProgress?.invoke(0.15f)
-                var srcCrop = Bitmap.createBitmap(src, cl, ct, cw, ch)
-                var maskCrop = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                // orig* = ukuran penuh crop (untuk composite); work* = input model.
+                val origSrc = Bitmap.createBitmap(src, cl, ct, cw, ch)
+                val origMask = Bitmap.createBitmap(mask, cl, ct, cw, ch)
+                var workSrc = origSrc
+                var workMask = origMask
                 if (scale != 1f) {
-                    val sW = Bitmap.createScaledBitmap(srcCrop, workW, workH, true)
-                    val mW = Bitmap.createScaledBitmap(maskCrop, workW, workH, true)
-                    srcCrop.recycle(); maskCrop.recycle()
-                    srcCrop = sW; maskCrop = mW
+                    workSrc = Bitmap.createScaledBitmap(origSrc, workW, workH, true)
+                    workMask = Bitmap.createScaledBitmap(origMask, workW, workH, true)
                 }
                 try {
                     if (appContext != null && com.grooxtyper.app.ml.MiganInpainter.ensureSession(appContext)) {
-                        val out = com.grooxtyper.app.ml.MiganInpainter.inpaint(srcCrop, maskCrop)
+                        val out = com.grooxtyper.app.ml.MiganInpainter.inpaint(workSrc, workMask)
                         if (out != null) {
-                            val toBlit = if (scale != 1f) {
+                            val outFull = if (scale != 1f) {
                                 val up = Bitmap.createScaledBitmap(out, cw, ch, true)
-                                out.recycle()
+                                runCatching { out.recycle() }
                                 up
                             } else out
-                            android.graphics.Canvas(src).drawBitmap(toBlit, cl.toFloat(), ct.toFloat(), null)
-                            runCatching { toBlit.recycle() }
-                            onProgress?.invoke(1f)
-                            android.util.Log.i("Inpaint", "migan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                            return true
+                            try {
+                                // Hanya lubang yang ditempel (valid tak tersentuh).
+                                val final = compositeHoleOnly(origSrc, outFull, origMask)
+                                if (final != null) {
+                                    android.graphics.Canvas(src).drawBitmap(final, cl.toFloat(), ct.toFloat(), null)
+                                    runCatching { final.recycle() }
+                                    onProgress?.invoke(1f)
+                                    android.util.Log.i("Inpaint", "migan ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                                    return true
+                                }
+                                android.util.Log.w("Inpaint", "migan composite gagal, fallback Telea")
+                            } finally {
+                                runCatching { outFull.recycle() }
+                            }
+                        } else {
+                            android.util.Log.w("Inpaint", "MiGan skip: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
                         }
-                        android.util.Log.w("Inpaint", "MiGan skip: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
                     } else {
                         android.util.Log.w("Inpaint", "MiGan session gagal: ${com.grooxtyper.app.ml.MiganInpainter.lastError}")
                     }
                 } finally {
-                    runCatching { srcCrop.recycle() }
-                    runCatching { maskCrop.recycle() }
+                    if (scale != 1f) {
+                        runCatching { workSrc.recycle() }
+                        runCatching { workMask.recycle() }
+                    }
+                    runCatching { origSrc.recycle() }
+                    runCatching { origMask.recycle() }
                 }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
@@ -634,12 +649,20 @@ class InpaintingManager {
                 try {
                     val out = com.grooxtyper.app.ml.AgnesInpainter.inpaint(apiKey, srcCrop, maskCrop, onProgress)
                     if (out != null) {
-                        android.graphics.Canvas(src).drawBitmap(out, cl.toFloat(), ct.toFloat(), null)
+                        // Text-only: hanya lubang yang ditempel (valid tak tersentuh).
+                        val aiFinal = compositeHoleOnly(srcCrop, out, maskCrop)
                         runCatching { out.recycle() }
-                        android.util.Log.i("Inpaint", "ai ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
-                        return true
+                        if (aiFinal != null) {
+                            android.graphics.Canvas(src).drawBitmap(aiFinal, cl.toFloat(), ct.toFloat(), null)
+                            runCatching { aiFinal.recycle() }
+                            onProgress?.invoke(1f)
+                            android.util.Log.i("Inpaint", "ai text-only ${cw}x${ch} ${android.os.SystemClock.elapsedRealtime() - t0}ms")
+                            return true
+                        }
+                        android.util.Log.w("Inpaint", "ai composite gagal, fallback CAF")
+                    } else {
+                        android.util.Log.w("Inpaint", "AI skip: ${com.grooxtyper.app.ml.AgnesInpainter.lastError}")
                     }
-                    android.util.Log.w("Inpaint", "AI skip: ${com.grooxtyper.app.ml.AgnesInpainter.lastError}")
                 } finally {
                     runCatching { srcCrop.recycle() }
                     runCatching { maskCrop.recycle() }
@@ -681,6 +704,48 @@ class InpaintingManager {
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
             return false
+        }
+    }
+
+    /**
+     * Tempel khusus-lubang: piksel model HANYA di dalam mask yang dipakai,
+     * lalu disambung mulus via SeamlessBlender. Area valid TIDAK PERNAH
+     * diubah — model generatif tak bisa merusak luar lubang. Null bila gagal.
+     */
+    private fun compositeHoleOnly(orig: Bitmap, filled: Bitmap, mask: Bitmap): Bitmap? {
+        val w = orig.width
+        val h = orig.height
+        if (w <= 0 || h <= 0 || filled.width != w || filled.height != h ||
+            mask.width != w || mask.height != h
+        ) return null
+        return try {
+            val op = IntArray(w * h)
+            orig.getPixels(op, 0, w, 0, 0, w, h)
+            val fp = IntArray(w * h)
+            filled.getPixels(fp, 0, w, 0, 0, w, h)
+            val mp = IntArray(w * h)
+            mask.getPixels(mp, 0, w, 0, 0, w, h)
+            val mb = BooleanArray(w * h)
+            val comp = op.copyOf()
+            var any = false
+            for (i in mp.indices) {
+                if ((mp[i] ushr 24) > 30) {
+                    mb[i] = true
+                    comp[i] = fp[i]
+                    any = true
+                }
+            }
+            if (!any) return null
+            val blendedPx = SeamlessBlender.blend(op, comp, mb, w, h) ?: comp
+            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            out.setPixels(blendedPx, 0, w, 0, 0, w, h)
+            out
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
         }
     }
 
