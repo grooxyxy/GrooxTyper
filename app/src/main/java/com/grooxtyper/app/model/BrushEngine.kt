@@ -285,8 +285,11 @@ class BrushEngine {
         dirtyTiles.clear()
         dirtyTileBounds.setEmpty()
         smudgeHasInk = false
-        rulerLocked = start != null &&
-            rulerGuide.shouldLock(start, max(rulerGuide.snapTolerance, size * 1.5f))
+        // FORCE ala ibisPaint: penggaris nyala = SEMUA stroke menempel penuh ke
+        // penggaris (bukan cuma yang kebetulan mulai di dekatnya — dulu gerbang
+        // toleransi 90px kanvas membuat penggaris terasa "nyala tapi tidak
+        // berguna, hanya visual"). Mode atur penggaris tetap bebas untuk UI.
+        rulerLocked = rulerGuide.type != RulerType.OFF && !rulerAdjustMode
     }
 
     fun endStroke() {
@@ -570,7 +573,9 @@ class BrushEngine {
         // Huge: jangan matikan stabilizer global (mutableState picu recompose tiap
         // segmen + nonaktifkan permanen). Pakai flag lokal saja agar hemat CPU
         // tanpa efek samping UI.
-        val useStabilizer = stabilizer.isEnabled && !isHuge
+        // Stabilizer dimatikan saat terkunci ke penggaris supaya garis TEPAT
+        // menempel pada penggaris (tanpa lag/belok dari filter smoothing).
+        val useStabilizer = stabilizer.isEnabled && !isHuge && !rulerLocked
 
         val smoothedP1 = smoothPoint(snapGuided(p1), lastSmoothedPoint, useStabilizer)
         val smoothedP2 = smoothPoint(snapGuided(p2), smoothedP1, useStabilizer)

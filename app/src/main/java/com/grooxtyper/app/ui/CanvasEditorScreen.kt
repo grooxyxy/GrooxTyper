@@ -1696,13 +1696,41 @@ fun CanvasEditorScreen(
                     }
                     // 0=tidak ada, 1=ujung A, 2=ujung B, 3=geser, 4=radius lingkaran, 5=sudut perspektif
                     var dragMode = 0
+                    // Handle perspektif yang DIKUNCI saat drag mulai (0=none,
+                    // 1=sisi atas, 2=sisi bawah, 3=tepi kiri, 4=tepi kanan).
+                    var perspHandle = 0
                     detectDragGestures(
                         onDragStart = { pos ->
                             dragMode = 0
                             val cp = screenToCanvasCoordinates(pos.x, pos.y)
                             val rg = brushEngine.rulerGuide
                             if (perspGridMode) {
-                                dragMode = 5
+                                // FIX: kunci handle yang disentuh SEKALI di awal drag.
+                                // Versi lama mengecek jarak ke sudut SETIAP frame, jadi
+                                // begitu jari menjauh dari sudut kondisinya gagal → grid
+                                // terasa "tidak bisa dipakai / tidak bisa diseret".
+                                perspHandle = 0
+                                val pbox = selectedTextBox
+                                if (pbox != null) {
+                                    val pb = pbox.getBounds(); val pad = 24f
+                                    val l = pb.left - pad; val t = pb.top - pad
+                                    val rr = pb.right + pad; val bt = pb.bottom + pad
+                                    val grab = 56f / viewState.scale.coerceAtLeast(0.05f)
+                                    val cx = (l + rr) / 2f; val cy = (t + bt) / 2f
+                                    fun hd(x: Float, y: Float) = kotlin.math.hypot(cp.x - x, cp.y - y)
+                                    val dTop = minOf(hd(l, t), hd(rr, t))
+                                    val dBot = minOf(hd(l, bt), hd(rr, bt))
+                                    val dL = hd(l, cy); val dR = hd(rr, cy)
+                                    val best = minOf(dTop, dBot, dL, dR)
+                                    perspHandle = when {
+                                        best > grab -> 0
+                                        best == dTop -> 1
+                                        best == dBot -> 2
+                                        best == dL -> 3
+                                        else -> 4
+                                    }
+                                }
+                                dragMode = if (perspHandle != 0) 5 else 0
                             } else {
                                 val grab = 48f / viewState.scale.coerceAtLeast(0.05f)
                                 when (rg.type) {
@@ -1734,24 +1762,24 @@ fun CanvasEditorScreen(
                             val rg = brushEngine.rulerGuide
                             if (perspGridMode) {
                                 val box = selectedTextBox ?: return@detectDragGestures
+                                if (perspHandle == 0) return@detectDragGestures
                                 val b = box.getBounds(); val pad = 24f
                                 val l = b.left - pad; val t = b.top - pad
                                 val rr = b.right + pad; val bt = b.bottom + pad
-                                val rad = 40f / viewState.scale
-                                val cy = (t + bt) / 2f; val cx = (l + rr) / 2f
-                                val hh = ((bt - t) / 2f).coerceAtLeast(1f); val hw = ((rr - l) / 2f).coerceAtLeast(1f)
-                                when {
-                                    kotlin.math.hypot(cp.x - l, cp.y - t) < rad || kotlin.math.hypot(cp.x - rr, cp.y - t) < rad ->
-                                        box.perspY = ((cy - cp.y) / hh).coerceIn(-1f, 1f)
-                                    kotlin.math.hypot(cp.x - l, cp.y - bt) < rad || kotlin.math.hypot(cp.x - rr, cp.y - bt) < rad ->
-                                        box.perspY = ((cp.y - cy) / hh).coerceIn(-1f, 1f)
-                                    kotlin.math.hypot(cp.x - l, cp.y - cy) < rad ->
-                                        box.perspX = ((cx - cp.x) / hw).coerceIn(-1f, 1f)
-                                    kotlin.math.hypot(cp.x - rr, cp.y - cy) < rad ->
-                                        box.perspX = ((cp.x - cx) / hw).coerceIn(-1f, 1f)
+                                val hh = ((bt - t) / 2f).coerceAtLeast(1f)
+                                val hw = ((rr - l) / 2f).coerceAtLeast(1f)
+                                val sc = viewState.scale.coerceAtLeast(0.05f)
+                                // Delta-based: keystone mengikuti GERAKAN jari, bukan
+                                // posisi absolut → halus, tanpa lompatan, dan tetap
+                                // responsif sejauh apa pun jari diseret.
+                                val dcy = drag.y / sc
+                                val dcx = drag.x / sc
+                                when (perspHandle) {
+                                    1 -> box.perspY = (box.perspY - dcy / hh).coerceIn(-1f, 1f)
+                                    2 -> box.perspY = (box.perspY + dcy / hh).coerceIn(-1f, 1f)
+                                    3 -> box.perspX = (box.perspX - dcx / hw).coerceIn(-1f, 1f)
+                                    4 -> box.perspX = (box.perspX + dcx / hw).coerceIn(-1f, 1f)
                                 }
-                                // FIX: teks harus langsung ter-render ulang agar
-                                // perubahan keystone terlihat saat diseret.
                                 refreshCompositeCoalesced()
                                 change.consume()
                             } else {
@@ -2863,6 +2891,11 @@ fun CanvasEditorScreen(
                     }
                     val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
                     sc2.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x, it.y, 14f, hp) }
+                    // Handle tepi kiri/kanan (untuk perspX) supaya jelas terlihat
+                    // bisa diseret, selaras dengan hit-test di gesture handler.
+                    val lm = toScreen(Offset(cx - hw, cy)); val rm = toScreen(Offset(cx + hw, cy))
+                    drawContext.canvas.nativeCanvas.drawCircle(lm.x, lm.y, 12f, hp)
+                    drawContext.canvas.nativeCanvas.drawCircle(rm.x, rm.y, 12f, hp)
                 }
             }
 
