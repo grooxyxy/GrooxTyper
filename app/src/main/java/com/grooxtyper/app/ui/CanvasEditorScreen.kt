@@ -928,7 +928,7 @@ fun CanvasEditorScreen(
     var showScriptEditor by remember { mutableStateOf(false) }
     var scriptDraft by remember { mutableStateOf("") }
     var scriptEntries by remember { mutableStateOf(listOf<ScriptEntry>()) }
-    // Mode penempatan script (tunggal, gabungan): Style Rules menentukan
+    // Penempatan script (tunggal, gabungan): Style Rules menentukan
     // style (prefix -> preset font/warna/efek), lalu Auto Typesetting
     // menghitung geometri (font, wrap, alignment, padding, posisi) otomatis.
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
@@ -4583,70 +4583,121 @@ fun CanvasEditorScreen(
                 },
                 text = {
                     Column {
-                        // Status ringkas berupa pil.
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // Status ringkas: pil + bar progres sebaris.
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             StatusPill("${scriptEntries.size} baris")
                             StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
                             StatusPill("${detectedBubbles.size} bubble")
-                            StatusPill("mode: rules+auto", highlight = true)
-                            StatusPill(
-                                if (selectionEngine.hasSelection) "seleksi ✓" else "tanpa seleksi",
-                                highlight = selectionEngine.hasSelection
-                            )
+                            if (selectionEngine.hasSelection) {
+                                StatusPill("seleksi ✓", highlight = true)
+                            }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         // Progres pemakaian.
                         if (scriptEntries.isNotEmpty()) {
                             val done = scriptEntries.size - unusedCount
                             val frac = done.toFloat() / scriptEntries.size.toFloat()
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(6.dp)
-                                    .clip(RoundedCornerShape(3.dp))
-                                    .background(Color(0xFF38383A))
-                            ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth(frac)
+                                        .weight(1f)
                                         .height(6.dp)
                                         .clip(RoundedCornerShape(3.dp))
-                                        .background(Accent)
+                                        .background(Color(0xFF38383A))
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(frac)
+                                            .height(6.dp)
+                                            .clip(RoundedCornerShape(3.dp))
+                                            .background(Accent)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "$done/${scriptEntries.size}",
+                                    color = Color.Gray, fontSize = 11.sp
                                 )
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                "$done/${scriptEntries.size} baris terpakai",
+                                if (!selectionEngine.hasSelection && detectedBubbles.isEmpty())
+                                    "Butuh bubble terdeteksi atau seleksi aktif untuk menjalankan."
+                                else "$done/${scriptEntries.size} baris terpakai • urutan atas→bawah, kanan→kiri",
                                 color = Color.Gray, fontSize = 11.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         } else {
                             Text(
-                                "Belum ada script. Import file atau ketik manual.",
+                                "Belum ada script. Import file atau ketik manual — satu baris = satu bubble.",
                                 color = Color.LightGray, fontSize = 12.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
                         }
                         Text(
-                            "Mode penempatan",
+                            "Penempatan",
                             color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(6.dp))
-                        // Mode tunggal gabungan: Style Rules + Auto Typesetting
-                        // selalu aktif bersamaan (tanpa pilihan ganda).
+                        // Satu kartu: info mode gabungan + baris Style Rules.
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF1F3D2B))
-                                .border(1.dp, Accent, RoundedCornerShape(10.dp))
-                                .padding(10.dp)
+                                .background(PanelBg)
+                                .border(1.dp, Color(0xFF38383A), RoundedCornerShape(10.dp))
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
                         ) {
-                            Text("Style Rules + Auto Typesetting", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Text(
-                                "Prefix memilih preset style (font, warna, efek), lalu ukuran font, line break, alignment, padding & posisi dihitung otomatis agar pas di bubble.",
-                                color = Color.Gray, fontSize = 10.sp
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(vertical = 6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(Accent)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Rules + Auto", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        "Prefix memilih style, lalu font, wrap & posisi dihitung otomatis.",
+                                        color = Color.Gray, fontSize = 10.sp
+                                    )
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(Color(0xFF38383A))
                             )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        stylePresetsTick++
+                                        newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
+                                        showStyleRules = true
+                                    }
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Accent, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
+                                        else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
+                                        color = Color.Gray, fontSize = 11.sp
+                                    )
+                                }
+                            }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
@@ -4702,42 +4753,26 @@ fun CanvasEditorScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        // Kartu style rules.
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(PanelBg)
-                                .clickable {
-                                    stylePresetsTick++
-                                    newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
-                                    showStyleRules = true
-                                }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Accent, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
-                                    else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
-                                    color = Color.Gray, fontSize = 11.sp
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
                         if (scriptEntries.isEmpty()) {
                             Text(
                                 "Contoh format: satu baris = satu bubble. Header 'Page X' otomatis diabaikan. Lihat folder contoh/script.txt.",
                                 color = Color.Gray, fontSize = 11.sp
                             )
                         } else {
-                            Text(
-                                "Daftar baris — ketuk untuk tandai/batalkan terpakai",
-                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Daftar baris",
+                                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    "ketuk untuk tandai",
+                                    color = Color.Gray, fontSize = 10.sp
+                                )
+                            }
                             Spacer(modifier = Modifier.height(6.dp))
                             LazyColumn(
                                 modifier = Modifier
@@ -4793,11 +4828,6 @@ fun CanvasEditorScreen(
                                     }
                                 }
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                "Urutan render: atas→bawah, dalam baris kanan→kiri. Prioritas bubble bila ada.",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
                         }
                     }
                 },
