@@ -1321,6 +1321,15 @@ fun CanvasEditorScreen(
         return createdCount
     }
 
+    /** Urutan baca manga untuk dua rect: atas dulu, lalu kanan dulu. */
+    fun readingBefore(a: android.graphics.Rect, b: android.graphics.Rect): Boolean {
+        val tol = minOf(a.height(), b.height()) * 0.6f
+        if (kotlin.math.abs(a.exactCenterY() - b.exactCenterY()) > tol) {
+            return a.exactCenterY() < b.exactCenterY()
+        }
+        return a.exactCenterX() > b.exactCenterX()
+    }
+
     /**
      * Gabung region teks yang berdekatan jadi satu bubble: rect diperluas
      * 0.5x tinggi ke segala arah; yang bersinggungan di-union hingga stabil.
@@ -1369,15 +1378,6 @@ fun CanvasEditorScreen(
                 script = g.members.first().script
             )
         }
-    }
-
-    /** Urutan baca manga untuk dua rect: atas dulu, lalu kanan dulu. */
-    fun readingBefore(a: android.graphics.Rect, b: android.graphics.Rect): Boolean {
-        val tol = minOf(a.height(), b.height()) * 0.6f
-        if (kotlin.math.abs(a.exactCenterY() - b.exactCenterY()) > tol) {
-            return a.exactCenterY() < b.exactCenterY()
-        }
-        return a.exactCenterX() > b.exactCenterX()
     }
 
     /** Deteksi seluruh teks di layer aktif → gabung berdekatan → kolom per baris. */
