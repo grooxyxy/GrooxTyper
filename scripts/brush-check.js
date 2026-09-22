@@ -23,8 +23,9 @@ const imageImport = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/m
 const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ProjectManager.kt'));
 const migan = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt'));
 const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
+const colorPicker = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ColorPicker.kt'));
 
-for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager], ['MiganInpainter', migan], ['TextEditorPanel', textEditor]]) {
+for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager], ['MiganInpainter', migan], ['TextEditorPanel', textEditor], ['ColorPicker', colorPicker]]) {
   const open = (text.match(/{/g) || []).length;
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
@@ -150,6 +151,27 @@ assert(editor.includes('bubbleWarn'), 'Bubble: peringatan naskah lebih panjang d
 // 10. PatchMatch non-AI: prefill push-pull (gradasi/tekstur) ganti guide BFS.
 assert(patch.includes('pushPullPrefill'), 'PatchMatch: prefill push-pull NON-AI (gradasi/tekstur)');
 assert(!patch.includes('buildNearestBackgroundGuide'), 'PatchMatch: guide BFS-nearest diganti push-pull');
+// 11. Script → Teks: tanpa baris pasangan → render langsung ke bubble/seleksi
+//     (Style Rules + fit + center + cek latar) + tombol Jalankan ikut aktif.
+assert(editor.includes('render langsung ke bubble'), 'Script Teks: fallback render langsung ke bubble/seleksi');
+assert(editor.includes('if (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection) {\n                runScript()'), 'fallback memanggil runScript() (Style Rules+fit+center+cek latar)');
+assert(editor.includes('scriptTextMode && unusedCount > 0'), 'Script Teks: canRunRows aktif bila ada bubble/seleksi + naskah');
+assert(editor.includes('langsung ketuk Jalankan'), 'Script Teks: hint cara render langsung ditampilkan');
+// 12. Inpaint PatchMatch anti-buram: pecah mask per region connected +
+//     blit HANYA piksel lubang (crop tak pernah ditimpa hasil resize).
+assert(patch.includes('maskConnectedComponents'), 'PatchMatch: mask dipecah per region connected (bukan 1 crop raksasa)');
+assert(patch.includes('fun inpaintRegion'), 'PatchMatch: tiap region diproses terpisah (resolusi penuh bila muat)');
+assert(patch.includes('Blit HANYA piksel lubang'), 'PatchMatch: blit hanya piksel lubang (area valid tetap tajam)');
+assert(!patch.includes('Canvas(src).drawBitmap(toBlit'), 'PatchMatch: drawBitmap atas seluruh crop (penyebab blur) dihapus');
+// 13. Color picker: palet tersimpan (persisten) + eyedropper dari kanvas di
+//     SEMUA dialog warna (brush & 6 target panel teks lewat ColorPickerDialog).
+assert(colorPicker.includes('color_palette'), 'ColorPicker: palet warna tersimpan (SharedPreferences)');
+assert(colorPicker.includes('Palet saya'), 'ColorPicker: section Palet saya (ketuk=pakai, tahan=hapus)');
+assert(colorPicker.includes('onPickFromCanvas'), 'ColorPicker: tombol Pipet (eyedropper) di dialog');
+assert(colorPicker.includes('color_palette') && colorPicker.includes('Colorize'), 'ColorPicker: ikon pipet tampil di title dialog');
+assert(editor.includes('eyedropConsumer'), 'editor: mode pipet dari dialog warna (ketuk kanvas = sampel)');
+assert(editor.includes('onPickFromCanvas = {'), 'editor: dialog warna brush terhubung ke mode pipet');
+assert(textEditor.includes('onStartEyedrop'), 'panel teks: eyedropper terhubung ke tiap target warna');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

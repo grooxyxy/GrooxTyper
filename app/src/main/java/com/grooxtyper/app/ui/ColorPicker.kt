@@ -1,11 +1,13 @@
 package com.grooxtyper.app.ui
 
+import android.content.Context
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,11 +19,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -40,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -56,8 +63,27 @@ import androidx.compose.ui.unit.sp
 fun ColorPickerDialog(
     initialColor: Int,
     onColorSelected: (Int) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // Opsional: ambil warna langsung dari kanvas (pipet). Screen yang
+    // menangani ketukan kanvas berikutnya lalu mengirim warna hasil sampel.
+    onPickFromCanvas: (() -> Unit)? = null
 ) {
+    val context = LocalContext.current
+    val palettePrefs = remember {
+        context.getSharedPreferences("color_palette", Context.MODE_PRIVATE)
+    }
+    // Palet tersimpan (CSV hex signed int) — dipakai ulang antar sesi.
+    var palette by remember {
+        mutableStateOf(
+            (palettePrefs.getString("colors", "") ?: "")
+                .split(',').mapNotNull { s -> s.toIntOrNull() }.take(32)
+        )
+    }
+    fun updatePalette(list: List<Int>) {
+        palette = list.take(32)
+        palettePrefs.edit().putString("colors", palette.joinToString(",")).apply()
+    }
+
     var hsv by remember {
         val array = FloatArray(3)
         android.graphics.Color.colorToHSV(initialColor, array)
@@ -79,7 +105,26 @@ fun ColorPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Pilih Warna", color = Color.White) },
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Pilih Warna", color = Color.White, modifier = Modifier.weight(1f))
+                if (onPickFromCanvas != null) {
+                    TextButton(onClick = { onPickFromCanvas(); onDismiss() }) {
+                        Icon(
+                            Icons.Default.Colorize,
+                            contentDescription = "Pipet dari kanvas",
+                            tint = Color(0xFFFF5722),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Pipet", color = Color(0xFFFF5722), fontSize = 12.sp)
+                    }
+                }
+            }
+        },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 // Preview split: warna LAMA (kiri) vs BARU (kanan).
@@ -269,6 +314,59 @@ fun ColorPickerDialog(
                                     android.graphics.Color.colorToHSV(c.toArgb(), newHsv)
                                     hsv = newHsv
                                     syncHex()
+                                }
+                        )
+                    }
+                }
+
+                // Palet saya (tersimpan antar sesi): ketuk = pakai warna,
+                // tahan lama = hapus dari palet.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Palet saya",
+                        color = Color.Gray, fontSize = 12.sp, modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = {
+                        updatePalette(listOf(currentColorInt) + palette.filter { it != currentColorInt })
+                    }) {
+                        Text("+ Simpan", color = Color(0xFFFF5722), fontSize = 12.sp)
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (palette.isEmpty()) {
+                        Text(
+                            "Belum ada — ketuk + Simpan untuk menyimpan warna saat ini (tahan lama swatch untuk hapus).",
+                            color = Color.DarkGray, fontSize = 10.sp
+                        )
+                    }
+                    palette.forEach { c ->
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(Color(c))
+                                .border(1.dp, Color.Gray, CircleShape)
+                                .pointerInput(c) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            val newHsv = FloatArray(3)
+                                            android.graphics.Color.colorToHSV(c, newHsv)
+                                            hsv = newHsv
+                                            syncHex()
+                                        },
+                                        onLongPress = {
+                                            updatePalette(palette.filter { p -> p != c })
+                                        }
+                                    )
                                 }
                         )
                     }

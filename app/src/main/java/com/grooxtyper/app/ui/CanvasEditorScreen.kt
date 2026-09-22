@@ -1612,7 +1612,14 @@ fun CanvasEditorScreen(
      */
     fun runTextScript() {
         val rows = detectedRows.filter { it.selected && it.script.isNotBlank() }
-        if (rows.isEmpty()) return
+        if (rows.isEmpty()) {
+            // Mode Teks tanpa baris pasangan: render langsung ke bubble/seleksi
+            // yang sudah ada (Style Rules + fit + center + cek latar) via runScript().
+            if (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection) {
+                runScript()
+            }
+            return
+        }
         val active = layerManager.getActiveLayer() ?: return
         scope.launch(Dispatchers.Default) {
             val src = active.getPersistentBitmap()
@@ -2038,6 +2045,11 @@ fun CanvasEditorScreen(
     }
     // Eyedropper sementara via tahan jari (tanpa meninggalkan titik cat).
     var colorPickActive by remember { mutableStateOf(false) }
+    // Mode pipet dari color picker: konsumen warna (brush / target panel teks)
+    // menunggu satu ketukan kanvas; null = tidak aktif.
+    var eyedropConsumer by remember { mutableStateOf<((Int) -> Unit)?>(null) }
+    // Kunci: warna sudah disampel pada tekanan ini (jangan sample ulang saat geser).
+    var eyedropSampled by remember { mutableStateOf(false) }
     var pressId by remember { mutableIntStateOf(0) }
     var pressStartScreen by remember { mutableStateOf(Offset.Zero) }
     var pressMoved by remember { mutableStateOf(false) }
@@ -2223,7 +2235,9 @@ fun CanvasEditorScreen(
                             val changes = event.changes
                             val pointerCount = changes.size
 
-                            if (pointerCount >= 2 || activeTool == ActiveTool.PAN) {
+                            // Mode pipet dari dialog warna mengalahkan tool PAN:
+                            // satu ketukan harus mengambil warna, bukan menggeser.
+                            if (pointerCount >= 2 || (activeTool == ActiveTool.PAN && eyedropConsumer == null)) {
                                 // Gesture berubah jadi pan/zoom: akhiri stroke yang tertunda.
                                 // Sapuan penghapus yang setengah jadi dibuang eksplisit agar tak menggantung.
                                 if (strokeIsHeal) {
@@ -2238,6 +2252,9 @@ fun CanvasEditorScreen(
                                 strokeIsAi = false
                                 brushEngine.endStroke()
                                 colorPickActive = false
+                                // Dua jari membatalkan mode pipet dari dialog warna.
+                                eyedropConsumer = null
+                                eyedropSampled = false
                                 pressId++
                                 lassoPath = null
                                 boxStart = null
@@ -2376,7 +2393,24 @@ fun CanvasEditorScreen(
                                     cursorPosition = change.position
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
-                                    if (activeTool == ActiveTool.TEXT) {
+                                    // Mode pipet dari color picker: sekali ketuk →
+                                    // sampel warna piksel → konsumen (brush/teks) →
+                                    // selesai saat jari diangkat (tanpa menggambar).
+                                    val eyeDrop = eyedropConsumer
+                                    if (eyeDrop != null) {
+                                        if (!eyedropSampled) {
+                                            eyedropSampled = true
+                                            val picked = runCatching {
+                                                compositeBitmap.getPixel(
+                                                    touchCanvasPos.x.toInt().coerceIn(0, canvasWidth - 1),
+                                                    touchCanvasPos.y.toInt().coerceIn(0, canvasHeight - 1)
+                                                )
+                                            }.getOrDefault(brushEngine.color)
+                                            eyeDrop(picked)
+                                            eyedropConsumer = null
+                                        }
+                                        change.consume()
+                                    } else if (activeTool == ActiveTool.TEXT) {
                                         val grip = 28f / viewState.scale
                                         if (lastCanvasPoint == null) {
                                             // Tekan baru: handle dulu, lalu badan box, lalu kanvas kosong.
@@ -2782,6 +2816,9 @@ fun CanvasEditorScreen(
                                     change.consume()
                                     } // else twoFingerActive
                                 } else {
+                                    // Ketukan pipet selesai (sampel/batal) — reset mode.
+                                    eyedropConsumer = null
+                                    eyedropSampled = false
                                     val hadStroke = strokeLayer != null
                                     val wasBrush = activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER
                                     val wasHealBrush = wasBrush && (brushEngine.brushType == BrushType.OBJECT_ERASER ||
@@ -4401,11 +4438,40 @@ fun CanvasEditorScreen(
             onClose = { referenceBitmap = null }
         )
 
+        // Mode pipet dari dialog warna: ketuk kanvas untuk ambil warna.
+        if (eyedropConsumer != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 16.dp, end = 16.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PanelBg)
+                    .border(1.dp, Accent, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Pipet: ketuk kanvas untuk ambil warna",
+                        color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { eyedropConsumer = null; eyedropSampled = false }) {
+                        Text("Batal", color = Color.Gray, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
         // Dialogs
         if (showColorPicker) {
             ColorPickerDialog(
                 initialColor = brushEngine.color,
                 onColorSelected = { brushEngine.color = it },
+                onPickFromCanvas = {
+                    showColorPicker = false
+                    eyedropConsumer = { c -> brushEngine.color = c }
+                    eyedropSampled = false
+                },
                 onDismiss = { showColorPicker = false }
             )
         }
@@ -4491,6 +4557,10 @@ fun CanvasEditorScreen(
                             // Grid perspektif & mode atur penggaris tidak dipakai bersamaan.
                             rulerAdjustMode = false
                             brushEngine.rulerAdjustMode = false
+                        },
+                        onStartEyedrop = { consumer ->
+                            eyedropConsumer = consumer
+                            eyedropSampled = false
                         },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
@@ -5043,7 +5113,12 @@ fun CanvasEditorScreen(
             val unusedCount = scriptEntries.count { !it.used }
             // Jalankan siap bila ADA baris terpilih yang sudah bernaskah —
             // berlaku untuk mode Bubble & Teks (keduanya pakai tabel baris).
-            val canRunRows = detectedRows.any { it.selected && it.script.isNotBlank() }
+            // Mode Teks juga siap tanpa baris: bila sudah ada bubble/area
+            // seleksi + naskah, "Jalankan" langsung render (Style Rules,
+            // fit, center, cek latar).
+            val canRunRows = detectedRows.any { it.selected && it.script.isNotBlank() } ||
+                (scriptTextMode && unusedCount > 0 &&
+                    (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection))
             val selN = detectedRows.count { it.selected }
             val pairN = pairedRowCount()
             val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
@@ -5309,7 +5384,7 @@ fun CanvasEditorScreen(
                         if (detectedRows.isEmpty()) {
                             Text(
                                 if (scriptTextMode)
-                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai."
+                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai. Tanpa deteksi pun bisa: bila sudah ada bubble/seleksi, langsung ketuk Jalankan untuk render (Style Rules • fit • tengah • cek latar)."
                                 else
                                     "Ketuk Deteksi Teks — teks berdekatan (atas/bawah/kiri/kanan) jadi satu baris. Centang baris → Inpaint untuk menghapus teks lamanya, lalu Isi Naskah dari berkas di atas.",
                                 color = Color.Gray, fontSize = 11.sp

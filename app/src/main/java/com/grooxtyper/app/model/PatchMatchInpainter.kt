@@ -53,57 +53,169 @@ object PatchMatchInpainter {
 
     /**
      * Inpaint [src] di area [mask] (putih = lubang). Hasil ditulis balik ke [src].
-     * [mask] dan [src] harus seukuran kanvas. Hanya area crop yang diproses.
-     * Pipeline tunggal: NNF multi-skala + voting Gaussian + seamless blend.
+     * [mask] dan [src] harus seukuran kanvas.
+     *
+     * Mask deteksi teks = banyak region terpisah. Versi lama memaksa semuanya
+     * jadi SATU crop raksasa → downscale→upscale → SELURUH area jadi buram
+     * "seperti habis di-resize lalu di-fit ke ukuran asli". Sekarang: pecah per
+     * region connected (tiap region kecil, resolusi penuh, tanpa resize) +
+     * blit HANYA piksel lubang (piksel valid di sekitar tak pernah ditimpa).
+     * Pipeline fill tetap: NNF multi-skala + voting Gaussian + seamless blend.
      */
     fun inpaint(src: Bitmap, mask: Bitmap, onProgress: ((Float) -> Unit)? = null): Boolean {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0 || w != mask.width || h != mask.height) return false
-        // Scan mask untuk bounds hemat memori (strip 512, bukan 46MB sekaligus)
-        var minX = w; var minY = h; var maxX = -1; var maxY = -1
+        val comps = maskConnectedComponents(mask)
+        if (comps.isEmpty()) {
+            android.util.Log.w("PatchMatch", "inpaint: mask kosong, skip")
+            return false
+        }
+        var ok = false
+        for ((i, box) in comps.withIndex()) {
+            ok = inpaintRegion(src, mask, box, w, h) || ok
+            onProgress?.invoke((i + 1).toFloat() / comps.size.toFloat())
+        }
+        return ok
+    }
+
+    /**
+     * Pecah mask jadi region connected: run-length per baris + union-find,
+     * scan strip 512 agar hemat memori di kanvas jangkung 720x16000.
+     * Baris kosong memutus koneksi vertikal (region solid tak terpengaruh).
+     * Mengembalikan daftar bbox Rect (non-empty; noise < 4 px dibuang).
+     */
+    private fun maskConnectedComponents(mask: Bitmap): List<Rect> {
+        val w = mask.width
+        val h = mask.height
+        if (w <= 0 || h <= 0) return emptyList()
+        val par = ArrayList<Int>()
+        val bx = ArrayList<Int>()
+        val by = ArrayList<Int>()
+        val br = ArrayList<Int>()
+        val bb = ArrayList<Int>()
+        fun find(a: Int): Int {
+            var r = a
+            while (par[r] != r) r = par[r]
+            var c = a
+            while (par[c] != c) {
+                val n = par[c]
+                par[c] = r
+                c = n
+            }
+            return r
+        }
+        fun newRun(x0: Int, x1: Int, y: Int): Int {
+            val id = par.size
+            par.add(id)
+            bx.add(x0)
+            by.add(y)
+            br.add(x1)
+            bb.add(y)
+            return id
+        }
+        fun union(a: Int, b: Int) {
+            val ra = find(a)
+            val rb = find(b)
+            if (ra == rb) return
+            par[rb] = ra
+            if (bx[rb] < bx[ra]) bx[ra] = bx[rb]
+            if (by[rb] < by[ra]) by[ra] = by[rb]
+            if (br[rb] > br[ra]) br[ra] = br[rb]
+            if (bb[rb] > bb[ra]) bb[ra] = bb[rb]
+        }
+        // Runs baris sebelumnya untuk union lintas baris yang bersinggungan.
+        var prevId = IntArray(0)
+        var prevX0 = IntArray(0)
+        var prevX1 = IntArray(0)
         val tmp = IntArray(w * min(512, h))
-        val stripH = 512
         var y0 = 0
         while (y0 < h) {
-            val sh = min(stripH, h - y0)
+            val sh = min(512, h - y0)
             mask.getPixels(tmp, 0, w, 0, y0, w, sh)
-            for (y in 0 until sh) {
-                val row = y * w
-                for (x in 0 until w) {
-                    val p = tmp[row + x]
-                    if ((p ushr 24) > 30) {
-                        val gy = y0 + y
-                        if (x < minX) minX = x
-                        if (x > maxX) maxX = x
-                        if (gy < minY) minY = gy
-                        if (gy > maxY) maxY = gy
+            for (r in 0 until sh) {
+                val y = y0 + r
+                val off = r * w
+                val curId = ArrayList<Int>(4)
+                val curX0 = ArrayList<Int>(4)
+                val curX1 = ArrayList<Int>(4)
+                var x = 0
+                while (x < w) {
+                    while (x < w && ((tmp[off + x] ushr 24) <= 30)) x++
+                    if (x >= w) break
+                    val start = x
+                    while (x < w && ((tmp[off + x] ushr 24) > 30)) x++
+                    val id = newRun(start, x - 1, y)
+                    curId.add(id)
+                    curX0.add(start)
+                    curX1.add(x - 1)
+                    // Bersinggungan (overlap atau gap ≤ 1 px) → satu region.
+                    for (pi in prevId.indices) {
+                        if (start <= prevX1[pi] + 1 && prevX0[pi] <= x) {
+                            union(id, prevId[pi])
+                        }
                     }
+                }
+                if (curId.isEmpty()) {
+                    prevId = IntArray(0)
+                    prevX0 = IntArray(0)
+                    prevX1 = IntArray(0)
+                } else {
+                    prevId = curId.toIntArray()
+                    prevX0 = curX0.toIntArray()
+                    prevX1 = curX1.toIntArray()
                 }
             }
             y0 += sh
         }
-        if (maxX < 0) {
-            android.util.Log.w("PatchMatch", "inpaint: mask kosong, skip")
-            return false
+        val out = ArrayList<Rect>()
+        val seen = HashSet<Int>()
+        for (id in par.indices) {
+            if (find(id) != id) continue
+            if (!seen.add(id)) continue
+            val l = bx[id]
+            val t = by[id]
+            val rr = br[id]
+            val b = bb[id]
+            if ((rr - l + 1).toLong() * (b - t + 1) < 4L) continue
+            out.add(Rect(l, t, rr + 1, b + 1))
         }
-        // Adaptive pad seperti Vasilias: stroke lebar butuh konteks lebih luas
-        val bw = maxX - minX + 1
-        val bh = maxY - minY + 1
-        val adaptivePad = max(CONTEXT_PAD, min(max(bw, bh), 256))
-        // Konteks luas agar patch menemukan background asli, bukan tepi objek.
-        val pad = adaptivePad + 12
-        val rx = (minX - pad).coerceIn(0, w - 1)
-        val ry = (minY - pad).coerceIn(0, h - 1)
-        val rw = ((maxX + pad).coerceAtMost(w - 1) - rx + 1).coerceAtLeast(1)
-        val rh = ((maxY + pad).coerceAtMost(h - 1) - ry + 1).coerceAtLeast(1)
-        if (rw.toLong() * rh > 500000L) { curIters = 2; curCompletion = 1; curLevels = 2; curCoarse = 160 } else { curIters = ITERS; curCompletion = COMPLETION_ITERS; curLevels = MAX_PYRAMID_LEVELS; curCoarse = COARSE_EDGE }
-        if (rw <= 8 || rh <= 8) {
-            android.util.Log.w("PatchMatch", "inpaint: ROI terlalu kecil ${rw}x${rh}, skip")
-            return false
-        }
+        return out
+    }
 
-        // Guard OOM berlapis: >1MP → 0.33, >0.5MP → 0.5 (heal besar tetap cepat).
+    /**
+     * Isi SATU region mask ([box]) pada resolusi penuh. Blit hanya piksel lubang
+     * yang berada di dalam bbox region — crop di sekitarnya cuma konteks, dan
+     * lubang region lain yang kejebak di pad TIDAK ikut ditulis (mencegah
+     * double-write antar region yang urutannya tak menentu).
+     */
+    private fun inpaintRegion(src: Bitmap, mask: Bitmap, box: Rect, w: Int, h: Int): Boolean {
+        // Konteks adaptif seperti pipeline lama (Vasilias): stroke lebar/pita
+        // teks besar butuh pad lebih luas agar patch menemukan background asli.
+        val adaptivePad = max(CONTEXT_PAD, min(max(box.width(), box.height()), 256))
+        val pad = adaptivePad + 12
+        val rx = (box.left - pad).coerceIn(0, w - 1)
+        val ry = (box.top - pad).coerceIn(0, h - 1)
+        val rw = ((box.right + pad).coerceAtMost(w) - rx).coerceAtLeast(1)
+        val rh = ((box.bottom + pad).coerceAtMost(h) - ry).coerceAtLeast(1)
+        if (rw <= 8 || rh <= 8) {
+            android.util.Log.w("PatchMatch", "inpaint: ROI terlalu kecil ${rw}x$rh, skip")
+            return false
+        }
+        // Adaptif cepat untuk manga besar: ROI>500k pakai iters/level rendah.
+        if (rw.toLong() * rh > 500000L) {
+            curIters = 2
+            curCompletion = 1
+            curLevels = 2
+            curCoarse = 160
+        } else {
+            curIters = ITERS
+            curCompletion = COMPLETION_ITERS
+            curLevels = MAX_PYRAMID_LEVELS
+            curCoarse = COARSE_EDGE
+        }
+        // Guard OOM untuk region raksasa: proses diresolusi kecil lalu upscale —
+        // TAPI hasilnya hanya menimpa piksel lubang (bukan seluruh crop).
         var scale = 1f
         var workW = rw
         var workH = rh
@@ -116,30 +228,65 @@ object PatchMatchInpainter {
             workW = max(16, (rw * scale).toInt())
             workH = max(16, (rh * scale).toInt())
         }
-        var srcCrop = try { Bitmap.createBitmap(src, rx, ry, rw, rh) } catch (e: OutOfMemoryError) { android.util.Log.w("PatchMatch", "inpaint: OOM srcCrop"); return false } catch (e: Exception) { return false }
-        var maskCrop = try { Bitmap.createBitmap(mask, rx, ry, rw, rh) } catch (e: Exception) { srcCrop.recycle(); return false }
+        var srcCrop = try {
+            Bitmap.createBitmap(src, rx, ry, rw, rh)
+        } catch (e: OutOfMemoryError) {
+            android.util.Log.w("PatchMatch", "inpaint: OOM srcCrop")
+            return false
+        } catch (e: Exception) {
+            return false
+        }
+        var maskCrop = try {
+            Bitmap.createBitmap(mask, rx, ry, rw, rh)
+        } catch (e: Exception) {
+            srcCrop.recycle()
+            return false
+        }
         if (scale != 1f) {
             val sW = Bitmap.createScaledBitmap(srcCrop, workW, workH, true)
             val mW = Bitmap.createScaledBitmap(maskCrop, workW, workH, true)
-            srcCrop.recycle(); maskCrop.recycle()
-            srcCrop = sW; maskCrop = mW
+            srcCrop.recycle()
+            maskCrop.recycle()
+            srcCrop = sW
+            maskCrop = mW
         }
         try {
-            // NNF fill + seamless blend dalam satu panggilan (cek mask kosong
-            // dilakukan di dalam fillCropBitmap).
-            val result = fillCropBitmap(srcCrop, maskCrop, onProgress)
+            // NNF fill + seamless blend (cek mask kosong dilakukan di fillCropBitmap).
+            val result = fillCropBitmap(srcCrop, maskCrop, null)
             if (result == null) {
                 android.util.Log.w("PatchMatch", "inpaint: fill null, skip")
-                srcCrop.recycle(); maskCrop.recycle(); return false
+                return false
             }
-            // Kembalikan ke src skala penuh
             val toBlit = if (scale != 1f) {
                 val up = Bitmap.createScaledBitmap(result, rw, rh, true)
                 result.recycle()
                 up
             } else result
-            Canvas(src).drawBitmap(toBlit, rx.toFloat(), ry.toFloat(), null)
-            toBlit.recycle()
+            try {
+                // Blit HANYA piksel lubang dalam bbox region (mask global, bukan
+                // mask hasil resize): piksel valid di sekitar lubang tak pernah
+                // ditimpa → tak ada lagi area buram "seperti habis di-resize".
+                val n = rw * rh
+                val resPx = IntArray(n)
+                toBlit.getPixels(resPx, 0, rw, 0, 0, rw, rh)
+                val dstPx = IntArray(n)
+                src.getPixels(dstPx, 0, rw, rx, ry, rw, rh)
+                val mPx = IntArray(n)
+                mask.getPixels(mPx, 0, rw, rx, ry, rw, rh)
+                for (y in 0 until rh) {
+                    val gy = ry + y
+                    if (gy < box.top || gy >= box.bottom) continue
+                    val row = y * rw
+                    for (x in 0 until rw) {
+                        val i = row + x
+                        if (rx + x < box.left || rx + x >= box.right) continue
+                        if ((mPx[i] ushr 24) > 30) dstPx[i] = resPx[i]
+                    }
+                }
+                src.setPixels(dstPx, 0, rw, rx, ry, rw, rh)
+            } finally {
+                toBlit.recycle()
+            }
             return true
         } catch (e: Exception) {
             e.printStackTrace()

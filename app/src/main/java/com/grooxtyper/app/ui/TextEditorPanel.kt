@@ -107,6 +107,9 @@ fun TextEditorPanel(
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
     onOpenPerspectiveGrid: () -> Unit = {},
+    // Mode pipet: screen mendaftarkan konsumer warna (dipanggil saat user
+    // mengetuk kanvas) untuk target warna yang sedang dipilih di panel ini.
+    onStartEyedrop: ((Int) -> Unit) -> Unit = {},
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -542,6 +545,18 @@ fun TextEditorPanel(
     }
 
     if (showColor) {
+        // Terapkan warna ke target saat ini (dipakai dialog & mode pipet kanvas).
+        fun applyPickedColor(c: Int) {
+            when (colorTarget) {
+                1 -> { outlineColor = c; box.outlineColor = c }
+                2 -> { shadowColor = c; box.shadow?.color = c }
+                3 -> { gradStart = c; box.gradient.colorStart = c }
+                4 -> { gradEnd = c; box.gradient.colorEnd = c }
+                5 -> { glowColor = c; box.glow?.color = c }
+                else -> { colorVal = c; box.color = c }
+            }
+            push()
+        }
         ColorPickerDialog(
             initialColor = when (colorTarget) {
                 1 -> outlineColor
@@ -551,16 +566,10 @@ fun TextEditorPanel(
                 5 -> glowColor
                 else -> colorVal
             },
-            onColorSelected = { c ->
-                when (colorTarget) {
-                    1 -> { outlineColor = c; box.outlineColor = c }
-                    2 -> { shadowColor = c; box.shadow?.color = c }
-                    3 -> { gradStart = c; box.gradient.colorStart = c }
-                    4 -> { gradEnd = c; box.gradient.colorEnd = c }
-                    5 -> { glowColor = c; box.glow?.color = c }
-                    else -> { colorVal = c; box.color = c }
-                }
-                push()
+            onColorSelected = { c -> applyPickedColor(c) },
+            onPickFromCanvas = {
+                showColor = false
+                onStartEyedrop { c -> applyPickedColor(c) }
             },
             onDismiss = { showColor = false }
         )
