@@ -151,12 +151,17 @@ assert(editor.includes('bubbleWarn'), 'Bubble: peringatan naskah lebih panjang d
 // 10. PatchMatch non-AI: prefill push-pull (gradasi/tekstur) ganti guide BFS.
 assert(patch.includes('pushPullPrefill'), 'PatchMatch: prefill push-pull NON-AI (gradasi/tekstur)');
 assert(!patch.includes('buildNearestBackgroundGuide'), 'PatchMatch: guide BFS-nearest diganti push-pull');
-// 11. Script → Teks: tanpa baris pasangan → render langsung ke bubble/seleksi
-//     (Style Rules + fit + center + cek latar) + tombol Jalankan ikut aktif.
-assert(editor.includes('render langsung ke bubble'), 'Script Teks: fallback render langsung ke bubble/seleksi');
-assert(editor.includes('if (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection) {\n                runScript()'), 'fallback memanggil runScript() (Style Rules+fit+center+cek latar)');
-assert(editor.includes('scriptTextMode && unusedCount > 0'), 'Script Teks: canRunRows aktif bila ada bubble/seleksi + naskah');
-assert(editor.includes('langsung ketuk Jalankan'), 'Script Teks: hint cara render langsung ditampilkan');
+// 11. Script → Teks: TANPA deteksi teks — cukup samakan jumlah naskah dengan
+//     jumlah bubble/seleksi; render via runScript (Style Rules + cek latar +
+//     fit terbesar + center).
+assert(editor.includes('TANPA deteksi teks'), 'Script Teks: runTextScript langsung render (tanpa deteksi)');
+assert(!editor.includes('fun runScriptTextDetect'), 'Script Teks: fungsi deteksi teks dibuang');
+assert(!editor.includes('fun pairScriptsToRows'), 'Script Teks: fungsi pasangkan dibuang');
+assert(!editor.includes('runScriptTextDetect()'), 'Script Teks: tombol Deteksi Teks dibuang dari mode Teks');
+assert(editor.includes('if (scriptTextMode) textMatchOk'), 'Script Teks: Jalankan aktif bila jumlah naskah sesuai target');
+assert(editor.includes('unusedCount == textTargetN'), 'Script Teks: gate jumlah naskah == jumlah bubble');
+assert(editor.includes('Target Render'), 'Script Teks: panel Target (bubble/seleksi) ganti tabel deteksi');
+assert(editor.includes('Deteksi Bubble'), 'Script Teks: jalan pintas Deteksi Bubble tersedia');
 // 12. Inpaint PatchMatch anti-buram: pecah mask per region connected +
 //     blit HANYA piksel lubang (crop tak pernah ditimpa hasil resize).
 assert(patch.includes('maskConnectedComponents'), 'PatchMatch: mask dipecah per region connected (bukan 1 crop raksasa)');
