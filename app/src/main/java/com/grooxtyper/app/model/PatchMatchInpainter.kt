@@ -219,7 +219,11 @@ object PatchMatchInpainter {
         val mask = buildMask(localRegion, rw, rh)
         if (!mask.any { it }) return bitmap.copy(Bitmap.Config.ARGB_8888, false)
 
-        val out = multiScaleInpaint(pixels, mask, rw, rh, onProgress)
+        // Prefill struktur: isi lubang dengan piramida push-pull SEBELUM
+        // pyramid multi-scale, agar gradasi/tekstur latar tersambung mulus
+        // dan tak ada sisa objek/teks yang bocor ke level coarse.
+        val prefilled = pushPullPrefill(pixels, mask, rw, rh)
+        val out = multiScaleInpaint(prefilled, mask, rw, rh, onProgress)
         // Sambung jahitan via seamless blend (gradasi+tekstur), bukan feather.
         // Null (OOM) → pakai hasil mentah sebagai fallback.
         val blended = SeamlessBlender.blend(pixels, out, mask, rw, rh) ?: out
@@ -313,7 +317,10 @@ object PatchMatchInpainter {
         val validCenters = collectValidSourceCenters(mask, w, h, prefix)
         if (validCenters.isEmpty()) return pixels
 
-        val guidePixels = initialGuide ?: buildNearestBackgroundGuide(pixels, mask, w, h)
+        // Guide = hasil prefill push-pull (gradasi halus, bukan salinan
+        // piksel terdekat yang berblok-blok) bila tak ada guide dari level
+        // coarse sebelumnya.
+        val guidePixels = initialGuide ?: pushPullPrefill(pixels, mask, w, h)
 
         val sourceConstraints = buildConstraintLabels(pixels, w, h)
         val targetConstraints = buildConstraintLabels(guidePixels, w, h)
@@ -647,41 +654,136 @@ object PatchMatchInpainter {
         return 0.299 * Color.red(c) + 0.587 * Color.green(c) + 0.114 * Color.blue(c)
     }
 
-    private fun buildNearestBackgroundGuide(
+    /**
+     * Prefill struktur NON-AI (push-pull / pyramidal hole filling): turunkan
+     * resolusi berbobot (rata-rata hanya piksel VALID), lalu naikkan kembali
+     * dengan interpolasi bilinear sampai resolusi penuh sehingga tiap piksel
+     * lubang terisi gradien/tekstur halus dari konteks terjauh. Piksel di
+     * LUAR lubang tidak disentuh (tetap pristine) — aman dipakai sebagai
+     * isi lubang maupun guide luminance PatchMatch. Cocok untuk latar
+     * gradasi (sky, tone halus) dan tekstur acak tempat metode salinan
+     * piksel terdekat meninggalkan bekas blok.
+     */
+    private fun pushPullPrefill(
         pixels: IntArray,
         mask: BooleanArray,
         w: Int,
         h: Int
     ): IntArray {
-        val guide = pixels.copyOf()
-        val owner = IntArray(mask.size) { -1 }
-        val queue = ArrayDeque<Int>()
+        val n = w * h
+        if (n == 0 || !mask.any { it }) return pixels
 
-        for (i in mask.indices) {
+        // Pyramid (level 0 = resolusi asli). Bobot 1 = piksel valid, 0 = lubang.
+        data class Level(val w: Int, val h: Int, val c: IntArray, val wt: FloatArray)
+
+        val base = IntArray(n)
+        val baseW = FloatArray(n)
+        for (i in 0 until n) {
             if (!mask[i]) {
-                owner[i] = i
-                queue.addLast(i)
+                base[i] = pixels[i]
+                baseW[i] = 1f
+            }
+        }
+        val levels = mutableListOf(Level(w, h, base, baseW))
+
+        // PUSH (down-sample): tiap sel = rata-rata berbobot anak VALID.
+        var cw = w
+        var ch = h
+        while (cw > 1 || ch > 1) {
+            val prev = levels.last()
+            val nw = (cw + 1) / 2
+            val nh = (ch + 1) / 2
+            val nc = IntArray(nw * nh)
+            val nw2 = FloatArray(nw * nh)
+            for (y in 0 until nh) {
+                for (x in 0 until nw) {
+                    var sumR = 0f
+                    var sumG = 0f
+                    var sumB = 0f
+                    var sumW = 0f
+                    for (dy in 0..1) {
+                        val sy = y * 2 + dy
+                        if (sy >= ch) continue
+                        for (dx in 0..1) {
+                            val sx = x * 2 + dx
+                            if (sx >= cw) continue
+                            val si = sy * cw + sx
+                            val wt = prev.wt[si]
+                            if (wt <= 0f) continue
+                            val p = prev.c[si]
+                            sumR += ((p shr 16) and 0xFF) * wt
+                            sumG += ((p shr 8) and 0xFF) * wt
+                            sumB += (p and 0xFF) * wt
+                            sumW += wt
+                        }
+                    }
+                    val di = y * nw + x
+                    if (sumW > 0f) {
+                        nc[di] = ((sumR / sumW).toInt().coerceIn(0, 255) shl 16) or
+                            ((sumG / sumW).toInt().coerceIn(0, 255) shl 8) or
+                            (sumB / sumW).toInt().coerceIn(0, 255)
+                        nw2[di] = 1f
+                    }
+                }
+            }
+            levels.add(Level(nw, nh, nc, nw2))
+            cw = nw
+            ch = nh
+        }
+
+        // PULL (up-sample): isi piksel bobot-0 dari bilinear level lebih kasar.
+        for (lv in levels.size - 1 downTo 1) {
+            val src = levels[lv]
+            val dst = levels[lv - 1]
+            for (y in 0 until dst.h) {
+                for (x in 0 until dst.w) {
+                    val di = y * dst.w + x
+                    if (dst.wt[di] > 0f) continue
+                    val fx = (x - 0.5f) / 2f
+                    val fy = (y - 0.5f) / 2f
+                    val x0 = kotlin.math.floor(fx.toDouble()).toInt().coerceIn(0, src.w - 1)
+                    val y0 = kotlin.math.floor(fy.toDouble()).toInt().coerceIn(0, src.h - 1)
+                    val x1 = (x0 + 1).coerceAtMost(src.w - 1)
+                    val y1 = (y0 + 1).coerceAtMost(src.h - 1)
+                    val ax = (fx - x0).coerceIn(0f, 1f)
+                    val ay = (fy - y0).coerceIn(0f, 1f)
+                    var r = 0f
+                    var g = 0f
+                    var b = 0f
+                    var tw = 0f
+                    fun tap(tx: Int, ty: Int, wx: Float, wy: Float) {
+                        val ti = ty * src.w + tx
+                        val wt = wx * wy
+                        if (src.wt[ti] <= 0f || wt <= 0f) return
+                        val p = src.c[ti]
+                        r += ((p shr 16) and 0xFF) * wt
+                        g += ((p shr 8) and 0xFF) * wt
+                        b += (p and 0xFF) * wt
+                        tw += wt
+                    }
+                    tap(x0, y0, 1 - ax, 1 - ay)
+                    tap(x1, y0, ax, 1 - ay)
+                    tap(x0, y1, 1 - ax, ay)
+                    tap(x1, y1, ax, ay)
+                    if (tw > 0f) {
+                        dst.c[di] = ((r / tw).toInt().coerceIn(0, 255) shl 16) or
+                            ((g / tw).toInt().coerceIn(0, 255) shl 8) or
+                            (b / tw).toInt().coerceIn(0, 255)
+                        dst.wt[di] = 1f
+                    }
+                }
             }
         }
 
-        while (queue.isNotEmpty()) {
-            val current = queue.removeFirst()
-            val x = current % w
-            val y = current / w
-
-            fun visit(next: Int) {
-                if (owner[next] >= 0) return
-                owner[next] = owner[current]
-                guide[next] = pixels[owner[current]]
-                queue.addLast(next)
+        // Level 0 = hasil: lubang terisi, piksel valid tetap pristine.
+        val result = pixels.copyOf()
+        val l0 = levels[0]
+        for (i in 0 until n) {
+            if (mask[i]) {
+                result[i] = if (l0.wt[i] > 0f) l0.c[i] else nearestKnownPixel(pixels, mask, w, h, i)
             }
-
-            if (x > 0) visit(current - 1)
-            if (x + 1 < w) visit(current + 1)
-            if (y > 0) visit(current - w)
-            if (y + 1 < h) visit(current + w)
         }
-        return guide
+        return result
     }
 
     private fun nearestKnownPixel(pixels: IntArray, mask: BooleanArray, w: Int, h: Int, idx: Int): Int {

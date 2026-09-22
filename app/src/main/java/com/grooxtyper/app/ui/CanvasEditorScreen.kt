@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -720,6 +721,9 @@ fun CanvasEditorScreen(
     var showLayersPanel by remember { mutableStateOf(false) }
     var showBrushSettings by remember { mutableStateOf(false) }
     var showTextEditor by remember { mutableStateOf(false) }
+    // Dinaikkan saat geometri teks diubah dari kanvas (SCALE/lebar/perspektif)
+    // agar panel teks (slider ukuran) ikut menampilkan angka terbaru.
+    var textGeomTick by remember { mutableIntStateOf(0) }
     var showRulerDialog by remember { mutableStateOf(false) }
     // Mode atur penggaris (geser/putar) — saat aktif sapuan brush diabaikan
     // supaya menata penggaris tidak ikut menggambar.
@@ -957,6 +961,12 @@ fun CanvasEditorScreen(
     // Naskah terpasang per baris terdeteksi (diisi otomatis dari antrean
     // berdasar urutan, bisa diedit manual agar jumlahnya sesuai).
     fun pairedRowCount(): Int = detectedRows.count { it.selected && it.script.isNotBlank() }
+
+    // Alur Bubble bertahap: deteksi → pilih → INPAINT (baris TETAP di tabel,
+    // tidak dihapus) → pasangkan naskah → render. bubbleWarn = peringatan
+    // naskah lebih panjang dari teks terdeteksi.
+    var bubbleInpainted by remember { mutableStateOf(false) }
+    var bubbleWarn by remember { mutableStateOf<String?>(null) }
 
     // Bubble detector: model ONNX (YOLOv11n-seg) yang bisa dipilih user.
     // Inferensi on-device via ONNX Runtime; heuristik hanya fallback.
@@ -1417,10 +1427,182 @@ fun CanvasEditorScreen(
 
     /** Isi ulang kolom naskah dari antrean berdasar urutan (yang kosong saja). */
     fun pairScriptsToRows() {
-        val unused = unusedScriptEntries()
-        detectedRows = detectedRows.mapIndexed { idx, row ->
-            if (row.script.isBlank()) row.copy(script = unused.getOrNull(idx)?.text ?: "") else row
+        val unused = unusedScriptEntries().toMutableList()
+        var ui = 0
+        detectedRows = detectedRows.map { row ->
+            if (row.script.isBlank() && ui < unused.size) row.copy(script = unused[ui++].text)
+            else row
         }
+    }
+
+    /**
+     * Mode Bubble: deteksi teks di canvas → gabung teks terdekat (atas/bawah/
+     * kiri/kanan) jadi satu baris/bubble. Kolom TERDETEKSI terisi hasil deteksi,
+     * kolom NASKAH sengaja KOSONG (diisi bertahap lewat Import/Ketik/Pasangkan).
+     */
+    fun runBubbleScriptDetect() {
+        scope.launch {
+            val active = layerManager.getActiveLayer() ?: return@launch
+            detectingText = true
+            try {
+                val regions = withContext(Dispatchers.Default) {
+                    mlTextDetector.detectTextRegions(active.getBitmap(), mlScripts)
+                }
+                val merged = mergeNearbyRegions(regions)
+                detectedRows = merged.map { r ->
+                    val bh = r.boundingBox.height().toFloat().coerceAtLeast(8f)
+                    DetectedRow(
+                        box = RectF(
+                            r.boundingBox.left.toFloat(), r.boundingBox.top.toFloat(),
+                            r.boundingBox.right.toFloat(), r.boundingBox.bottom.toFloat()
+                        ),
+                        text = r.text,
+                        fontSize = (bh * 0.9f).coerceIn(1f, 320f),
+                        selected = false,
+                        script = ""
+                    )
+                }
+                bubbleInpainted = false
+                bubbleWarn = null
+            } catch (e: Exception) {
+                e.printStackTrace()
+                healError = "Deteksi teks gagal: ${e.message ?: "error"}"
+            } finally {
+                detectingText = false
+                refreshComposite()
+            }
+        }
+    }
+
+    /**
+     * Inpaint baris terpilih memakai metode fitur Deteksi Teks (mask ML Kit +
+     * inpainting). Region TIDAK dihapus dari tabel setelah selesai — baris
+     * tetap dipakai untuk pasangan naskah lalu render.
+     */
+    fun inpaintBubbleRows() {
+        val rows = detectedRows.filter { it.selected }
+        if (rows.isEmpty()) return
+        val active = layerManager.getActiveLayer() ?: return
+        scope.launch {
+            detectingText = true
+            try {
+                undoRedoManager.saveSnapshot(active)
+                val mask = withContext(Dispatchers.Default) {
+                    val regions = rows.map { row ->
+                        DetectedTextRegion(
+                            text = row.text,
+                            boundingBox = android.graphics.Rect(
+                                row.box.left.toInt(), row.box.top.toInt(),
+                                row.box.right.toInt(), row.box.bottom.toInt()
+                            ),
+                            cornerPoints = null
+                        )
+                    }
+                    mlTextDetector.generateMaskBitmap(
+                        canvasWidth, canvasHeight, regions, active.getBitmap(), selectedMaskType
+                    )
+                }
+                try {
+                    withContext(Dispatchers.Default) {
+                        inpaintingManager.inpaintLayerArea(active, mask)
+                    }
+                    bubbleInpainted = true
+                } finally {
+                    runCatching { mask.recycle() }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                healError = "Inpaint gagal: ${e.message ?: "error"}"
+            } finally {
+                detectingText = false
+                refreshComposite()
+            }
+        }
+    }
+
+    /**
+     * Pasangkan naskah ke kolom script yang masih KOSONG (urutan baris).
+     * Aturan: bila baris script LEBIH PANJANG dari teks terdeteksinya,
+     * biarkan script, kosongkan kolom teks terdeteksi, dan beri peringatan
+     * (agar user tahu size hasil render perlu diperiksa).
+     */
+    fun fillBubbleScripts() {
+        val unused = unusedScriptEntries().toMutableList()
+        if (unused.isEmpty()) {
+            bubbleWarn = "Belum ada naskah — import file / ketik dulu."
+            return
+        }
+        var ui = 0
+        var longCount = 0
+        detectedRows = detectedRows.map { row ->
+            if (row.script.isNotBlank() || ui >= unused.size) return@map row
+            val line = unused[ui++].text
+            if (row.text.isNotBlank() && line.length > row.text.length) {
+                longCount++
+                row.copy(script = line, text = "")
+            } else {
+                row.copy(script = line)
+            }
+        }
+        bubbleWarn = if (longCount > 0)
+            "$longCount baris naskah lebih panjang dari teks aslinya — kolom terdeteksi dikosongkan; periksa ukuran saat render."
+        else null
+    }
+
+    /**
+     * Jalankan mode Bubble: render naskah per baris terpilih sesuai Style
+     * Rules — cek latar (warna kontras), fit tengah bila luap, dan size
+     * mengikuti teks terdeteksi awal.
+     */
+    fun runBubbleScriptRender() {
+        val rows = detectedRows.filter { it.selected && it.script.isNotBlank() }
+        if (rows.isEmpty()) return
+        var last: TextBox? = null
+        var lastLayerId = ""
+        val template = selectedTextBox?.copy()
+        for (row in rows) {
+            val b = row.box
+            val box = TextBox(
+                text = row.script,
+                position = Offset(b.centerX(), b.centerY()),
+                color = brushEngine.color
+            )
+            template?.let { box.applyStyleFrom(it) }
+            // Cek latar dulu, lalu Style Rules boleh menimpanya.
+            box.color = contrastTextColorAt(b.centerX(), b.centerY())
+            val styled = applyAllStylesTo(box)
+            if (!styled) box.color = contrastTextColorAt(b.centerX(), b.centerY())
+            box.rotation = 0f
+            box.scale = 1f
+            box.textScaleX = 1f
+            // Size mengikuti teks terdeteksi AWAL (bukan hasil deteksi ulang).
+            box.fontSize = row.fontSize
+            box.align = com.grooxtyper.app.model.TextAlignMode.CENTER
+            box.boxWidth = b.width().coerceAtLeast(24f)
+            // Fit tengah: bila naskah meluap, kecilkan agar tetap dalam baris.
+            val (cw, ch) = box.contentSize()
+            if (cw > b.width() || ch > b.height()) {
+                box.fitToRect(RectF(b.left, b.top, b.right, b.bottom))
+            }
+            val created = layerManager.addTextLayer(box)
+            undoRedoManager.pushLayerAdd(created.id)
+            last = box
+            lastLayerId = created.id
+        }
+        // Tandai antrean terpakai (urutan) + kosongkan pilihan anti render ganda.
+        val unused = unusedScriptEntries()
+        for (i in rows.indices) {
+            val srcIdx = scriptEntries.indexOfFirst { it.id == unused.getOrNull(i)?.id }
+            if (srcIdx >= 0) scriptEntries[srcIdx].used = true
+        }
+        scriptEntries = scriptEntries.toList()
+        detectedRows = detectedRows.map { it.copy(selected = false) }
+        last?.let {
+            selectedTextBox = it
+            layerManager.activeLayerId = lastLayerId
+            activeTool = ActiveTool.TEXT
+        }
+        refreshComposite()
     }
 
     /**
@@ -2016,6 +2198,7 @@ fun CanvasEditorScreen(
                                     4 -> box.perspX = (box.perspX + dcx / hw).coerceIn(-1f, 1f)
                                 }
                                 refreshCompositeCoalesced()
+                                textGeomTick++
                                 change.consume()
                             } else {
                                 val dvx = drag.x / viewState.scale.coerceAtLeast(0.05f)
@@ -2269,6 +2452,9 @@ fun CanvasEditorScreen(
                                                     TextHandle.NONE -> Unit
                                                 }
                                                 refreshComposite()
+                                                // Geometri box berubah → sinkronkan
+                                                // panel teks (ukuran/lebar/persp).
+                                                textGeomTick++
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.IMAGE) {
@@ -4290,6 +4476,7 @@ fun CanvasEditorScreen(
                         box = box,
                         fonts = fontList,
                         onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                        geomTick = textGeomTick,
                         onChange = { refreshCompositeCoalesced() },
                         onPushTextHistory = { before ->
                             undoRedoManager.pushTextBox(textLayerIdOf(box), before)
@@ -4586,7 +4773,7 @@ fun CanvasEditorScreen(
                                         val box = TextBox(
                                             text = region.text.ifBlank { "Teks" },
                                             position = center,
-                                            fontSize = (h * 0.75f).coerceIn(20f, 220f),
+                                            fontSize = (h * 0.75f).coerceIn(1f, 220f),
                                             color = textColor,
                                             bold = true
                                         )
@@ -4854,8 +5041,12 @@ fun CanvasEditorScreen(
         // === Panel Script: kolom baris + jalankan ke seleksi/bubble ===
         if (showScriptPanel) {
             val unusedCount = scriptEntries.count { !it.used }
-            val canRun = unusedCount > 0 && (detectedBubbles.isNotEmpty() || selectionEngine.hasSelection)
-            val canRunText = detectedRows.any { it.selected && it.script.isNotBlank() }
+            // Jalankan siap bila ADA baris terpilih yang sudah bernaskah —
+            // berlaku untuk mode Bubble & Teks (keduanya pakai tabel baris).
+            val canRunRows = detectedRows.any { it.selected && it.script.isNotBlank() }
+            val selN = detectedRows.count { it.selected }
+            val pairN = pairedRowCount()
+            val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
             AlertDialog(
                 onDismissRequest = { showScriptPanel = false },
                 title = {
@@ -4866,7 +5057,8 @@ fun CanvasEditorScreen(
                     }
                 },
                 text = {
-                    Column {
+                    // Scrollable: konten (sumber naskah + tabel baris) panjang.
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                         // Pilih mode: Bubble (detektor bubble) atau Teks (deteksi teks ML Kit).
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -4891,12 +5083,9 @@ fun CanvasEditorScreen(
                         ) {
                             StatusPill("${scriptEntries.size} baris")
                             StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
-                            StatusPill("${detectedBubbles.size} bubble")
-                            if (scriptTextMode) {
-                                StatusPill("${detectedRows.size} teks", highlight = detectedRows.isNotEmpty())
-                            }
-                            if (selectionEngine.hasSelection) {
-                                StatusPill("seleksi ✓", highlight = true)
+                            StatusPill("${detectedRows.size} teks", highlight = detectedRows.isNotEmpty())
+                            if (!scriptTextMode && bubbleInpainted) {
+                                StatusPill("inpaint ✓", highlight = true)
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
@@ -4928,9 +5117,7 @@ fun CanvasEditorScreen(
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                if (!selectionEngine.hasSelection && detectedBubbles.isEmpty())
-                                    "Butuh bubble terdeteksi atau seleksi aktif untuk menjalankan."
-                                else "$done/${scriptEntries.size} baris terpakai • urutan atas→bawah, kanan→kiri",
+                                "$done/${scriptEntries.size} baris terpakai • urutan atas→bawah, kanan→kiri",
                                 color = Color.Gray, fontSize = 11.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
@@ -5059,201 +5246,143 @@ fun CanvasEditorScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-                        if (!scriptTextMode) {
-                        if (scriptEntries.isEmpty()) {
+                        Text(
+                            "Teks Terdeteksi",
+                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        // Aksi per mode: Teks = deteksi + pasangkan; Bubble =
+                        // deteksi + isi naskah + INPAINT (muncul setelah pemilihan).
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (scriptTextMode) runScriptTextDetect() else runBubbleScriptDetect()
+                                },
+                                enabled = !detectingText,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                            ) {
+                                Text(
+                                    if (detectingText) "Mendeteksi…" else "Deteksi Teks",
+                                    color = Color.White, fontSize = 12.sp
+                                )
+                            }
+                            ScriptActionButton(
+                                label = if (scriptTextMode) "Pasangkan" else "Isi Naskah",
+                                icon = Icons.Default.Refresh,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    if (scriptTextMode) pairScriptsToRows() else fillBubbleScripts()
+                                }
+                            )
+                            // Tombol Inpaint khusus Bubble: hanya SETELAH ada baris dipilih.
+                            if (!scriptTextMode && selN > 0) {
+                                ScriptActionButton(
+                                    label = if (detectingText) "Menghapus…" else "Inpaint",
+                                    icon = Icons.Default.Brush,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { inpaintBubbleRows() }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StatusPill("$selN dipilih", highlight = selN > 0)
+                            StatusPill("$pairN bernaskah", highlight = pairN > 0)
+                            StatusPill(
+                                if (matchOk) "Sesuai ✓" else "Belum sesuai",
+                                highlight = matchOk
+                            )
+                        }
+                        // Peringatan pasangan: naskah lebih panjang dari teks terdeteksi.
+                        if (!scriptTextMode && bubbleWarn != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                "Contoh format: satu baris = satu bubble. Header 'Page X' otomatis diabaikan. Lihat folder contoh/script.txt.",
+                                bubbleWarn ?: "",
+                                color = Color(0xFFFFB74D), fontSize = 11.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (detectedRows.isEmpty()) {
+                            Text(
+                                if (scriptTextMode)
+                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai."
+                                else
+                                    "Ketuk Deteksi Teks — teks berdekatan (atas/bawah/kiri/kanan) jadi satu baris. Centang baris → Inpaint untuk menghapus teks lamanya, lalu Isi Naskah dari berkas di atas.",
                                 color = Color.Gray, fontSize = 11.sp
                             )
                         } else {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "Daftar baris",
-                                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    "ketuk untuk tandai",
-                                    color = Color.Gray, fontSize = 10.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(220.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                itemsIndexed(scriptEntries) { idx, e ->
-                                    Row(
+                                itemsIndexed(detectedRows) { idx, row ->
+                                    Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(10.dp))
-                                            .background(if (e.used) Color(0xFF1F3D2B) else PanelBg)
+                                            .background(if (row.selected) Color(0xFF1F3D2B) else PanelBg)
                                             .border(
                                                 1.dp,
-                                                if (e.used) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                                if (row.selected) Color(0xFF2E7D32) else Color(0xFF38383A),
                                                 RoundedCornerShape(10.dp)
                                             )
-                                            .clickable {
-                                                // Toggle manual: tandai / batalkan terpakai per baris.
-                                                val i = scriptEntries.indexOfFirst { it.id == e.id }
-                                                if (i >= 0) {
-                                                    scriptEntries[i].used = !scriptEntries[i].used
-                                                    scriptEntries = scriptEntries.toList()
-                                                }
-                                            }
-                                            .padding(horizontal = 10.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
                                     ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(24.dp)
-                                                .clip(CircleShape)
-                                                .background(if (e.used) Color(0xFF2E7D32) else Accent),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                "${idx + 1}",
-                                                color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            e.text,
-                                            color = if (e.used) Color.Gray else Color.White,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        if (e.used) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Icon(Icons.Default.Check, contentDescription = "Terpakai", tint = Color(0xFF4CAF50), modifier = Modifier.size(18.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        } // if (!scriptTextMode) daftar bubble
-                        if (scriptTextMode) {
-                            val selN = detectedRows.count { it.selected }
-                            val pairN = pairedRowCount()
-                            val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Teks Terdeteksi",
-                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { runScriptTextDetect() },
-                                    enabled = !detectingText,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                                ) {
-                                    Text(
-                                        if (detectingText) "Mendeteksi…" else "Deteksi Teks",
-                                        color = Color.White, fontSize = 12.sp
-                                    )
-                                }
-                                ScriptActionButton(
-                                    label = "Pasangkan",
-                                    icon = Icons.Default.Refresh,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { pairScriptsToRows() }
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                StatusPill("$selN dipilih", highlight = selN > 0)
-                                StatusPill("$pairN bernaskah", highlight = pairN > 0)
-                                StatusPill(
-                                    if (matchOk) "Sesuai ✓" else "Belum sesuai",
-                                    highlight = matchOk
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            if (detectedRows.isEmpty()) {
-                                Text(
-                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai.",
-                                    color = Color.Gray, fontSize = 11.sp
-                                )
-                            } else {
-                                LazyColumn(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(220.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    itemsIndexed(detectedRows) { idx, row ->
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(if (row.selected) Color(0xFF1F3D2B) else PanelBg)
-                                                .border(
-                                                    1.dp,
-                                                    if (row.selected) Color(0xFF2E7D32) else Color(0xFF38383A),
-                                                    RoundedCornerShape(10.dp)
-                                                )
-                                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                                        ) {
-                                            // Kolom terdeteksi (kiri): bisa diedit & dicoret.
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Checkbox(
-                                                    checked = row.selected,
-                                                    onCheckedChange = {
-                                                        detectedRows = detectedRows.map {
-                                                            if (it.id == row.id) it.copy(selected = !it.selected) else it
-                                                        }
-                                                    },
-                                                    colors = CheckboxDefaults.colors(checkedColor = Accent)
-                                                )
-                                                OutlinedTextField(
-                                                    value = row.text,
-                                                    onValueChange = { v ->
-                                                        detectedRows = detectedRows.map {
-                                                            if (it.id == row.id) it.copy(text = v) else it
-                                                        }
-                                                    },
-                                                    label = { Text("Terdeteksi #${idx + 1} • ≈${row.fontSize.toInt()}px") },
-                                                    singleLine = true,
-                                                    textStyle = androidx.compose.ui.text.TextStyle(
-                                                        color = if (row.selected) Color.White else Color.Gray,
-                                                        fontSize = 12.sp
-                                                    ),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                IconButton(
-                                                    onClick = {
-                                                        detectedRows = detectedRows.filter { it.id != row.id }
-                                                    }
-                                                ) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "Hapus kolom", tint = Color.Red, modifier = Modifier.size(18.dp))
-                                                }
-                                            }
-                                            // Kolom naskah pasangan (kanan, bersandingan).
-                                            OutlinedTextField(
-                                                value = row.script,
-                                                onValueChange = { v ->
+                                        // Kolom terdeteksi (kiri): bisa diedit & dicoret.
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = row.selected,
+                                                onCheckedChange = {
                                                     detectedRows = detectedRows.map {
-                                                        if (it.id == row.id) it.copy(script = v) else it
+                                                        if (it.id == row.id) it.copy(selected = !it.selected) else it
                                                     }
                                                 },
-                                                placeholder = { Text("Naskah kolom ini…") },
-                                                maxLines = 2,
-                                                textStyle = androidx.compose.ui.text.TextStyle(
-                                                    color = Color.White, fontSize = 12.sp
-                                                ),
-                                                modifier = Modifier.fillMaxWidth()
+                                                colors = CheckboxDefaults.colors(checkedColor = Accent)
                                             )
+                                            OutlinedTextField(
+                                                value = row.text,
+                                                onValueChange = { v ->
+                                                    detectedRows = detectedRows.map {
+                                                        if (it.id == row.id) it.copy(text = v) else it
+                                                    }
+                                                },
+                                                label = { Text("Terdeteksi #${idx + 1} • ≈${row.fontSize.toInt()}px") },
+                                                singleLine = true,
+                                                textStyle = androidx.compose.ui.text.TextStyle(
+                                                    color = if (row.selected) Color.White else Color.Gray,
+                                                    fontSize = 12.sp
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    detectedRows = detectedRows.filter { it.id != row.id }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Hapus kolom", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                            }
                                         }
+                                        // Kolom naskah pasangan (kanan, bersandingan).
+                                        OutlinedTextField(
+                                            value = row.script,
+                                            onValueChange = { v ->
+                                                detectedRows = detectedRows.map {
+                                                    if (it.id == row.id) it.copy(script = v) else it
+                                                }
+                                            },
+                                            placeholder = { Text("Naskah kolom ini…") },
+                                            maxLines = 2,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White, fontSize = 12.sp
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
                                     }
                                 }
                             }
@@ -5262,8 +5391,8 @@ fun CanvasEditorScreen(
                 },
                 confirmButton = {
                     Button(
-                        onClick = { if (scriptTextMode) runTextScript() else runScript() },
-                        enabled = if (scriptTextMode) canRunText else canRun,
+                        onClick = { if (scriptTextMode) runTextScript() else runBubbleScriptRender() },
+                        enabled = canRunRows,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent)
                     ) {
                         Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))

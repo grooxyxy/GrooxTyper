@@ -21,8 +21,10 @@ const inpaint = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model
 const editor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/CanvasEditorScreen.kt'));
 const imageImport = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ImageImport.kt'));
 const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ProjectManager.kt'));
+const migan = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt'));
+const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
 
-for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager]]) {
+for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager], ['MiganInpainter', migan], ['TextEditorPanel', textEditor]]) {
   const open = (text.match(/{/g) || []).length;
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
@@ -111,7 +113,6 @@ assert(editor.includes('BrushHugeGuide.visibleRect'), 'editor oper visibleRect k
 assert(editor.includes('brushVisible'), 'editor hitung brushVisible sekali per event');
 
 // 6. Penggaris (preview + gores) dan brush Effect (blend/blur/dodge/burn) benar-benar berfungsi
-const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
 assert((brush.match(/applySmudgeStroke/g) || []).length >= 2, 'blend = smudge sejati (cap kanvas dari dab sebelumnya, bukan tint warna)');
 assert(brush.includes('smudgeBuf') && brush.includes('smudgeHasInk'), 'smudge punya buffer cap + status ink');
 assert(brush.includes('boxBlurBitmap') && brush.includes('boxBlurH') && brush.includes('boxBlurV'), 'blur = box blur 3 pass (piksel benar-benar diblur)');
@@ -127,6 +128,28 @@ assert(editor.includes('canvasToScreenPos'), 'overlay penggaris/grid pivot-aware
 assert((textEditor.match(/onOpenPerspectiveGrid = onOpenPerspectiveGrid/g) || []).length >= 2, 'tombol grid perspektif terhubung di tab Efek (dulu no-op)');
 assert(editor.includes('fun bilerp'), 'grid perspektif menggambar trapesium keystone yang sebenarnya');
 assert(editor.includes('refreshCompositeCoalesced()') && editor.includes('perspGridMode = true'), 'grid perspektif aktif dari panel teks + preview live');
+
+// 7. MiGAN (heal brush): tensor CHW planar + sanityOk longgarkan di tepi lubang.
+assert(migan.includes('planar'), 'MiGAN isi tensor CHW planar sesuai deklarasi (1,3,h,w)');
+assert(migan.includes('nearHole') && migan.includes('&& !nearHole(x, y)'), 'MiGAN sanityOk izinkan piksel ~3px dari tepi lubang');
+// 8. Teks: slider ukuran min 1px + sinkron ukuran EFEKTIF (fontSize * scale).
+assert(textEditor.includes('valueRange = 1f..400f'), 'slider ukuran teks min 1px (bukan 20)');
+assert(!textEditor.includes('valueRange = 20f..220f'), 'slider ukuran lama 20f..220f sudah dibuang');
+assert(textEditor.includes('box.fontSize * box.scale'), 'panel tampilkan ukuran efektif fontSize * scale');
+assert(textEditor.includes('geomTick'), 'panel punya geomTick sinkronisasi dari kanvas');
+assert(editor.includes('textGeomTick'), 'editor bump textGeomTick saat handle SCALE/lebar/perspektif');
+assert(editor.includes('coerceIn(1f, 220f)'), 'TextBox dari region terdeteksi boleh 1px (bukan coerceIn 20f)');
+// 9. Alur Bubble (Script): deteksi → tabel → pilih → INPAINT → isi naskah →
+//    render; baris TETAP di tabel setelah inpaint (tak dihapus).
+assert(editor.includes('fun runBubbleScriptDetect'), 'Bubble: fungsi deteksi teks (kolom script kosong)');
+assert(editor.includes('fun inpaintBubbleRows'), 'Bubble: fungsi inpaint baris terpilih (mask deteksi-teks)');
+assert(editor.includes('fun fillBubbleScripts'), 'Bubble: fungsi isi naskah + aturan baris lebih panjang');
+assert(editor.includes('fun runBubbleScriptRender'), 'Bubble: render terpisah (Style Rules + fit tengah + size deteksi)');
+assert(editor.includes('else runBubbleScriptRender()'), 'confirm dialog Script jalankan runBubbleScriptRender mode Bubble');
+assert(editor.includes('bubbleWarn'), 'Bubble: peringatan naskah lebih panjang ditampilkan');
+// 10. PatchMatch non-AI: prefill push-pull (gradasi/tekstur) ganti guide BFS.
+assert(patch.includes('pushPullPrefill'), 'PatchMatch: prefill push-pull NON-AI (gradasi/tekstur)');
+assert(!patch.includes('buildNearestBackgroundGuide'), 'PatchMatch: guide BFS-nearest diganti push-pull');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

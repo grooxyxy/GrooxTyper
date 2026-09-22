@@ -78,6 +78,7 @@ import com.grooxtyper.app.model.TextStyleManager
 import com.grooxtyper.app.model.TextStylePreset
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
@@ -96,6 +97,9 @@ fun TextEditorPanel(
     box: TextBox,
     fonts: List<Pair<String, Typeface>>,
     onImportFont: () -> Unit,
+    // Dinaikkan saat geometri box berubah di kanvas (handle SCALE/lebar/perspektif)
+    // agar slider ukuran ikut menampilkan ukuran AKTUAL (fontSize * scale).
+    geomTick: Int = 0,
     onChange: () -> Unit,
     onPushTextHistory: (TextBox) -> Unit,
     onCheckPrefix: (TextBox) -> Boolean,
@@ -115,7 +119,12 @@ fun TextEditorPanel(
 
     var tab by remember { mutableIntStateOf(0) }
     var text by remember(box.id, styleVersion) { mutableStateOf(box.text) }
-    var fontSize by remember(box.id, styleVersion) { mutableFloatStateOf(box.fontSize) }
+    // Ukuran AKTUAL di kanvas = fontSize * scale (handle SCALE tak menyentuh
+    // fontSize). Tanpa ini panel selalu menampilkan angka lama (mis. 20)
+    // walau teks sudah di-resize mengecil di kanvas.
+    var fontSize by remember(box.id, styleVersion) {
+        mutableFloatStateOf(box.fontSize * box.scale)
+    }
     var colorVal by remember(box.id, styleVersion) { mutableIntStateOf(box.color) }
     var bold by remember(box.id, styleVersion) { mutableStateOf(box.bold) }
     var italic by remember(box.id, styleVersion) { mutableStateOf(box.italic) }
@@ -169,6 +178,18 @@ fun TextEditorPanel(
     var bevelOn by remember(box.id, styleVersion) { mutableStateOf(box.bevel != null) }
     var bevelSize by remember(box.id, styleVersion) { mutableFloatStateOf(box.bevel?.size ?: 2f) }
     var bevelOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.bevel?.opacity ?: 0.8f) }
+
+    // Dinaikkan saat geometri box berubah dari kanvas (handle SCALE/lebar/
+    // perspektif): sinkronkan cermin ukuran agar slider menampilkan ukuran
+    // AKTUAL (fontSize * scale), bukan angka lama yang tak pernah berubah.
+    LaunchedEffect(geomTick, box.id, styleVersion) {
+        val actual = box.fontSize * box.scale
+        if (abs(actual - fontSize) > 0.01f) fontSize = actual
+        val bw = box.boxWidth
+        if (bw != null && abs(bw - boxW) > 0.01f) boxW = bw
+        if (abs(box.perspX - perspX) > 0.01f) perspX = box.perspX
+        if (abs(box.perspY - perspY) > 0.01f) perspY = box.perspY
+    }
 
     var styleName by remember { mutableStateOf("") }
     var stylePrefix by remember { mutableStateOf("") }
@@ -354,7 +375,13 @@ fun TextEditorPanel(
                             if (onCheckPrefix(box)) { styleVersion++; fontTick++ }
                         },
                         fontSize = fontSize,
-                        onFontSize = { fontSize = it; box.fontSize = it; push() },
+                        onFontSize = { v ->
+                            fontSize = v
+                            // Slider mengatur ukuran AKTUAL di kanvas, jadi
+                            // fontSize dasar = v / scale agar hasil render v.
+                            box.fontSize = if (box.scale > 0.01f) v / box.scale else v
+                            push()
+                        },
                         bold = bold, italic = italic, align = align,
                         onBold = { bold = it; box.bold = it; push() },
                         onItalic = { italic = it; box.italic = it; push() },
@@ -585,7 +612,8 @@ private fun WriteTab(
     Text("Ukuran ${fontSize.toInt()} px", color = Color.Gray, fontSize = 12.sp)
     Slider(
         value = fontSize, onValueChange = onFontSize,
-        valueRange = 20f..220f,
+        // Min 1px (bukan 20) sesuai permintaan; maks 400 untuk hasil resize besar.
+        valueRange = 1f..400f,
         colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

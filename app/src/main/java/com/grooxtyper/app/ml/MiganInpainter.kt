@@ -88,13 +88,14 @@ object MiganInpainter {
             maskCrop.getPixels(mp, 0, w, 0, 0, w, h)
             val img = ByteBuffer.allocateDirect(w * h * 3).order(ByteOrder.nativeOrder())
             val msk = ByteBuffer.allocateDirect(w * h).order(ByteOrder.nativeOrder())
-            for (i in sp.indices) {
-                val p = sp[i]
-                img.put(((p shr 16) and 0xFF).toByte())
-                img.put(((p shr 8) and 0xFF).toByte())
-                img.put((p and 0xFF).toByte())
-                msk.put(if ((mp[i] ushr 24) > 30) 0.toByte() else 255.toByte())
-            }
+            // FIX CHW planar: tensor dideklarasikan (1,3,h,w) sehingga buffer
+            // harus diisi per-kanal (semua R, lalu G, lalu B). Versi lama
+            // menulis interleaved HWC (R,G,B per piksel) → input acak →
+            // output sampah → sanityOk selalu tolak → MiGan selalu fallback.
+            for (i in sp.indices) img.put(((sp[i] shr 16) and 0xFF).toByte())
+            for (i in sp.indices) img.put(((sp[i] shr 8) and 0xFF).toByte())
+            for (i in sp.indices) img.put((sp[i] and 0xFF).toByte())
+            for (i in sp.indices) msk.put(if ((mp[i] ushr 24) > 30) 0.toByte() else 255.toByte())
             img.rewind()
             msk.rewind()
             val env = OrtEnvironment.getEnvironment()
@@ -147,14 +148,32 @@ object MiganInpainter {
 
     /**
      * Cek kewarasan output: rata-rata selisih absolut pada piksel VALID
-     * (sampling stride 4 agar murah) harus kecil. Sampel valid < 100
-     * (lubang menutup nyaris seluruh crop) juga ditolak — GAN tak bisa
-     * dipercaya tanpa konteks cukup.
+     * (sampling stride 4 agar murah) harus kecil. Piksel dalam ~3px dari
+     * tepi lubang DILEWATI: pipeline resmi me-blend (gaussian) di sana,
+     * jadi selisih kecil di tepi adalah wajar, bukan halusinasi. Sampel
+     * valid < 100 (lubang menutup nyaris seluruh crop) juga ditolak —
+     * GAN tak bisa dipercaya tanpa konteks cukup.
      */
     private fun sanityOk(sp: IntArray, mp: IntArray, bmp: Bitmap, w: Int, h: Int): Boolean {
         return try {
             val op = IntArray(w * h)
             bmp.getPixels(op, 0, w, 0, 0, w, h)
+            fun nearHole(x: Int, y: Int): Boolean {
+                val y0 = maxOf(0, y - 3)
+                val y1 = minOf(h - 1, y + 3)
+                val x0 = maxOf(0, x - 3)
+                val x1 = minOf(w - 1, x + 3)
+                var yy = y0
+                while (yy <= y1) {
+                    var xx = x0
+                    while (xx <= x1) {
+                        if ((mp[yy * w + xx] ushr 24) > 30) return true
+                        xx++
+                    }
+                    yy++
+                }
+                return false
+            }
             var sum = 0L
             var n = 0L
             var y = 0
@@ -162,7 +181,7 @@ object MiganInpainter {
                 var x = 0
                 while (x < w) {
                     val i = y * w + x
-                    if ((mp[i] ushr 24) <= 30) {
+                    if ((mp[i] ushr 24) <= 30 && !nearHole(x, y)) {
                         val a = sp[i]
                         val b = op[i]
                         sum += kotlin.math.abs(((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)).toLong() +
