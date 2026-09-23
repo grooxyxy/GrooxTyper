@@ -540,6 +540,17 @@ fun TextEditorPanel(
                         onDeletePreset = { presets = styleManager.delete(it.id) }
                     )
                 }
+                // Mode SFX (tab Tulis): huruf di busur + jitter ala lettering
+                // komik manual — lihat video SFX brush NOOB vs PRO.
+                if (tab == 0) {
+                    SfxSection(
+                        spec = box.sfx,
+                        onSpec = { newSpec ->
+                            box.sfx = newSpec
+                            push()
+                        }
+                    )
+                }
             }
         }
     }
@@ -1286,6 +1297,85 @@ private fun AlignButton(
             .size(40.dp)
     ) {
         Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+    }
+}
+
+/**
+ * Bagian Mode SFX: toggle + preset susunan (busur naik/turun/acak pro) +
+ * slider arc & jitter + tombol Acak Ulang (ganti seed → susunan baru).
+ * spec = null berarti mode normal (teks baris lurus).
+ */
+@Composable
+private fun SfxSection(
+    spec: com.grooxtyper.app.model.SfxSpec?,
+    onSpec: (com.grooxtyper.app.model.SfxSpec?) -> Unit
+) {
+    val on = spec != null
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Mode SFX", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("Huruf di busur + acak — lettering komik (WHOOSH, DUAR)", color = Color.Gray, fontSize = 11.sp)
+        }
+        Switch(
+            checked = on,
+            onCheckedChange = { enabled ->
+                onSpec(
+                    if (enabled) com.grooxtyper.app.model.SfxSpec()
+                    else null
+                )
+            },
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    if (on) {
+        val cur = spec!!
+        // Preset cepat gaya lettering (diubah dari teknik NOOB vs PRO).
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf(
+                "Busur Naik" to com.grooxtyper.app.model.SfxSpec(0.55f, 0.22f, 10f, cur.seed),
+                "Busur Turun" to com.grooxtyper.app.model.SfxSpec(-0.55f, 0.22f, 10f, cur.seed),
+                "Acak Pro" to com.grooxtyper.app.model.SfxSpec(0.30f, 0.42f, 22f, cur.seed)
+            ).forEach { (label, preset) ->
+                Button(
+                    onClick = { onSpec(preset.copy(seed = cur.seed)) },
+                    colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(label, color = Color.White, fontSize = 11.sp)
+                }
+            }
+        }
+        Text("Busur ${"%.2f".format(cur.arc)} (± = naik/turun)", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = cur.arc, onValueChange = { onSpec(cur.copy(arc = it)) },
+            valueRange = -1f..1f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Acak ukuran ${(cur.sizeJitter * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = cur.sizeJitter, onValueChange = { onSpec(cur.copy(sizeJitter = it)) },
+            valueRange = 0f..0.6f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Acak putar ±${cur.rotJitter.toInt()}°", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = cur.rotJitter, onValueChange = { onSpec(cur.copy(rotJitter = it)) },
+            valueRange = 0f..40f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Button(
+            onClick = { onSpec(cur.copy(seed = cur.seed + 1)) },
+            colors = ButtonDefaults.buttonColors(containerColor = Accent),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Acak Ulang (seed ${cur.seed})", color = Color.White, fontSize = 12.sp)
+        }
     }
 }
 

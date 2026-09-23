@@ -61,7 +61,10 @@ enum class BrushType(val displayName: String, val category: String) {
     // Heal model (MiGAN on-device, di-bundle saat build CI)
     HEAL_MIGAN("Heal MiGAN", "Hapus"),
     // AI inpaint (Agnes AI via jaringan, key di pengaturan)
-    AI_INPAINT("AI Inpaint", "Hapus")
+    AI_INPAINT("AI Inpaint", "Hapus"),
+    // SFX komik: coretan efek suara gaya gambar tangan (bukan font diketik).
+    SFX_TAPER("SFX Taper", "SFX"),
+    SFX_OUTLINE("SFX Outline", "SFX")
 }
 
 enum class RulerType {
@@ -546,6 +549,14 @@ class BrushEngine {
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
                 paint.alpha = 0
             }
+            BrushType.SFX_TAPER -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+            }
+            BrushType.SFX_OUTLINE -> {
+                paint.strokeCap = Paint.Cap.ROUND
+                paint.strokeJoin = Paint.Join.ROUND
+            }
         }
         cachedPaint = Paint(paint)
         cachedPaintKey = key
@@ -677,6 +688,10 @@ class BrushEngine {
             paint.strokeWidth = size * velocityFactor
         } else if (brushType == BrushType.G_PEN) {
             paint.strokeWidth = size * getVelocityFactor(distance, wide = true)
+        } else if (brushType == BrushType.SFX_TAPER) {
+            // SFX Taper: dinamika lebar ala G Pen (cepat = tipis, lambat = tebal)
+            // sebagai dasar sebelum taper ekstrem di bawah meruncingkan ujungnya.
+            paint.strokeWidth = size * getVelocityFactor(distance, wide = true)
         }
 
         // Force fade / taper
@@ -697,6 +712,16 @@ class BrushEngine {
             // Taper jari ringan agar goresan pena terasa kaligrafi.
             val t = fingerTaper(progressFraction)
             paint.strokeWidth = paint.strokeWidth * (0.6f + 0.4f * t)
+        } else if (brushType == BrushType.SFX_TAPER &&
+            progressFraction > 0f && progressFraction < 1f
+        ) {
+            // Taper EKSTREM ala SFX digambar tangan (video NOOB vs PRO): ujung
+            // stroke meruncing tajam ke 5%, tengah tetap tebal penuh.
+            val head = (progressFraction / 0.18f).coerceIn(0f, 1f)
+            val tail = ((1f - progressFraction) / 0.22f).coerceIn(0f, 1f)
+            fun ss(v: Float) = v * v * (3f - 2f * v)
+            val taper = 0.05f + 0.95f * minOf(ss(head), ss(tail))
+            paint.strokeWidth = paint.strokeWidth * taper
         }
 
         // Interpolasi stamp agar tidak patah-patah saat jari bergerak cepat.
@@ -744,6 +769,30 @@ class BrushEngine {
                 xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
             }
         } else null
+
+        // SFX Outline: pass GANDA ala lettering komik — outline kontras dulu
+        // (lebar tetap, warna otomatis melawan isi), lalu isi warna brush di
+        // atasnya. Geometri kurva sama, cukup satu drawPath ekstra per segmen.
+        if (brushType == BrushType.SFX_OUTLINE) {
+            val fillLum = (0.299f * Color.red(paint.color) +
+                0.587f * Color.green(paint.color) +
+                0.114f * Color.blue(paint.color)) / 255f
+            val outlinePaint = Paint(paint).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = paint.strokeWidth + max(3f, size * 0.5f)
+                color = if (fillLum > 0.5f) Color.BLACK else Color.WHITE
+            }
+            strokePath.rewind()
+            strokePath.moveTo(curveStart.x, curveStart.y)
+            if (ctrl != null) {
+                strokePath.quadTo(ctrl.x, ctrl.y, curveEnd.x, curveEnd.y)
+            } else {
+                strokePath.lineTo(curveEnd.x, curveEnd.y)
+            }
+            canvas.drawPath(strokePath, outlinePaint)
+            // Isi tidak perlu path lama: pass utama di bawah menggambar ulang.
+        }
+
         if (isHuge) {
             // Huge 720x16000: SATU drawPath per segmen menggantikan loop 32
             // drawLine. Skia me-raster seluruh kurva kuadratik dalam satu pass

@@ -30,6 +30,14 @@ object TextRenderer {
         canvas.translate(box.position.x, box.position.y)
         if (box.rotation != 0f) canvas.rotate(box.rotation)
 
+        // Mode SFX: render per-huruf di busur parabola dengan jitter
+        // deterministik (lettering komik, bukan font diketik lurus).
+        if (box.sfx != null) {
+            renderSfx(canvas, box)
+            canvas.restore()
+            return
+        }
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = box.fontSize * box.scale
             typeface = box.effectiveTypeface()
@@ -154,8 +162,123 @@ object TextRenderer {
         canvas.restore()
     }
 
-    /** Outer glow: bentuk digemukkan + shadow-layer warna cahaya. */
-    private fun drawOuterGlow(
+    /**
+     * Render SFX per-huruf: tiap glif duduk di busur parabola [SfxSpec.arc]
+     * dengan ukuran & rotasi jitter deterministik dari seed — meniru lettering
+     * komik manual (mis. "WHOOSH" melengkung naik dengan huruf besar-acak).
+     * urutan: glow → outline → isi (fill), sama seperti render biasa.
+     */
+    private fun renderSfx(canvas: Canvas, box: TextBox) {
+        val spec = box.sfx ?: return
+        val text = box.displayText().replace("\n", "")
+        if (text.isEmpty()) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = box.fontSize * box.scale
+            typeface = box.effectiveTypeface()
+            textScaleX = box.textScaleX.coerceIn(0.3f, 1f)
+        }
+        val fm = paint.fontMetrics
+        val fs = box.fontSize * box.scale
+
+        // Susun glif: posisi horizontal dari lebar terukur, vertikal dari
+        // parabola (tengah = puncak busur), rotasi = kemiringan tangen busur
+        // + jitter acak deterministik per indeks.
+        class Glyph(val ch: String, val w: Float, val cx: Float, val dy: Float, val rot: Float, val sizeMul: Float)
+        val chars = text.map { it.toString() }
+        val widths = chars.map { paint.measureText(it) }
+        val total = widths.sum()
+        val n = chars.size
+        // Deterministik: hash(seed, i) → -1..1 (bukan Random — render ulang
+        // dan undo harus menghasilkan susunan identik).
+        fun h(i: Int, salt: Int): Float {
+            var k = (spec.seed * 374761393) xor (i * 668265263) xor (salt * 1274126177)
+            k = k xor (k ushr 13); k *= 1274126177; k = k xor (k ushr 16)
+            return (((k ushr 8) and 0xFFFF) / 32767.5f) - 1f
+        }
+        val arcPx = spec.arc * fs
+        var x = -total / 2f
+        val glyphs = ArrayList<Glyph>(n)
+        for (i in 0 until n) {
+            val w = widths[i]
+            val cx = x + w / 2f
+            x += w
+            if (chars[i] == " ") {
+                glyphs.add(Glyph(" ", w, cx, 0f, 0f, 1f))
+                continue
+            }
+            // Parabola terbuka ke bawah pada tengah: t = -1..1 → dy = -arc*(1-t²).
+            val t = if (n == 1) 0f else (2f * i / (n - 1f) - 1f)
+            val dy = -arcPx * (1f - t * t)
+            // Rotasi mengikuti tangen busur (turun/naik di sisi kiri/kanan).
+            val tangent = if (n > 1) -4f * arcPx * t / total * (total / n) else 0f
+            val baseRot = Math.toDegrees(kotlin.math.atan2(tangent.toDouble(), 1.0)).toFloat()
+            val rot = baseRot + h(i, 1) * spec.rotJitter
+            val sizeMul = (1f + h(i, 2) * spec.sizeJitter).coerceIn(0.45f, 1.8f)
+            glyphs.add(Glyph(chars[i], w, cx, dy, rot, sizeMul))
+        }
+
+        val outline = if (box.outlineWidth > 0f) {
+            Paint(paint).apply {
+                shader = null
+                style = Paint.Style.STROKE
+                strokeWidth = box.outlineWidth * box.scale
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+                color = withAlpha(box.outlineColor, box.strokeOpacity)
+                alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+                clearShadowLayer()
+            }
+        } else null
+        val fill = Paint(paint).apply {
+            style = Paint.Style.FILL
+            if (box.fillType == TextFillType.GRADIENT) {
+                shader = gradientShader(box, total, fs * 1.5f)
+                color = Color.WHITE
+            } else {
+                shader = null
+                color = box.color
+            }
+            alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+        }
+        val glowPaint = if (box.glow != null) {
+            Paint(fill).apply {
+                shader = null
+                style = Paint.Style.FILL_AND_STROKE
+                strokeWidth = box.glow!!.spread * box.scale
+                strokeJoin = Paint.Join.ROUND
+                color = Color.WHITE
+                alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                setShadowLayer(maxOf(1f, box.glow!!.blur * box.scale), 0f, 0f,
+                    withAlpha(box.glow!!.color, box.glow!!.opacity))
+            }
+        } else null
+        val shadowColor = box.shadow?.let { withAlpha(it.color, it.opacity) }
+        val shadowBlur = box.shadow?.let { it.blur * box.scale } ?: 0f
+        val shadowDx = box.shadow?.let { it.dx * box.scale } ?: 0f
+        val shadowDy = box.shadow?.let { it.dy * box.scale } ?: 0f
+
+        val baseline = -fm.ascent - fs * 0.15f
+        for (g in glyphs) {
+            if (g.ch == " ") continue
+            canvas.save()
+            canvas.translate(g.cx, baseline + g.dy)
+            if (g.rot != 0f) canvas.rotate(g.rot)
+            canvas.scale(g.sizeMul, g.sizeMul)
+            glowPaint?.let { canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, it) }
+            if (shadowColor != null) {
+                val sh = Paint(fill).apply {
+                    shader = null
+                    setShadowLayer(shadowBlur, shadowDx, shadowDy, shadowColor)
+                }
+                canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, sh)
+            }
+            outline?.let { canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, it) }
+            canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, fill)
+            canvas.restore()
+        }
+    }
+
+    /** Outer glow: bentuk digemukkan + shadow-layer warna cahaya. */    private fun drawOuterGlow(
         canvas: Canvas,
         layouts: List<LineLayout>,
         box: TextBox,

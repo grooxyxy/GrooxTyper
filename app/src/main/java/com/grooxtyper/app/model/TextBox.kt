@@ -51,6 +51,24 @@ data class TextBevelSpec(
 )
 
 /**
+ * Mode SFX untuk teks: tiap huruf diletakkan di sepanjang busur parabola
+ * dengan ukuran & rotasi jitter — alih-alih baris lurus seperti font diketik
+ * (lihat teknik lettering SFX manual: WHOOSH melengkung, huruf besar-acak).
+ * Semua nilai deterministik dari [seed] agar render ulang/undo identik.
+ *
+ * @param arc tinggi busur dalam fraksi tinggi font (+ = busur ke atas, - = ke bawah).
+ * @param sizeJitter variasi ukuran per huruf, fraksi (0.25 = ±25%).
+ * @param rotJitter rotasi acak maksimum per huruf, derajat.
+ * @param seed sumber acak deterministik (ganti = susunan baru).
+ */
+data class SfxSpec(
+    var arc: Float = 0.55f,
+    var sizeJitter: Float = 0.25f,
+    var rotJitter: Float = 10f,
+    var seed: Int = 1
+)
+
+/**
  * Satu kotak teks yang posisinya adalah TITIK TENGAH (center) blok teks
  * dalam koordinat piksel kanvas. Rotasi berputar mengelilingi [position]
  * sehingga terasa natural saat digeser dengan jari.
@@ -104,7 +122,9 @@ class TextBox(
      * Kombinasi dengan [textScaleX]: condense mempersempit glif,
      * paragraph mempersempit box + wrap (keduanya bisa aktif bersamaan).
      */
-    var boxWidth: Float? = null
+    var boxWidth: Float? = null,
+    // Mode SFX (lihat SfxSpec): null = teks baris biasa.
+    var sfx: SfxSpec? = null
 ) {
     fun isParagraph(): Boolean = boxWidth != null
 
@@ -379,8 +399,14 @@ class TextBox(
         val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
         val s = shadow
         val shadowOffset = if (s != null) hypot(s.dx, s.dy) * scale else 0f
+        // SFX: busur mengangkat huruf & jitter membesarkannya — pad ekstra
+        // agar bounds/hit-test tetap menutupi huruf yang terdorong keluar.
+        val sfxPad = sfx?.let {
+            (kotlin.math.abs(it.arc) * 1.3f + it.sizeJitter * 0.6f + 0.4f) *
+                fontSize * scale
+        } ?: 0f
         return outlineWidth * scale + (s?.blur ?: 0f) * scale +
-            (s?.spread ?: 0f) * scale + glowPad + shadowOffset
+            (s?.spread ?: 0f) * scale + glowPad + shadowOffset + sfxPad
     }
 
     /** Ekspansi bounds akibat distorsi perspektif (px kanvas). */
@@ -556,7 +582,8 @@ class TextBox(
         perspY = perspY,
         fontName = fontName,
         typeface = typeface,
-        boxWidth = boxWidth
+        boxWidth = boxWidth,
+        sfx = sfx?.copy()
     )
 
     /** Pulihkan semua field dari [o] tanpa ganti objek (referensi seleksi tetap valid). */
@@ -592,6 +619,7 @@ class TextBox(
         fontName = o.fontName
         typeface = o.typeface
         boxWidth = o.boxWidth
+        sfx = o.sfx?.copy()
     }
 
     /** Samakan isi visual (untuk deteksi sesi edit panel). */
@@ -625,7 +653,8 @@ class TextBox(
             perspX == o.perspX &&
             perspY == o.perspY &&
             fontName == o.fontName &&
-            boxWidth == o.boxWidth
+            boxWidth == o.boxWidth &&
+            sfx == o.sfx
     }
 
     companion object {
@@ -702,6 +731,14 @@ class TextBox(
         put("perspY", perspY.toDouble())
         put("fontName", fontName)
             boxWidth?.let { put("boxWidth", it.toDouble()) }
+            sfx?.let { sp ->
+                put("sfx", org.json.JSONObject().apply {
+                    put("arc", sp.arc.toDouble())
+                    put("sizeJitter", sp.sizeJitter.toDouble())
+                    put("rotJitter", sp.rotJitter.toDouble())
+                    put("seed", sp.seed)
+                })
+            }
         }
 
         /** Pasangan dari [toJson]: typeface dicari via [typefaceFor], fallback bold. */
@@ -779,7 +816,15 @@ class TextBox(
                 perspY = o.optDouble("perspY", 0.0).toFloat().coerceIn(-1f, 1f),
                 fontName = fontName,
                 typeface = runCatching { typefaceFor(fontName) }.getOrDefault(Typeface.DEFAULT_BOLD),
-                boxWidth = if (o.has("boxWidth")) o.optDouble("boxWidth").toFloat() else null
+                boxWidth = if (o.has("boxWidth")) o.optDouble("boxWidth").toFloat() else null,
+                sfx = o.optJSONObject("sfx")?.let { sp ->
+                    SfxSpec(
+                        arc = sp.optDouble("arc", 0.55).toFloat(),
+                        sizeJitter = sp.optDouble("sizeJitter", 0.25).toFloat(),
+                        rotJitter = sp.optDouble("rotJitter", 10.0).toFloat(),
+                        seed = sp.optInt("seed", 1)
+                    )
+                }
             )
         }
     }

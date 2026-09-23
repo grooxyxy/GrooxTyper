@@ -177,6 +177,29 @@ assert(colorPicker.includes('color_palette') && colorPicker.includes('Colorize')
 assert(editor.includes('eyedropConsumer'), 'editor: mode pipet dari dialog warna (ketuk kanvas = sampel)');
 assert(editor.includes('onPickFromCanvas = {'), 'editor: dialog warna brush terhubung ke mode pipet');
 assert(textEditor.includes('onStartEyedrop'), 'panel teks: eyedropper terhubung ke tiap target warna');
+// 14. SFX (dari video NOOB vs PRO): brush taper + outline ganda, mode SFX
+//     per-huruf di busur dengan jitter deterministik, preset & seed di panel.
+const textRenderer = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextRenderer.kt'));
+const textBoxSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextBox.kt'));
+for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxSrc]]) {
+  const open = (text.match(/{/g) || []).length;
+  const close = (text.match(/}/g) || []).length;
+  assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
+}
+assert(brush.includes('SFX_TAPER') && brush.includes('SFX_OUTLINE'), 'brush SFX: kategori SFX (Taper + Outline) terdaftar');
+assert(brush.includes('Taper EKSTREM'), 'brush SFX Taper: ujung stroke meruncing (bukan ujung datar)');
+assert(brush.includes('SFX Outline: pass GANDA'), 'brush SFX Outline: pass outline kontras + isi (ganda)');
+assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');
+assert(textBoxSrc.includes('var sfx: SfxSpec?'), 'TextBox: field mode SFX');
+assert(textBoxSrc.includes('put("sfx"') && textBoxSrc.includes('optJSONObject("sfx")'), 'TextBox: SfxSpec tersimpan di project JSON');
+assert(textBoxSrc.includes('sfxPad'), 'TextBox: bounds/hit-test ikut busur SFX (sfxPad)');
+assert(textRenderer.includes('renderSfx'), 'TextRenderer: render SFX per-huruf terpisah');
+assert(textRenderer.includes('box.sfx != null'), 'TextRenderer: mode SFX cabang render sendiri');
+assert(textRenderer.includes('fun h(i: Int, salt: Int)'), 'TextRenderer: jitter deterministik dari seed (render ulang identik)');
+assert(textEditor.includes('fun SfxSection'), 'panel teks: bagian Mode SFX');
+assert(textEditor.includes('Busur Naik') && textEditor.includes('Busur Turun') && textEditor.includes('Acak Pro'), 'panel teks: preset SFX Busur Naik/Turun + Acak Pro');
+assert(textEditor.includes('Acak Ulang'), 'panel teks: tombol Acak Ulang (ganti seed)');
+assert(textEditor.includes('box.sfx = newSpec'), 'panel teks: ubah SFX langsung menerapkan ke box + push undo');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');
