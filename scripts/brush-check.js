@@ -232,6 +232,41 @@ assert(editor.includes('showQuickSlider && !perspGridMode'), 'grid perspektif: q
 assert(editor.includes('undoRedoManager.pushTextBox(\n                                            textLayerIdOf(pbox)'), 'grid perspektif: satu langkah undo per gestur seret');
 assert(editor.includes('Seret titik biru untuk ubah sudut'), 'grid perspektif: petunjuk cara pakai saat mode aktif');
 
+// 16. Add image / watermark: sumber WAJIB utuh (tidak di-raster ke ukuran
+//     dialog), panel properti terpisah dari seleksi (kalau tidak, dialog
+//     memakan sentuhan → image tak bisa digeser), opacity 0-100%, handle dari
+//     sudut hasil rotasi, render coalesced, dan pemilihan layer teratas benar.
+const layerSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/Layer.kt'));
+const imageImportSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ImageImport.kt'));
+for (const [name, text] of [['Layer', layerSrc], ['ImageImport', imageImportSrc], ['ReferenceWindow', read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ReferenceWindow.kt'))]]) {
+  const open = (text.match(/{/g) || []).length;
+  const close = (text.match(/}/g) || []).length;
+  assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
+}
+assert(!/ImageImport\.scaleTo\(src, w, h\)/.test(editor), 'add image: sumber TIDAK di-raster ke ukuran dialog (sebelumnya membuat gambar pecah saat zoom)');
+assert(imageImportSrc.includes('fun capLayerSource'), 'add image: sumber dibatasi 12MP/8192px saja (720x16000 tetap utuh)');
+assert(editor.includes('ImageImport.capLayerSource(raw)'), 'add image: sumber dibatasi sharpness-aware sebelum jadi layer');
+assert(layerSrc.includes('opacityInit: Float = 1f') && layerSrc.includes('layer.opacity = opacityInit.coerceIn(0f, 1f)'), 'add image: opacity layer boleh 0-100% (bukan dijepit minimal 10%)');
+assert(editor.includes('if (showImageProps) selectedImage()?.let { img ->') && editor.includes('if (activeTool == ActiveTool.IMAGE && selectedImage() != null)'), 'add image: panel properti terpisah dari seleksi (tidak memblokir drag kanvas)');
+assert(editor.includes('fun oppositeCorner(') && editor.includes('imageAnchorPoint'), 'add image: skala beranchor di sudut lawannya (tidak meluncur)');
+assert(editor.includes('img.cornerPoints()') && editor.includes('val cp = img.cornerPoints()'), 'add image: handle + bingkai ikut rotasi (cornerPoints), bukan AABB');
+assert(editor.includes('.findFirst { it.hitTest('), 'add image: image yang diketuk = layer teratas (findFirst, bukan findLast)');
+assert((editor.match(/refreshCompositeCoalesced\(\)/g) || []).length >= 10, 'add image: gestre & slider memakai render coalesced (realtime di kanvas 720x16000)');
+assert(editor.includes('Icons.Default.Preview'), 'add image: tombol Reference Window ada di top bar');
+assert(editor.includes('activeTool = ActiveTool.IMAGE') && editor.includes('showImageProps = true'), 'add image: layer baru langsung aktif + tool IMAGE + panel properti terbuka');
+
+// 17. Jendela Reference (ibisPaint/Clip Studio): zoom luas, pan, render
+//     per-strip agar 720x16000 tidak gagal texture, dan budget byte <=2MB.
+const refWin = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ReferenceWindow.kt'));
+assert(refWin.includes('coerceIn(0.002f, 40f)'), 'reference: zoom 0.2%-4000% (bisa zoom keluar untuk halaman 16000px)');
+assert(refWin.includes('fun contentSize(') && refWin.includes('fun draw('), 'reference:_contentSize + draw per-strip (scroll + clamp pan)');
+assert(refWin.includes('const val STRIP = 2048') && refWin.includes('BitmapRegionDecoder') === false, 'reference: strip 2048px per draw (aman batas texture GPU)');
+assert(refWin.includes('pixelPerfect'), 'reference: mode piksel (nearest) untuk garis detail');
+assert(refWin.includes('onPickImage') && editor.includes('referencePickerLauncher.launch'), 'reference: tombol ganti gambar dari dalam jendela');
+assert(imageImportSrc.includes('fun decodeForReference') && imageImportSrc.includes('REFERENCE_TARGET_BYTES = 2_000_000L'), 'reference: decode dengan budget 2MB (file 4MB diturunkan, tetap jernih)');
+assert(imageImportSrc.includes('estimateJpegBytes') && imageImportSrc.includes('bmp.compress'), 'reference: hasil diverifikasi kompresi JPEG nyata, bukan asal perkiraan');
+assert(editor.includes('loadReferenceBitmap') && editor.includes('showReferenceWindow'), 'reference: jendela punya status buka/muat/error sendiri (tidak auto-open saat add image)');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {

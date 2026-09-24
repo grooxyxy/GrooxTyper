@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Preview
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material.icons.filled.TextFields
@@ -251,16 +252,17 @@ private val TopBarBg = Color(0xFF1C1C1E)
 private val BottomBarBg = Color(0xFF1C1C1E)
 private val PanelBg = Color(0xFF2C2C2E)
 
-/** Kecilkan bitmap untuk jendela referensi (hemat memori, sumber di-recycle). */
-private fun downscaleForReference(src: Bitmap, maxSide: Int = 1024): Bitmap {
-    val longSide = max(src.width, src.height)
-    if (longSide <= maxSide) return src
-    val s = maxSide / longSide.toFloat()
-    return ImageImport.scaleTo(
-        src,
-        max(1, (src.width * s).toInt()),
-        max(1, (src.height * s).toInt())
-    )
+/**
+ * Muat bitmap untuk jendela referensi dengan budget byte (default 2MB).
+ * File 4MB otomatis diturunkan — kompresi JPEG nyata dipakai untuk memverifikasi
+ * hasilnya, bukan asal perkiraan, supaya tetap jernih tapi ringan.
+ */
+private suspend fun loadReferenceBitmap(
+    resolver: android.content.ContentResolver,
+    uri: android.net.Uri,
+    targetBytes: Long = com.grooxtyper.app.model.ImageImport.REFERENCE_TARGET_BYTES
+): Bitmap? = withContext(Dispatchers.IO) {
+    com.grooxtyper.app.model.ImageImport.decodeForReference(resolver, uri, targetBytes)
 }
 
 /**
@@ -715,6 +717,9 @@ fun CanvasEditorScreen(
     // Image layer terpilih + mode handle (cermin TextBox).
     var selectedImageId by remember { mutableStateOf<String?>(null) }
     var imageHandleMode by remember { mutableStateOf(ImageHandleMode.NONE) }
+    // Jangkar skala: titik sudut yang DIKUNCI saat seret mulai, supaya sisi
+    // sebaliknya tidak ikut bergeser (skala terasa "menempel" pada titik).
+    var imageAnchorPoint by remember { mutableStateOf<Offset?>(null) }
     fun selectedImage(): com.grooxtyper.app.model.ImageLayer? =
         selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
 
@@ -1701,6 +1706,39 @@ fun CanvasEditorScreen(
     var pendingImportW by remember { mutableStateOf("") }
     var pendingImportH by remember { mutableStateOf("") }
     var pendingImportOpacity by remember { mutableFloatStateOf(1f) }
+    /** Mode penempatan cepat: contain / cover / asli (1:1). */
+    var pendingImportFit by remember { mutableStateOf("contain") }
+    /** Kunci aspek saat mengetik W/H di dialog import. */
+    var pendingImportLockAspect by remember { mutableStateOf(true) }
+    /** Panel properti image dibuka terpisah dari seleksi (lihat catatan di bawah). */
+    var showImageProps by remember { mutableStateOf(false) }
+    // Jendela reference: aktif + gambar + status muat.
+    var showReferenceWindow by remember { mutableStateOf(false) }
+    var isLoadingReference by remember { mutableStateOf(false) }
+    var referenceError by remember { mutableStateOf<String?>(null) }
+    val referencePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            showReferenceWindow = true
+            isLoadingReference = true
+            referenceError = null
+            scope.launch {
+                val loaded = runCatching {
+                    loadReferenceBitmap(context.contentResolver, it)
+                }.getOrNull()
+                isLoadingReference = false
+                if (loaded == null) {
+                    referenceError = "Gagal memuat gambar referensi"
+                } else {
+                    // Ganti gambar: bitmap lama boleh di-recycle karena tidak
+                    // dipakai layer mana pun (referensi murni on-screen).
+                    referenceBitmap?.let { old -> if (old !== loaded) runCatching { old.recycle() } }
+                    referenceBitmap = loaded
+                }
+            }
+        }
+    }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -1712,12 +1750,25 @@ fun CanvasEditorScreen(
                 try {
                     // Decode di IO (budget piksel + koreksi EXIF); hasil jadi layer baru via dialog.
                     val loaded = withContext(Dispatchers.IO) {
-                        ImageImport.decodeContentUri(context.contentResolver, it)
+                        val raw = ImageImport.decodeContentUri(context.contentResolver, it)
+                            ?: return@withContext null
+                        // Jaga sumber tetap tajam untuk zoom, tapi jangan OOM di
+                        // HP kecil. 720x16000 lolos tanpa perubahan sama sekali.
+                        ImageImport.capLayerSource(raw)
                     } ?: return@launch
                     pendingImport?.let { runCatching { if (!it.isRecycled) it.recycle() } }
                     pendingImport = loaded
-                    pendingImportW = loaded.width.coerceIn(1, canvasWidth).toString()
-                    pendingImportH = loaded.height.coerceIn(1, canvasHeight).toString()
+                    pendingImportFit = "contain"
+                    pendingImportLockAspect = true
+                    // Default "contain": seluruh gambar muat di kanvas dengan
+                    // aspek terjaga. Versi lama memakai ukuran sumber yang
+                    // dijepit ke kanvas → gambar jadi kecil/distorsi.
+                    val s = minOf(
+                        canvasWidth.toFloat() / loaded.width.coerceAtLeast(1),
+                        canvasHeight.toFloat() / loaded.height.coerceAtLeast(1)
+                    )
+                    pendingImportW = (loaded.width * s).toInt().coerceAtLeast(1).toString()
+                    pendingImportH = (loaded.height * s).toInt().coerceAtLeast(1).toString()
                     pendingImportOpacity = 1f
                 } finally {
                     isImportingEditor = false
@@ -1746,15 +1797,54 @@ fun CanvasEditorScreen(
         }
     }
 
-    /** Handle image terdekat dari titik kanvas: sudut = SCALE, atas-tengah = ROTATE. */
+    /**
+     * Sudut yang berlawanan dengan sudut yang sedang di-drag — dipakai sebagai
+     * jangkar skala. Kalau titik sentuh tidak dekat sudut mana pun (mis. user
+     * menekan badan lalu menyeret keluar), jangkar = pusat image.
+     */
+    fun oppositeCorner(
+        img: com.grooxtyper.app.model.ImageLayer,
+        pos: Offset,
+        grip: Float
+    ): Offset {
+        val p = img.cornerPoints()
+        var bestIdx = -1
+        var bestD = Float.MAX_VALUE
+        for (i in 0 until 4) {
+            val d = (Offset(p[i * 2], p[i * 2 + 1]) - pos).getDistance()
+            if (d < bestD) { bestD = d; bestIdx = i }
+        }
+        if (bestIdx < 0 || bestD > grip) return Offset(img.centerX, img.centerY)
+        val opp = (bestIdx + 2) % 4
+        return Offset(p[opp * 2], p[opp * 2 + 1])
+    }
+
+    /**
+     * Handle image terdekat dari titik kanvas: sudut = SCALE, atas-tengah = ROTATE.
+     *
+     * Sudut diambil dari [ImageLayer.cornerPoints] — yaitu hasil transform
+     * termasuk rotasi. Versi lama memakai AABB: begitu image diputar/miring,
+     * handle tergambar jauh dari sudut yang benar-benar ada sehingga image
+     * "tidak bisa di-resize" persis di momen paling dibutuhkan.
+     */
     fun imageHandleAt(img: com.grooxtyper.app.model.ImageLayer, pos: Offset, grip: Float): ImageHandleMode {
-        val b = img.bounds()
-        val corners = listOf(
-            Offset(b.left, b.top), Offset(b.right, b.top),
-            Offset(b.right, b.bottom), Offset(b.left, b.bottom)
+        val p = img.cornerPoints()
+        for (i in 0 until 4) {
+            val c = Offset(p[i * 2], p[i * 2 + 1])
+            if ((c - pos).getDistance() <= grip) return ImageHandleMode.SCALE
+        }
+        // Handle putar: di tengah sisi "atas" (rata-rata dua sudut atas).
+        val topX = (p[0] + p[2]) / 2f
+        val topY = (p[1] + p[3]) / 2f
+        val midX = (p[0] + p[4] + p[6] + p[2]) / 4f
+        val midY = (p[1] + p[5] + p[7] + p[3]) / 4f
+        val vx = midX - topX
+        val vy = midY - topY
+        val vlen = kotlin.math.hypot(vx, vy).coerceAtLeast(1f)
+        val rotHandle = Offset(
+            topX + vx / vlen * grip * 1.2f,
+            topY + vy / vlen * grip * 1.2f
         )
-        if (corners.any { (it - pos).getDistance() <= grip }) return ImageHandleMode.SCALE
-        val rotHandle = Offset((b.left + b.right) / 2f, b.top - grip * 1.2f)
         if ((rotHandle - pos).getDistance() <= grip) return ImageHandleMode.ROTATE
         return ImageHandleMode.NONE
     }
@@ -2415,19 +2505,31 @@ fun CanvasEditorScreen(
                                                 ?: ImageHandleMode.NONE
                                             if (handle != ImageHandleMode.NONE && current != null) {
                                                 imageHandleMode = handle
+                                                // Jangkar skala = titik sudut lawannya,
+                                                // disimpan saat drag mulai.
+                                                imageAnchorPoint = if (handle == ImageHandleMode.SCALE) {
+                                                    oppositeCorner(current, touchCanvasPos, grip)
+                                                } else null
                                                 undoRedoManager.pushImageTransform(current.id, com.grooxtyper.app.model.ImageTransform.of(current))
                                             } else {
+                                                // visibleImageLayers() sudah topmost-first
+                                                // (index 0 = paling atas) → findFirst.
+                                                // Versi lama findLast → memilih image
+                                                // paling BAWAH, sehingga yang "diambil"
+                                                // bukan yang diketuk.
                                                 val hit = layerManager.visibleImageLayers()
-                                                    .findLast { it.hitTest(touchCanvasPos.x, touchCanvasPos.y) }
+                                                    .findFirst { it.hitTest(touchCanvasPos.x, touchCanvasPos.y) }
                                                 if (hit != null) {
                                                     selectedImageId = hit.id
                                                     layerManager.activeLayerId = hit.id
                                                     imageHandleMode = ImageHandleMode.BODY
+                                                    imageAnchorPoint = null
                                                     undoRedoManager.pushImageTransform(hit.id, com.grooxtyper.app.model.ImageTransform.of(hit))
                                                     refreshComposite()
                                                 } else {
                                                     selectedImageId = null
                                                     imageHandleMode = ImageHandleMode.NONE
+                                                    imageAnchorPoint = null
                                                 }
                                             }
                                         } else {
@@ -2439,15 +2541,22 @@ fun CanvasEditorScreen(
                                                         img.centerY += delta.y
                                                     }
                                                     ImageHandleMode.SCALE -> {
-                                                        val oldDist = (lastCanvasPoint!! - androidx.compose.ui.geometry.Offset(img.centerX, img.centerY)).getDistance()
-                                                        val newDist = (touchCanvasPos - androidx.compose.ui.geometry.Offset(img.centerX, img.centerY)).getDistance()
-                                                        if (oldDist > 1f && newDist > 1f) {
-                                                            val f = (newDist / oldDist).coerceIn(0.1f, 10f)
-                                                            img.widthPx = (img.widthPx * f).coerceIn(8f, canvasWidth * 3f)
+                                                        val anchor = imageAnchorPoint
+                                                            ?: androidx.compose.ui.geometry.Offset(img.centerX, img.centerY)
+                                                        // Skala dari jangkar: sisi yang
+                                                        // ditarik ikut berubah, sisi
+                                                        // sebaliknya tetap di tempat →
+                                                        // tidak "meluncur" saat zoom.
+                                                        val dNew = (touchCanvasPos - anchor).getDistance()
+                                                        val dOld = (lastCanvasPoint!! - anchor).getDistance()
+                                                        if (dOld > 0.5f && dNew > 0.5f) {
+                                                            val f = (dNew / dOld).coerceIn(0.1f, 10f)
+                                                            val nw = (img.widthPx * f).coerceIn(8f, canvasWidth * 6f)
+                                                            img.widthPx = nw
                                                             if (img.lockedAspect) {
-                                                                img.heightPx = (img.widthPx * img.bitmap.height / img.bitmap.width.toFloat().coerceAtLeast(1f)).coerceIn(8f, canvasHeight * 3f)
+                                                                img.heightPx = (nw / img.sourceAspect).coerceIn(8f, canvasHeight * 6f)
                                                             } else {
-                                                                img.heightPx = (img.heightPx * f).coerceIn(8f, canvasHeight * 3f)
+                                                                img.heightPx = (img.heightPx * f).coerceIn(8f, canvasHeight * 6f)
                                                             }
                                                         }
                                                     }
@@ -2465,7 +2574,11 @@ fun CanvasEditorScreen(
                                                     }
                                                     ImageHandleMode.NONE -> Unit
                                                 }
-                                                refreshComposite()
+                                                // Penting untuk "realtime" di kanvas
+                                                // 720x16000: coalescing menahan render
+                                                // penuh (11,5MP) maksimal tiap ~120ms
+                                                // alih-alih tiap event pointer.
+                                                refreshCompositeCoalesced()
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.EYEDROPPER) {
@@ -2841,6 +2954,10 @@ fun CanvasEditorScreen(
                                     if (hadStroke && wasBrush && !wasHealBrush) refreshComposite()
                                     textHandleMode = TextHandle.NONE
                                     imageHandleMode = ImageHandleMode.NONE
+                                    imageAnchorPoint = null
+                                    // Render penuh penutup: memastikan gestur image
+                                    // yang memakai coalescing tampil utuh.
+                                    if (selectedImageId != null) refreshComposite()
                                     lastCanvasPoint = null
                                     cursorPosition = null
                                     strokeLength = 0f
@@ -2872,6 +2989,12 @@ fun CanvasEditorScreen(
                                 lastScreenPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
+                                // Jangkar skala hanya hidup selama satu gestur.
+                                imageAnchorPoint = null
+                                imageHandleMode = ImageHandleMode.NONE
+                                // Gestur image terakhir dirender penuh supaya
+                                // hasil coalescing pasti tampil utuh.
+                                if (selectedImageId != null) refreshComposite()
                             }
                         }
                     }
@@ -3105,10 +3228,11 @@ fun CanvasEditorScreen(
                 }
 
                 // Bingkai seleksi image layer + handle SCALE (sudut) + ROTATE (atas).
+                // Sudut digambar dari cornerPoints (ikut rotasi) supaya titik
+                // yang terlihat = titik yang bisa digenggam.
                 selectedImage()?.let { img ->
                     if (!img.bitmap.isRecycled) {
                         val native = drawContext.canvas.nativeCanvas
-                        val b = img.bounds()
                         val framePaint = android.graphics.Paint().apply {
                             style = android.graphics.Paint.Style.STROKE
                             strokeWidth = 3f / viewState.scale
@@ -3118,15 +3242,29 @@ fun CanvasEditorScreen(
                             style = android.graphics.Paint.Style.FILL
                             color = android.graphics.Color.YELLOW
                         }
-                        native.drawRect(b.left, b.top, b.right, b.bottom, framePaint)
+                        val cp = img.cornerPoints()
+                        // Bingkai mengikuti quad (miring) bukan AABB.
+                        for (i in 0 until 4) {
+                            val a = i * 2
+                            val b = ((i + 1) % 4) * 2
+                            native.drawLine(cp[a], cp[a + 1], cp[b], cp[b + 1], framePaint)
+                        }
                         val gr = 32f / viewState.scale
                         val hr = 14f / viewState.scale
-                        for (cx in listOf(b.left, b.right)) for (cy in listOf(b.top, b.bottom)) {
-                            native.drawCircle(cx, cy, hr, dotPaint)
+                        for (i in 0 until 4) {
+                            native.drawCircle(cp[i * 2], cp[i * 2 + 1], hr, dotPaint)
                         }
-                        val rotHx = (b.left + b.right) / 2f
-                        val rotHy = b.top - gr * 1.2f
-                        native.drawLine(rotHx, b.top, rotHx, rotHy, framePaint)
+                        val topX = (cp[0] + cp[2]) / 2f
+                        val topY = (cp[1] + cp[3]) / 2f
+                        val midX = (cp[0] + cp[4] + cp[6] + cp[2]) / 4f
+                        val midY = (cp[1] + cp[5] + cp[7] + cp[3]) / 4f
+                        var vx = midX - topX
+                        var vy = midY - topY
+                        val vlen = kotlin.math.hypot(vx, vy).coerceAtLeast(1f)
+                        vx /= vlen; vy /= vlen
+                        val rotHx = topX + vx * gr * 1.2f
+                        val rotHy = topY + vy * gr * 1.2f
+                        native.drawLine(topX, topY, rotHx, rotHy, framePaint)
                         native.drawCircle(rotHx, rotHy, hr, dotPaint)
                     }
                 }
@@ -3546,7 +3684,24 @@ fun CanvasEditorScreen(
             }
 
             IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
-                Icon(Icons.Default.Image, contentDescription = "Import Image", tint = Color.White)
+                Icon(Icons.Default.Image, contentDescription = "Tambah Image / Watermark", tint = Color.White)
+            }
+
+            // Jendela Reference: tombol tersendiri supaya reference tidak
+            // ikut hilang/ikut mepet hanya dengan cara add image.
+            IconButton(onClick = {
+                if (showReferenceWindow) {
+                    showReferenceWindow = false
+                } else {
+                    showReferenceWindow = true
+                    if (referenceBitmap == null) referencePickerLauncher.launch("image/*")
+                }
+            }) {
+                Icon(
+                    Icons.Default.Preview,
+                    contentDescription = "Jendela Reference",
+                    tint = if (showReferenceWindow) Accent else Color.White
+                )
             }
 
             IconButton(onClick = { showExportMenu = true }) {
@@ -3648,69 +3803,150 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Dialog import sebagai layer baru: resize px + opacity awal.
+        // Dialog import sebagai layer baru: penempatan cepat + ukuran px + opacity.
         if (pendingImport != null) {
+            val srcBmp = pendingImport!!
+            // Helper kecil: tetapkan ukuran tampil dari preset.
+            fun applyFit(mode: String) {
+                pendingImportFit = mode
+                val (w, h) = when (mode) {
+                    "cover" -> {
+                        val s = maxOf(
+                            canvasWidth.toFloat() / srcBmp.width.coerceAtLeast(1),
+                            canvasHeight.toFloat() / srcBmp.height.coerceAtLeast(1)
+                        )
+                        (srcBmp.width * s).toInt() to (srcBmp.height * s).toInt()
+                    }
+                    "actual" -> srcBmp.width to srcBmp.height
+                    else -> {
+                        val s = minOf(
+                            canvasWidth.toFloat() / srcBmp.width.coerceAtLeast(1),
+                            canvasHeight.toFloat() / srcBmp.height.coerceAtLeast(1)
+                        )
+                        (srcBmp.width * s).toInt() to (srcBmp.height * s).toInt()
+                    }
+                }
+                pendingImportW = w.coerceAtLeast(1).toString()
+                pendingImportH = h.coerceAtLeast(1).toString()
+            }
             AlertDialog(
                 onDismissRequest = { },
-                title = { Text("Import sebagai Layer", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("Tambah Image / Watermark", color = Color.White, fontWeight = FontWeight.Bold) },
                 text = {
                     Column {
                         Text(
-                            "Asli ${pendingImport?.width ?: 0}x${pendingImport?.height ?: 0}px → layer ${canvasWidth}x${canvasHeight}px (tengah, center-crop).",
+                            "Sumber ${srcBmp.width}x${srcBmp.height}px • kanvas ${canvasWidth}x${canvasHeight}px",
                             color = Color.Gray, fontSize = 11.sp
                         )
+                        Text(
+                            "Resolusi sumber dipertahankan penuh — zoom & resize tidak membuat gambar buram.",
+                            color = Color(0xFF69F0AE), fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("Muat" to "contain", "Isi" to "cover", "Asli" to "actual").forEach { (label, mode) ->
+                                Button(
+                                    onClick = { applyFit(mode) },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (pendingImportFit == mode) Accent else PanelLight
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(label, fontSize = 11.sp, color = Color.White) }
+                            }
+                        }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
                                 value = pendingImportW,
-                                onValueChange = { pendingImportW = it.filter { c -> c.isDigit() }.take(5) },
+                                onValueChange = { raw ->
+                                    val digits = raw.filter { c -> c.isDigit() }.take(5)
+                                    pendingImportW = digits
+                                    val w = digits.toIntOrNull() ?: return@OutlinedTextField
+                                    pendingImportFit = "custom"
+                                    if (pendingImportLockAspect) {
+                                        pendingImportH = (w * srcBmp.height.toFloat() /
+                                            srcBmp.width.coerceAtLeast(1)).toInt().coerceAtLeast(1).toString()
+                                    }
+                                },
                                 label = { Text("Lebar (px)") },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f)
                             )
                             OutlinedTextField(
                                 value = pendingImportH,
-                                onValueChange = { pendingImportH = it.filter { c -> c.isDigit() }.take(5) },
+                                onValueChange = { raw ->
+                                    val digits = raw.filter { c -> c.isDigit() }.take(5)
+                                    pendingImportH = digits
+                                    val h = digits.toIntOrNull() ?: return@OutlinedTextField
+                                    pendingImportFit = "custom"
+                                    if (pendingImportLockAspect) {
+                                        pendingImportW = (h * srcBmp.width.toFloat() /
+                                            srcBmp.height.coerceAtLeast(1)).toInt().coerceAtLeast(1).toString()
+                                    }
+                                },
                                 label = { Text("Tinggi (px)") },
                                 singleLine = true,
                                 modifier = Modifier.weight(1f)
                             )
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Opacity layer: ${(pendingImportOpacity * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { pendingImportLockAspect = !pendingImportLockAspect }) {
+                            Text(
+                                if (pendingImportLockAspect) "Aspek terkunci ✓" else "Aspek bebas (bisa gepeng)",
+                                color = Accent, fontSize = 12.sp
+                            )
+                        }
+                        Text("Opacity: ${(pendingImportOpacity * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Slider(
                             value = pendingImportOpacity,
-                            onValueChange = { pendingImportOpacity = it.coerceIn(0.1f, 1f) },
-                            valueRange = 0.1f..1f
+                            onValueChange = { pendingImportOpacity = it.coerceIn(0f, 1f) },
+                            valueRange = 0f..1f
                         )
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         val src = pendingImport ?: return@TextButton
-                        val w = pendingImportW.toIntOrNull()?.coerceIn(1, canvasWidth) ?: src.width.coerceIn(1, canvasWidth)
-                        val h = pendingImportH.toIntOrNull()?.coerceIn(1, canvasHeight) ?: src.height.coerceIn(1, canvasHeight)
-                        val op = pendingImportOpacity.coerceIn(0.1f, 1f)
+                        // Jepit ukuran TAMPIL (bukan sumber) supaya tidak bisa
+                        // jadi 99999px yang membuat render canvas sangat berat.
+                        val w = (pendingImportW.toIntOrNull() ?: src.width)
+                            .coerceIn(1, canvasWidth * 4)
+                        val h = (pendingImportH.toIntOrNull() ?: src.height)
+                            .coerceIn(1, canvasHeight * 4)
+                        val op = pendingImportOpacity.coerceIn(0f, 1f)
                         pendingImport = null
                         isImportingEditor = true
                         healError = null
                         scope.launch(Dispatchers.Default) {
                             try {
-                                val scaled = if (w == src.width && h == src.height) src
-                                else ImageImport.scaleTo(src, w, h)
-                                // scaleTo mendaur-ulang src bila diskala; hanya src asli yang mungkin sisa.
-                                if (scaled !== src) runCatching { if (!src.isRecycled) src.recycle() }
-                                val nl = layerManager.addImageLayer(scaled, w, h, op, "Imported ${w}x${h}")
-                                selectedImageId = nl.id
-                                layerManager.activeLayerId = nl.id
-                                referenceBitmap = downscaleForReference(
-                                    scaled.copy(Bitmap.Config.ARGB_8888, false)
+                                // PENTING: bitmap sumber dipakai apa adanya.
+                                // Versi lama me-raster ulang ke (w,h) sehingga
+                                // sumber ikut mengecil permanen → begitu di-zoom
+                                // image pecah. Sekarang hanya ukuran TAMPIL yang
+                                // diubah lewat matrix, sumber tetap utuh.
+                                val nl = layerManager.addImageLayer(
+                                    src, w, h, op, "Image ${src.width}x${src.height}"
                                 )
+                                nl.lockedAspect = pendingImportLockAspect
                                 undoRedoManager.pushLayerAdd(nl.id)
-                                withContext(Dispatchers.Main) { refreshComposite() }
+                                withContext(Dispatchers.Main) {
+                                    selectedImageId = nl.id
+                                    layerManager.activeLayerId = nl.id
+                                    // Langsung aktifkan tool IMAGE + buka panel
+                                    // properti supaya opacity/letak bisa langsung
+                                    // diatur (keluhan utama di alur ini).
+                                    activeTool = ActiveTool.IMAGE
+                                    showBrushSettings = false
+                                    // Panel properti dibuka sekali agar user
+                                    // bisa langsung atur opacity/letak; sesudahnya
+                                    // panel ditutup agar kanvas bebas di-drag.
+                                    showImageProps = true
+                                    refreshComposite()
+                                }
                             } catch (e: OutOfMemoryError) {
                                 e.printStackTrace()
-                                withContext(Dispatchers.Main) { healError = "Import OOM — coba ukuran px lebih kecil" }
+                                withContext(Dispatchers.Main) { healError = "Import OOM — coba gambar lebih kecil" }
                                 runCatching { if (!src.isRecycled) src.recycle() }
                             } catch (e: Exception) {
                                 e.printStackTrace()
@@ -3732,8 +3968,13 @@ fun CanvasEditorScreen(
             )
         }
 
-        // Panel properti image layer terpilih: resize px + rotate + opacity.
-        selectedImage()?.let { img ->
+        // Panel properti image layer terpilih. PENTING: panel ini TIDAK lagi
+        // muncul begitu image diketuk di kanvas — versi lama memunculkan dialog
+        // tepat saat tap, sehingga dialog memakan sentuhan dan image tidak
+        // bisa digeser/di-resize sama sekali. Sekarang image bisa langsung
+        // di-drag; panel properti dibuka lewat tombol "Properti Image" (atau
+        // otomatis sekali setelah add image).
+        if (showImageProps) selectedImage()?.let { img ->
             val imgBaseline = remember(img.id) { com.grooxtyper.app.model.ImageTransform.of(img) }
             fun commitImgBaseline() {
                 if (imgBaseline != com.grooxtyper.app.model.ImageTransform.of(img)) {
@@ -3743,16 +3984,44 @@ fun CanvasEditorScreen(
             AlertDialog(
                 onDismissRequest = {
                     commitImgBaseline()
-                    selectedImageId = null
+                    showImageProps = false
                 },
-                title = { Text("Image Layer", color = Color.White, fontWeight = FontWeight.Bold) },
+                title = { Text("Properti Image", color = Color.White, fontWeight = FontWeight.Bold) },
                 text = {
                     Column {
                         Text(
-                            "Asli ${img.bitmap.width}x${img.bitmap.height}px • tap-drag di kanvas: geser, sudut: skala, atas: putar.",
+                            "Sumber ${img.bitmap.width}x${img.bitmap.height}px • geser badan, tarik sudut = skala, handle atas = putar.",
                             color = Color.Gray, fontSize = 11.sp
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        // Posisi (untuk watermark: geser ke pojok tanpa drag)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = img.centerX.toInt().toString(),
+                                onValueChange = { v ->
+                                    v.filter { c -> c.isDigit() }.take(6).toIntOrNull()?.let {
+                                        img.centerX = it.toFloat()
+                                        refreshCompositeCoalesced()
+                                    }
+                                },
+                                label = { Text("X (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = img.centerY.toInt().toString(),
+                                onValueChange = { v ->
+                                    v.filter { c -> c.isDigit() }.take(6).toIntOrNull()?.let {
+                                        img.centerY = it.toFloat()
+                                        refreshCompositeCoalesced()
+                                    }
+                                },
+                                label = { Text("Y (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(
                                 value = img.widthPx.toInt().toString(),
@@ -3786,40 +4055,100 @@ fun CanvasEditorScreen(
                             )
                         }
                         Spacer(modifier = Modifier.height(4.dp))
-                        TextButton(onClick = {
-                            undoRedoManager.pushImageTransform(img.id, com.grooxtyper.app.model.ImageTransform.of(img))
-                            img.lockedAspect = !img.lockedAspect
-                        }) {
-                            Text(
-                                if (img.lockedAspect) "Aspek terkunci ✓" else "Aspek bebas",
-                                color = Accent, fontSize = 12.sp
-                            )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            TextButton(onClick = {
+                                commitImgBaseline()
+                                img.lockedAspect = !img.lockedAspect
+                            }, modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (img.lockedAspect) "Aspek ✓" else "Aspek bebas",
+                                    color = Accent, fontSize = 12.sp
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    commitImgBaseline()
+                                    img.toggleFlipX()
+                                    refreshCompositeCoalesced()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Balik H", color = Color.White, fontSize = 11.sp) }
+                            Button(
+                                onClick = {
+                                    commitImgBaseline()
+                                    img.toggleFlipY()
+                                    refreshCompositeCoalesced()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Balik V", color = Color.White, fontSize = 11.sp) }
+                        }
+                        // Penempatan cepat (berguna untuk watermark:"Isi kanvas")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                "Muat" to 1,
+                                "Isi" to 2,
+                                "Asli" to 3,
+                                "Tengah" to 4
+                            ).forEach { (label, mode) ->
+                                Button(
+                                    onClick = {
+                                        commitImgBaseline()
+                                        when (mode) {
+                                            1 -> img.fitInsideCanvas(canvasWidth.toFloat(), canvasHeight.toFloat())
+                                            2 -> img.fillCanvas(canvasWidth.toFloat(), canvasHeight.toFloat())
+                                            3 -> img.setActualSize()
+                                            else -> {
+                                                img.centerX = canvasWidth / 2f
+                                                img.centerY = canvasHeight / 2f
+                                            }
+                                        }
+                                        refreshComposite()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 4.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) { Text(label, color = Color.White, fontSize = 10.sp, maxLines = 1) }
+                            }
                         }
                         Text("Rotasi: ${img.rotationDeg.toInt()}°", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Slider(
                             value = img.rotationDeg,
                             onValueChange = {
                                 img.rotationDeg = it
-                                refreshComposite()
+                                refreshCompositeCoalesced()
                             },
                             onValueChangeFinished = { refreshComposite() },
                             valueRange = 0f..360f
                         )
+                        // Opacity 0..100% (slider lama berhenti di 5% sehingga
+                        // watermark samar mustahil dibuat).
                         Text("Opacity: ${(img.opacity * 100).toInt()}%", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Slider(
                             value = img.opacity,
                             onValueChange = {
-                                img.opacity = it.coerceIn(0.05f, 1f)
-                                refreshComposite()
+                                img.opacity = it.coerceIn(0f, 1f)
+                                refreshCompositeCoalesced()
                             },
-                            valueRange = 0.05f..1f
+                            onValueChangeFinished = { refreshComposite() },
+                            valueRange = 0f..1f
                         )
                     }
                 },
                 confirmButton = {
                     TextButton(onClick = {
                         commitImgBaseline()
-                        selectedImageId = null
+                        showImageProps = false
                     }) { Text("Selesai", color = Accent) }
                 },
                 dismissButton = {
@@ -3829,6 +4158,7 @@ fun CanvasEditorScreen(
                             undoRedoManager.pushLayerRemove(img, idx)
                             layerManager.removeLayerById(img.id)
                             if (selectedImageId == img.id) selectedImageId = null
+                            showImageProps = false
                             refreshComposite()
                         }
                     }) { Text("Hapus", color = Color.Red) }
@@ -4021,6 +4351,40 @@ fun CanvasEditorScreen(
                 TextButton(
                     onClick = { multiBubbleLines = emptyList(); multiBubbleIndex = 0 }
                 ) { Text("Batal", color = Color.Red, fontSize = 12.sp) }
+            }
+        }
+
+        // Tombol Properti Image (muncul saat tool IMAGE + ada image terpilih).
+        // Dipisah dari seleksi agar panel tidak pernah menutupi kanvas saat
+        // user sedang drag/menyesuaikan image.
+        if (activeTool == ActiveTool.IMAGE && selectedImage() != null) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 72.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(PanelBg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Image terpilih", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextButton(onClick = { showImageProps = true }) {
+                    Text("Properti", color = Accent, fontSize = 12.sp)
+                }
+                TextButton(onClick = {
+                    selectedImageId = null
+                    imageHandleMode = ImageHandleMode.NONE
+                    imageAnchorPoint = null
+                    refreshComposite()
+                }) { Text("Lepas", color = Color.Gray, fontSize = 12.sp) }
             }
         }
 
@@ -4365,10 +4729,14 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Reference window
+        // Jendela Reference (ala ibisPaint/Clip Studio): zoom 0.2%-4000%,
+        // scroll, render per-strip supaya 720x16000 tetap tampil.
         ReferenceWindow(
             referenceBitmap = referenceBitmap,
-            onClose = { referenceBitmap = null }
+            onClose = { showReferenceWindow = false; referenceBitmap = null },
+            onPickImage = { referencePickerLauncher.launch("image/*") },
+            isLoading = isLoadingReference,
+            loadError = referenceError
         )
 
         // Mode pipet dari dialog warna: ketuk kanvas untuk ambil warna.

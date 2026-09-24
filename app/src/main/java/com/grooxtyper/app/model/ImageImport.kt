@@ -58,6 +58,103 @@ object ImageImport {
     /** Sample darurat bila OOM (sama seperti fallback Vasilias). */
     const val FALLBACK_SAMPLE = 8
 
+    // ── Budget image LAYER (gambar atas kanvas: stiker/watermark) ───────────
+    // Yang dijaga di sini adalah KEJELASAN saat di-zoom. 12MP/8192px membuat
+    // 720x16000 (11,5MP) tetap utuh; hanya foto raksasa (mis. 8000x8000 =
+    // 64MP) yang diturunkan supaya tidak OOM.
+    const val MAX_LAYER_SOURCE_PIXELS = 12_000_000L
+    const val MAX_LAYER_SOURCE_DIM = 8192
+
+    // ── Budget jendela REFERENSI ───────────────────────────────────────────
+    // File 4MB boleh diturunkan jadi ≤2MB asal tetap jernih; budget diterapkan
+    // ke hasil AKHIR (bitmap + ukuran JPEG), bukan ke file aslinya.
+    const val REFERENCE_TARGET_BYTES = 2_000_000L
+    const val MAX_REFERENCE_PIXELS = 16_000_000L
+    /** Perkiraan byte JPEG per piksel (kualitas 88, foto ≈0.5 — diamankan). */
+    private const val JPEG_BYTES_PER_PIXEL = 0.55f
+
+    /**
+     * Jaga sumber image layer tetap tajam tapi tidak meledakkan heap.
+     * Gambar yang sudah di bawah batas (mis. 720x16000) tidak diCCR sama sekali.
+     */
+    fun capLayerSource(src: Bitmap): Bitmap {
+        if (src.isRecycled) return src
+        val pixels = src.width.toLong() * src.height.toLong()
+        val longSide = max(src.width, src.height)
+        if (pixels <= MAX_LAYER_SOURCE_PIXELS && longSide <= MAX_LAYER_SOURCE_DIM) return src
+        val heapPixels = min(
+            MAX_LAYER_SOURCE_PIXELS,
+            (Runtime.getRuntime().maxMemory() / 24L).coerceAtLeast(2_000_000L)
+        )
+        val byPixels = kotlin.math.sqrt(heapPixels.toDouble() / pixels.toDouble()).toFloat()
+        val byDim = MAX_LAYER_SOURCE_DIM.toFloat() / longSide
+        val s = min(1f, min(byPixels, byDim))
+        val tw = max(1, (src.width * s).roundToInt())
+        val th = max(1, (src.height * s).roundToInt())
+        return try {
+            val out = scaleDownHighQuality(src, tw, th)
+            if (out !== src) src.recycle()
+            out
+        } catch (e: Exception) {
+            src
+        } catch (e: OutOfMemoryError) {
+            src
+        }
+    }
+
+    /**
+     * Decode gambar untuk jendela referensi dengan budget byte (default 2MB).
+     *
+     * Decode dulu pada budget piksel yang diperkirakan cukup, lalu VERIFIKASI
+     * dengan kompresi JPEG sungguhan. Kalau masih di atas budget (mis. line
+     * art Bernoulli yang sulit dikompresi), turunkan sekali lagi dengan faktor
+     * akar dari rasio byte → hasil biasanya pas di budget dan tetap jernih
+     * karena reduksinya hanya satu tahap.
+     */
+    fun decodeForReference(
+        resolver: ContentResolver,
+        uri: Uri,
+        targetBytes: Long = REFERENCE_TARGET_BYTES
+    ): Bitmap? {
+        val targetPixels = (targetBytes / JPEG_BYTES_PER_PIXEL)
+            .toLong()
+            .coerceIn(600_000L, MAX_REFERENCE_PIXELS)
+        val decoded = decodeContentUri(resolver, uri, targetPixels) ?: return null
+        var bmp = capLayerSource(decoded)
+        if (bmp.isRecycled) return null
+        val bytes = estimateJpegBytes(bmp)
+        if (bytes > targetBytes) {
+            val ratio = kotlin.math.sqrt(targetBytes.toDouble() / bytes.toDouble()).toFloat()
+            val tw = max(1, (bmp.width * ratio).roundToInt())
+            val th = max(1, (bmp.height * ratio).roundToInt())
+            val out = try {
+                scaleDownHighQuality(bmp, tw, th)
+            } catch (e: Exception) {
+                bmp
+            } catch (e: OutOfMemoryError) {
+                bmp
+            }
+            if (out !== bmp) runCatching { bmp.recycle() }
+            bmp = out
+        }
+        return bmp
+    }
+
+    /** Ukuran JPEG diukur dengan kompresi nyata (sekali, di IO thread). */
+    fun estimateJpegBytes(bmp: Bitmap, quality: Int = 88): Long {
+        if (bmp.isRecycled) return 0L
+        return try {
+            val bos = java.io.ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+            bos.size().toLong()
+        } catch (e: Exception) {
+            // Fallback konservatif bila kompresi gagal: asumsi 1 byte/px.
+            bmp.width.toLong() * bmp.height.toLong()
+        } catch (e: OutOfMemoryError) {
+            bmp.width.toLong() * bmp.height.toLong()
+        }
+    }
+
     // ── Budget heap-aware (adaptasi BitmapSafety Vasilias) ──────────────
     // Vasilias: MAX_CANVAS 12MP, divisor 24, min 2MP. Modifikasi Groox:
     // butuh 11,5MP lolos di HP normal → divisor 12, min 8MP, max 32MP.

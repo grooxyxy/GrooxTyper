@@ -107,14 +107,22 @@ class ImageLayer(
     var widthPx: Float,
     var heightPx: Float,
     var rotationDeg: Float = 0f,
+    var flipX: Boolean = false,
+    var flipY: Boolean = false,
     name: String = "Image"
 ) : LayerItem(name = name, isFolder = false) {
     var lockedAspect by mutableStateOf(true)
 
-    fun scaleX(): Float = widthPx / bitmap.width.toFloat().coerceAtLeast(1f)
-    fun scaleY(): Float = heightPx / bitmap.height.toFloat().coerceAtLeast(1f)
+    /** Rasio piksel sumber (dipakai untuk lock aspek & "ukuran asli"). */
+    val sourceAspect: Float
+        get() = bitmap.width.toFloat().coerceAtLeast(1f) / bitmap.height.coerceAtLeast(1).toFloat()
 
-    /** Matrix kanvas: T(center) · R · S · T(-half). */
+    fun baseScaleX(): Float = widthPx / bitmap.width.toFloat().coerceAtLeast(1f)
+    fun baseScaleY(): Float = heightPx / bitmap.height.toFloat().coerceAtLeast(1f)
+    fun scaleX(): Float = if (flipX) -baseScaleX() else baseScaleX()
+    fun scaleY(): Float = if (flipY) -baseScaleY() else baseScaleY()
+
+    /** Matrix kanvas: T(center) · R · S(±flip) · T(-half). */
     fun matrix(): android.graphics.Matrix {
         val sx = scaleX()
         val sy = scaleY()
@@ -125,6 +133,51 @@ class ImageLayer(
             postTranslate(-bitmap.width / 2f, -bitmap.height / 2f)
         }
     }
+
+    /**
+     * Empat sudut hasil transform dalam koordinat kanvas, urutan
+     * TL, TR, BR, BL → 8 float (x0,y0,x1,y1,...). Handle skala/rotasi memakai
+     * ini, bukan AABB: begitu image diputar, AABB handle meleset jauh dari
+     * sudut yang benar-benar tergambar sehingga image "tidak bisa di-resize".
+     */
+    fun cornerPoints(): FloatArray {
+        val m = matrix()
+        val pts = floatArrayOf(
+            0f, 0f, bitmap.width.toFloat(), 0f,
+            bitmap.width.toFloat(), bitmap.height.toFloat(), 0f, bitmap.height.toFloat()
+        )
+        m.mapPoints(pts)
+        return pts
+    }
+
+    /** Contain: seluruh gambar muat di dalam kanvas (aspek tetap). */
+    fun fitInsideCanvas(canvasW: Float, canvasH: Float) {
+        val s = minOf(
+            canvasW / bitmap.width.toFloat().coerceAtLeast(1f),
+            canvasH / bitmap.height.toFloat().coerceAtLeast(1f)
+        )
+        widthPx = (bitmap.width * s).coerceAtLeast(8f)
+        heightPx = (bitmap.height * s).coerceAtLeast(8f)
+    }
+
+    /** Cover: image memenuhi kanvas penuh (aspek tetap, tepi terpotong). */
+    fun fillCanvas(canvasW: Float, canvasH: Float) {
+        val s = maxOf(
+            canvasW / bitmap.width.toFloat().coerceAtLeast(1f),
+            canvasH / bitmap.height.toFloat().coerceAtLeast(1f)
+        )
+        widthPx = (bitmap.width * s).coerceAtLeast(8f)
+        heightPx = (bitmap.height * s).coerceAtLeast(8f)
+    }
+
+    /** 1:1 piksel sumber (100%). */
+    fun setActualSize() {
+        widthPx = bitmap.width.toFloat()
+        heightPx = bitmap.height.toFloat()
+    }
+
+    fun toggleFlipX() { flipX = !flipX }
+    fun toggleFlipY() { flipY = !flipY }
 
     /** Kotak pembungkus axis-aligned hasil transform (untuk overlay/culling). */
     fun bounds(): android.graphics.RectF {
@@ -166,12 +219,17 @@ data class ImageTransform(
     val widthPx: Float,
     val heightPx: Float,
     val rotationDeg: Float,
-    val opacity: Float
+    val opacity: Float,
+    // Flip ikut disimpan: tanpa ini undo "balik gambar" hanya mengembalikan
+    // posisi/ukuran, gambar tetap terbalik.
+    val flipX: Boolean = false,
+    val flipY: Boolean = false,
+    val lockedAspect: Boolean = true
 ) {
     companion object {
         fun of(layer: ImageLayer) = ImageTransform(
             layer.centerX, layer.centerY, layer.widthPx, layer.heightPx,
-            layer.rotationDeg, layer.opacity
+            layer.rotationDeg, layer.opacity, layer.flipX, layer.flipY, layer.lockedAspect
         )
     }
 
@@ -182,6 +240,9 @@ data class ImageTransform(
         layer.heightPx = heightPx
         layer.rotationDeg = rotationDeg
         layer.opacity = opacity
+        layer.flipX = flipX
+        layer.flipY = flipY
+        layer.lockedAspect = lockedAspect
     }
 }
 
@@ -282,8 +343,14 @@ class LayerManager(val width: Int, val height: Int) {
     }
 
     /**
-     * Tambah image layer bebas (bitmap sumber + center + ukuran tampil px).
-     * Ukuran dijepit ke kanvas; aspek dijaga bila [lockedAspect].
+     * Tambah image layer bebas (stiker/watermark).
+     *
+     * PENTING: [bitmap] adalah SUMBER resolusi penuh dan tidak boleh
+     * di-raster ulang ke ukuran tampil — layer hanya menyimpan ukuran
+     * tampilan terpisah ([displayW] × [displayH]) lewat matrix. Versi lama
+     * memanggil ImageImport.scaleTo() sebelum sini, sehingga sumber ikut
+     * mengecil permanen: begitu image di-zoom/di-resize naik, hasilnya
+     * pecah/buram (keluhan utama di feature ini).
      */
     fun addImageLayer(
         bitmap: Bitmap,
@@ -292,8 +359,8 @@ class LayerManager(val width: Int, val height: Int) {
         opacityInit: Float = 1f,
         name: String = "Image ${layers.size + 1}"
     ): ImageLayer {
-        val w = displayW.coerceIn(1, width)
-        val h = displayH.coerceIn(1, height)
+        val w = displayW.coerceAtLeast(1)
+        val h = displayH.coerceAtLeast(1)
         val layer = ImageLayer(
             bitmap = bitmap,
             centerX = width / 2f,
@@ -302,7 +369,9 @@ class LayerManager(val width: Int, val height: Int) {
             heightPx = h.toFloat(),
             name = name
         )
-        layer.opacity = opacityInit.coerceIn(0.1f, 1f)
+        // Opacity boleh 0 (gambar disembunyikan sementara) — slider lama
+        // berhenti di 5-10% sehingga watermark samar mustahil dibuat.
+        layer.opacity = opacityInit.coerceIn(0f, 1f)
         layers.add(0, layer)
         activeLayerId = layer.id
         return layer
