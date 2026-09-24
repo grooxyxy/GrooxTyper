@@ -197,9 +197,27 @@ assert(textRenderer.includes('renderSfx'), 'TextRenderer: render SFX per-huruf t
 assert(textRenderer.includes('box.sfx != null'), 'TextRenderer: mode SFX cabang render sendiri');
 assert(textRenderer.includes('fun h(i: Int, salt: Int)'), 'TextRenderer: jitter deterministik dari seed (render ulang identik)');
 assert(textEditor.includes('fun SfxSection'), 'panel teks: bagian Mode SFX');
-assert(textEditor.includes('Busur Naik') && textEditor.includes('Busur Turun') && textEditor.includes('Acak Pro'), 'panel teks: preset SFX Busur Naik/Turun + Acak Pro');
-assert(textEditor.includes('Acak Ulang'), 'panel teks: tombol Acak Ulang (ganti seed)');
+const sfxPresets = ['"Naik"', '"Turun"', '"Lurus"', '"Acak Pro"', '"WHOOSH"', '"Zigzag"', '"Ledakan"', '"Miring"'];
+assert(sfxPresets.every(p => textEditor.includes(p)), 'panel teks: 8 preset SFX (Naik/Turun/Lurus/Acak Pro/WHOOSH/Zigzag/Ledakan/Miring)');
+assert(textBoxSrc.includes('var tilt: Float = 0f') && textBoxSrc.includes('var wave: Float = 0f'), 'TextBox: SfxSpec punya tilt (miring kata) + wave (gelombang)');
+assert(textRenderer.includes('spec.tilt') && textRenderer.includes('spec.wave'), 'TextRenderer: tilt + wave ikut dirender per huruf');
+assert(textEditor.includes('Acak Ulang') && textEditor.includes('"Reset"'), 'panel teks: tombol Acak Ulang + Reset SFX');
 assert(textEditor.includes('box.sfx = newSpec'), 'panel teks: ubah SFX langsung menerapkan ke box + push undo');
+
+// 15. Grid perspektif: dulu "terbuka tapi tidak bisa disentuh". Tiga sebab:
+//     (a) loop gesture utama consume event down sebelum detectDragGestures
+//         sempat menunggu down yang belum consumed, (b) hit-test memakai
+//         sudut kotak lurus sedangkan overlay menggambar titik keystone,
+//     (c) quick slider full-width (.clickable noop) menutupi handle bawah.
+const gridBlock = editor.slice(editor.indexOf('if (rulerAdjustMode || (perspGridMode && selectedTextBox != null))'));
+const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
+assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
+assert(editor.includes('val dxT = pbox.perspX.coerceIn(-1f, 1f) * hw') && editor.includes('val dyL = pbox.perspY.coerceIn(-1f, 1f) * hh'), 'grid perspektif: hit-test handle memakai titik keystone yang sama dengan overlay');
+assert(editor.includes('val grab = 84f / sc') && editor.includes('inside && near(best, dTop) -> 1'), 'grid perspektif: radius genggam lega + fallback handle terdekat di dalam grid');
+assert(editor.includes('fun near(d: Float, ref: Float) = abs(d - ref) < 0.01f'), 'grid perspektif: pilih handle pakai toleransi (bukan == float yang bisa salah pilih)');
+assert(editor.includes('showQuickSlider && !perspGridMode'), 'grid perspektif: quick slider (.clickable noop) disembunyikan saat mode grid');
+assert(editor.includes('undoRedoManager.pushTextBox(\n                                            textLayerIdOf(pbox)'), 'grid perspektif: satu langkah undo per gestur seret');
+assert(editor.includes('Seret titik biru untuk ubah sudut'), 'grid perspektif: petunjuk cara pakai saat mode aktif');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

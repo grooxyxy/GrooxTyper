@@ -208,10 +208,21 @@ object TextRenderer {
             }
             // Parabola terbuka ke bawah pada tengah: t = -1..1 → dy = -arc*(1-t²).
             val t = if (n == 1) 0f else (2f * i / (n - 1f) - 1f)
-            val dy = -arcPx * (1f - t * t)
-            // Rotasi mengikuti tangen busur (turun/naik di sisi kiri/kanan).
+            // Gelombang sinus: gaya "DUAR" naik-turun berulang (gabungan
+            // dengan busur). Fase per huruf memakai indeks agar deterministik.
+            val waveY = if (spec.wave != 0f) {
+                -spec.wave * fs * kotlin.math.sin(i * 1.15f + spec.seed * 0.7f)
+            } else 0f
+            val dy = -arcPx * (1f - t * t) + waveY
+            // Rotasi mengikuti tangen busur (turun/naik di sisi kiri/kanan)
+            // + kemiringan tetap seluruh kata (tilt) + jitter per huruf.
             val tangent = if (n > 1) -4f * arcPx * t / total * (total / n) else 0f
-            val baseRot = Math.toDegrees(kotlin.math.atan2(tangent.toDouble(), 1.0)).toFloat()
+            val waveSlope = if (spec.wave != 0f) {
+                -spec.wave * fs * 1.15f * kotlin.math.cos(i * 1.15f + spec.seed * 0.7f)
+            } else 0f
+            val baseRot = Math.toDegrees(
+                kotlin.math.atan2((tangent + waveSlope).toDouble(), 1.0)
+            ).toFloat() + spec.tilt
             val rot = baseRot + h(i, 1) * spec.rotJitter
             val sizeMul = (1f + h(i, 2) * spec.sizeJitter).coerceIn(0.45f, 1.8f)
             glyphs.add(Glyph(chars[i], w, cx, dy, rot, sizeMul))

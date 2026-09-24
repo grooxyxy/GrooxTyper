@@ -65,6 +65,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.model.SfxSpec
 import com.grooxtyper.app.model.StrokePosition
 import com.grooxtyper.app.model.TextAlignMode
 import com.grooxtyper.app.model.TextBox
@@ -1307,8 +1308,8 @@ private fun AlignButton(
  */
 @Composable
 private fun SfxSection(
-    spec: com.grooxtyper.app.model.SfxSpec?,
-    onSpec: (com.grooxtyper.app.model.SfxSpec?) -> Unit
+    spec: SfxSpec?,
+    onSpec: (SfxSpec?) -> Unit
 ) {
     val on = spec != null
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1319,41 +1320,74 @@ private fun SfxSection(
         Switch(
             checked = on,
             onCheckedChange = { enabled ->
-                onSpec(
-                    if (enabled) com.grooxtyper.app.model.SfxSpec()
-                    else null
-                )
+                onSpec(if (enabled) SfxSpec() else null)
             },
             colors = SwitchDefaults.colors(checkedThumbColor = Accent)
         )
     }
     if (on) {
         val cur = spec!!
-        // Preset cepat gaya lettering (diubah dari teknik NOOB vs PRO).
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            listOf(
-                "Busur Naik" to com.grooxtyper.app.model.SfxSpec(0.55f, 0.22f, 10f, cur.seed),
-                "Busur Turun" to com.grooxtyper.app.model.SfxSpec(-0.55f, 0.22f, 10f, cur.seed),
-                "Acak Pro" to com.grooxtyper.app.model.SfxSpec(0.30f, 0.42f, 22f, cur.seed)
-            ).forEach { (label, preset) ->
-                Button(
-                    onClick = { onSpec(preset.copy(seed = cur.seed)) },
-                    colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(label, color = Color.White, fontSize = 11.sp)
+        // 8 preset cepat. Semua kolom ditulis bernama (bukan posisional) supaya
+        // aman saat SfxSpec menambah parameter baru.
+        val presets: List<Pair<String, SfxSpec>> = listOf(
+            "Naik" to SfxSpec(arc = 0.55f, sizeJitter = 0.22f, rotJitter = 10f, seed = cur.seed),
+            "Turun" to SfxSpec(arc = -0.55f, sizeJitter = 0.22f, rotJitter = 10f, seed = cur.seed),
+            "Lurus" to SfxSpec(arc = 0f, sizeJitter = 0.30f, rotJitter = 16f, seed = cur.seed),
+            "Acak Pro" to SfxSpec(arc = 0.30f, sizeJitter = 0.42f, rotJitter = 22f, seed = cur.seed),
+            "WHOOSH" to SfxSpec(
+                arc = 0.70f, sizeJitter = 0.12f, rotJitter = 6f,
+                tilt = -10f, seed = cur.seed
+            ),
+            "Zigzag" to SfxSpec(
+                arc = 0f, sizeJitter = 0.16f, rotJitter = 10f,
+                wave = 0.45f, seed = cur.seed
+            ),
+            "Ledakan" to SfxSpec(
+                arc = 0.15f, sizeJitter = 0.55f, rotJitter = 35f,
+                wave = 0.22f, seed = cur.seed
+            ),
+            "Miring" to SfxSpec(
+                arc = 0.10f, sizeJitter = 0.18f, rotJitter = 12f,
+                tilt = 28f, seed = cur.seed
+            )
+        )
+        presets.chunked(4).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                row.forEach { (label, preset) ->
+                    Button(
+                        onClick = { onSpec(preset.copy(seed = cur.seed)) },
+                        colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 6.dp),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text(label, color = Color.White, fontSize = 10.sp, maxLines = 1)
+                    }
                 }
+                // Baris terakhir boleh saja tidak penuh — pengisi transparan.
+                repeat(4 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
             }
+            Spacer(modifier = Modifier.height(6.dp))
         }
         Text("Busur ${"%.2f".format(cur.arc)} (± = naik/turun)", color = Color.Gray, fontSize = 12.sp)
         Slider(
             value = cur.arc, onValueChange = { onSpec(cur.copy(arc = it)) },
             valueRange = -1f..1f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Miring kata ${cur.tilt.toInt()}°", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = cur.tilt, onValueChange = { onSpec(cur.copy(tilt = it)) },
+            valueRange = -45f..45f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        Text("Gelombang ${"%.2f".format(cur.wave)} (0 = lurus, di atas 0 = naik-turun)", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = cur.wave, onValueChange = { onSpec(cur.copy(wave = it)) },
+            valueRange = 0f..0.6f,
             colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
         )
         Text("Acak ukuran ${(cur.sizeJitter * 100).toInt()}%", color = Color.Gray, fontSize = 12.sp)
@@ -1368,13 +1402,26 @@ private fun SfxSection(
             valueRange = 0f..40f,
             colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
         )
-        Button(
-            onClick = { onSpec(cur.copy(seed = cur.seed + 1)) },
-            colors = ButtonDefaults.buttonColors(containerColor = Accent),
-            shape = RoundedCornerShape(8.dp),
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text("Acak Ulang (seed ${cur.seed})", color = Color.White, fontSize = 12.sp)
+            Button(
+                onClick = { onSpec(cur.copy(seed = cur.seed + 1)) },
+                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Acak Ulang (seed ${cur.seed})", color = Color.White, fontSize = 12.sp)
+            }
+            Button(
+                onClick = { onSpec(SfxSpec(seed = cur.seed)) },
+                colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Reset", color = Color.White, fontSize = 12.sp)
+            }
         }
     }
 }

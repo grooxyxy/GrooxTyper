@@ -59,12 +59,18 @@ data class TextBevelSpec(
  * @param arc tinggi busur dalam fraksi tinggi font (+ = busur ke atas, - = ke bawah).
  * @param sizeJitter variasi ukuran per huruf, fraksi (0.25 = ±25%).
  * @param rotJitter rotasi acak maksimum per huruf, derajat.
+ * @param tilt kemiringan SELURUH kata, derajat (huruf miring serigala ala
+ *   coretan ledakan — beda dari busur yang hanya melengkung).
+ * @param wave amplitudo gelombang sinus per huruf, fraksi tinggi font
+ *   (0 = tidak ada; isi combo dengan arc 0 untuk gaya zigzag "DUAR").
  * @param seed sumber acak deterministik (ganti = susunan baru).
  */
 data class SfxSpec(
     var arc: Float = 0.55f,
     var sizeJitter: Float = 0.25f,
     var rotJitter: Float = 10f,
+    var tilt: Float = 0f,
+    var wave: Float = 0f,
     var seed: Int = 1
 )
 
@@ -399,11 +405,11 @@ class TextBox(
         val glowPad = if (glow != null) (glow!!.blur + glow!!.spread) * scale else 0f
         val s = shadow
         val shadowOffset = if (s != null) hypot(s.dx, s.dy) * scale else 0f
-        // SFX: busur mengangkat huruf & jitter membesarkannya — pad ekstra
-        // agar bounds/hit-test tetap menutupi huruf yang terdorong keluar.
+        // SFX: busur mengangkat huruf, gelombang mendongkar, dan tilt memiringkan
+        // seluruh kata → pad ekstra agar bounds/hit-test tetap menutupi huruf.
         val sfxPad = sfx?.let {
-            (kotlin.math.abs(it.arc) * 1.3f + it.sizeJitter * 0.6f + 0.4f) *
-                fontSize * scale
+            (kotlin.math.abs(it.arc) * 1.3f + kotlin.math.abs(it.wave) * 1.3f +
+                it.sizeJitter * 0.6f + 0.4f) * fontSize * scale
         } ?: 0f
         return outlineWidth * scale + (s?.blur ?: 0f) * scale +
             (s?.spread ?: 0f) * scale + glowPad + shadowOffset + sfxPad
@@ -736,6 +742,8 @@ class TextBox(
                     put("arc", sp.arc.toDouble())
                     put("sizeJitter", sp.sizeJitter.toDouble())
                     put("rotJitter", sp.rotJitter.toDouble())
+                    put("tilt", sp.tilt.toDouble())
+                    put("wave", sp.wave.toDouble())
                     put("seed", sp.seed)
                 })
             }
@@ -822,6 +830,8 @@ class TextBox(
                         arc = sp.optDouble("arc", 0.55).toFloat(),
                         sizeJitter = sp.optDouble("sizeJitter", 0.25).toFloat(),
                         rotJitter = sp.optDouble("rotJitter", 10.0).toFloat(),
+                        tilt = sp.optDouble("tilt", 0.0).toFloat(),
+                        wave = sp.optDouble("wave", 0.0).toFloat(),
                         seed = sp.optInt("seed", 1)
                     )
                 }

@@ -158,6 +158,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.max
 
 enum class ActiveTool {
@@ -2013,22 +2014,58 @@ fun CanvasEditorScreen(
                                 perspHandle = 0
                                 val pbox = selectedTextBox
                                 if (pbox != null) {
+                                    val sc = viewState.scale.coerceAtLeast(0.05f)
                                     val pb = pbox.getBounds(); val pad = 24f
                                     val l = pb.left - pad; val t = pb.top - pad
                                     val rr = pb.right + pad; val bt = pb.bottom + pad
-                                    val grab = 56f / viewState.scale.coerceAtLeast(0.05f)
+                                    val hw = ((rr - l) / 2f).coerceAtLeast(1f)
+                                    val hh = ((bt - t) / 2f).coerceAtLeast(1f)
                                     val cx = (l + rr) / 2f; val cy = (t + bt) / 2f
+                                    // FIX: titik sentuh WAJIB sama dengan titik yang
+                                    // digambar overlay. Dulu dipakai sudut kotak lurus
+                                    // (l,t)/(rr,t)/... sementara overlay menggambar
+                                    // keystone → begitu perspX/perspY ≠ 0, titik biru
+                                    // yang terlihat bergeser dari area sentuhnya dan
+                                    // grid "tidak bisa disentuh".
+                                    val dxT = pbox.perspX.coerceIn(-1f, 1f) * hw
+                                    val dyL = pbox.perspY.coerceIn(-1f, 1f) * hh
                                     fun hd(x: Float, y: Float) = kotlin.math.hypot(cp.x - x, cp.y - y)
-                                    val dTop = minOf(hd(l, t), hd(rr, t))
-                                    val dBot = minOf(hd(l, bt), hd(rr, bt))
-                                    val dL = hd(l, cy); val dR = hd(rr, cy)
+                                    val dTop = minOf(
+                                        hd(cx - hw + dxT, cy - hh + dyL),
+                                        hd(cx + hw - dxT, cy - hh - dyL)
+                                    )
+                                    val dBot = minOf(
+                                        hd(cx + hw + dxT, cy + hh + dyL),
+                                        hd(cx - hw - dxT, cy + hh - dyL)
+                                    )
+                                    val dL = hd(cx - hw, cy); val dR = hd(cx + hw, cy)
                                     val best = minOf(dTop, dBot, dL, dR)
+                                    // Radius genggam lebih lega (84px layar) + fallback:
+                                    // sentuh di dalam area grid tetap memakai handle
+                                    // terdekat, jadi responsif di mana pun dalam grid.
+                                    val grab = 84f / sc
+                                    val inside = cp.x >= l - grab && cp.x <= rr + grab &&
+                                        cp.y >= t - grab && cp.y <= bt + grab
+                                    // Perbandingan memakai toleransi, bukan == : pada
+                                    // zoom kecil jarak antar titik bisa identik sampai
+                                    // dibulatkan float, sehingga ==/−0.0 bisa salah pilih.
+                                    fun near(d: Float, ref: Float) = abs(d - ref) < 0.01f
                                     perspHandle = when {
-                                        best > grab -> 0
-                                        best == dTop -> 1
-                                        best == dBot -> 2
-                                        best == dL -> 3
-                                        else -> 4
+                                        best <= grab && near(best, dTop) -> 1
+                                        best <= grab && near(best, dBot) -> 2
+                                        best <= grab && near(best, dL) -> 3
+                                        best <= grab -> 4
+                                        inside && near(best, dTop) -> 1
+                                        inside && near(best, dBot) -> 2
+                                        inside && near(best, dL) -> 3
+                                        inside -> 4
+                                        else -> 0
+                                    }
+                                    if (perspHandle != 0) {
+                                        // Satu langkah undo untuk seluruh gestur perspektif.
+                                        undoRedoManager.pushTextBox(
+                                            textLayerIdOf(pbox), pbox.copy()
+                                        )
                                     }
                                 }
                                 dragMode = if (perspHandle != 0) 5 else 0
@@ -2258,9 +2295,13 @@ fun CanvasEditorScreen(
                                     } else if (rulerAdjustMode || (perspGridMode && selectedTextBox != null)) {
                                         // Mode atur penggaris / grid perspektif: ini UI
                                         // overlay, bukan menggambar → jangan gores kanvas.
+                                        // PENTING: JANGAN consume di sini. detectDragGestures
+                                        // di pointerInput grid (bagian atas) memanggil
+                                        // awaitFirstDown(requireUnconsumed = true); kalau event
+                                        // down sudah dikonsumsi loop ini, gesture seret tidak
+                                        // pernah mulai → grid "terbuka tapi tak bisa disentuh".
                                         cursorPosition = null
                                         lastCanvasPoint = null
-                                        change.consume()
                                     } else {
                                     cursorPosition = change.position
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
@@ -3110,13 +3151,27 @@ fun CanvasEditorScreen(
                 }
             }
 
-            // Tombol Selesai mode grid perspektif
+            // Tombol Selesai mode grid perspektif + petunjuk cara pakai.
             if (perspGridMode) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    Button(
-                        onClick = { perspGridMode = false },
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 96.dp)
-                    ) { Text("Selesai Perspektif", fontSize = 12.sp) }
+                    Column(
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 60.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "Seret titik biru untuk ubah sudut",
+                            color = Color(0xFF00E5FF), fontSize = 11.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xCC1C1C1E))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Button(
+                            onClick = { perspGridMode = false },
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) { Text("Selesai Perspektif", fontSize = 12.sp) }
+                    }
                 }
             }
 
@@ -3282,7 +3337,10 @@ fun CanvasEditorScreen(
         }
 
         // Quick sliders (bottom, ala ibisPaint X)
-        if (showQuickSlider && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.INPAINT)) {
+        // FIX: disembunyikan saat mode grid perspektif aktif. Panel ini full-width
+        // dan memakai .clickable{} noop → menutupi handle grid di bagian bawah layar
+        // sehingga grid "terbuka tapi tidak bisa disentuh".
+        if (showQuickSlider && !perspGridMode && (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER || activeTool == ActiveTool.INPAINT)) {
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
