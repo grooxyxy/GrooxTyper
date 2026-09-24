@@ -135,6 +135,7 @@ import com.grooxtyper.app.model.FileExportManager
 import com.grooxtyper.app.model.InpaintMode
 import com.grooxtyper.app.model.InpaintingManager
 import com.grooxtyper.app.model.ImageImport
+import com.grooxtyper.app.model.ImageLayerStore
 import com.grooxtyper.app.model.FontRegistry
 import com.grooxtyper.app.model.LayerBlendMode
 import com.grooxtyper.app.model.LayerItem
@@ -156,9 +157,11 @@ import com.grooxtyper.app.model.StyleRuleManager
 import com.grooxtyper.app.model.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -512,9 +515,10 @@ fun CanvasEditorScreen(
 
     /**
      * Simpan project SEKARANG: PNG basis = layer gambar SAJA (tanpa teks
-     * bakar) + JSON teks terpisah. Render basis di thread pemanggil (Main
-     * saat auto-save/keluar, setara copy 46MB yang sudah ada), tulis file
-     * di IO. Kembalikan true bila basis+teks tertulis.
+     * bakar) + JSON teks terpisah + image layer editable terpisah.
+     * Render basis di thread pemanggil (Main saat auto-save/keluar, setara
+     * copy 46MB yang sudah ada), tulis file di IO. Kembalikan true bila
+     * basis+teks tertulis.
      */
     suspend fun persistProjectNow(withPreview: Boolean): Boolean {
         val dv = dirtyVersion
@@ -530,20 +534,34 @@ fun CanvasEditorScreen(
         }
         var preview: Bitmap? = null
         return try {
-            layerManager.renderDrawingOnly(base)
             val textsJson = with(TextLayerStore) { layerManager.textLayersToJson() }
-            if (withPreview) {
-                preview = runCatching {
-                    val longest = max(canvasWidth, canvasHeight).coerceAtLeast(1)
-                    val s = (1024f / longest).coerceAtMost(1f)
-                    ImageImport.scaleTo(
-                        compositeBitmap,
-                        max(1, (canvasWidth * s).toInt()),
-                        max(1, (canvasHeight * s).toInt())
-                    )
-                }.getOrNull()
-            }
             val saved = withContext(Dispatchers.IO) {
+                // Image layer dicoba disimpan sebagai layer editable DULU:
+                // hasilnya menentukan apakah image ikut di-render ke PNG dasar.
+                // Kalau gagal menulis (mis. storage penuh) → null → image tetap
+                // di-bake seperti perilaku lama, jadi user tidak kehilangan apa pun.
+                val imagesJson = runCatching {
+                    ImageLayerStore.save(layerManager, projectManager.projectDirFor(projectId))
+                }.getOrNull()
+                if (imagesJson != null) {
+                    runCatching { projectManager.saveImages(projectId, imagesJson) }
+                } else {
+                    runCatching { projectManager.saveImages(projectId, "") }
+                }
+                // includeImage=false HANYA bila image layer benar-benar
+                // tersimpan sebagai layer; kalau tidak, dobel gambar saat restore.
+                layerManager.renderDrawingOnly(base, includeImage = imagesJson == null)
+                if (withPreview) {
+                    preview = runCatching {
+                        val longest = max(canvasWidth, canvasHeight).coerceAtLeast(1)
+                        val s = (1024f / longest).coerceAtMost(1f)
+                        ImageImport.scaleTo(
+                            compositeBitmap,
+                            max(1, (canvasWidth * s).toInt()),
+                            max(1, (canvasHeight * s).toInt())
+                        )
+                    }.getOrNull()
+                }
                 // Hormati hasil atomik: bila PNG gagal (OOM/kill), jangan tandai tersimpan
                 // agar auto-save berikutnya mencoba lagi, bukan menganggap setengah file valid.
                 val artOk = runCatching { projectManager.saveArtwork(projectId, base) }.getOrDefault(false)
@@ -670,9 +688,23 @@ fun CanvasEditorScreen(
                 }.getOrNull()
                 if (base != null) {
                     try {
-                        layerManager.renderDrawingOnly(base)
                         val textsJson = with(TextLayerStore) { layerManager.textLayersToJson() }
-                        scope.launch(Dispatchers.IO) {
+                        // NonCancellable: onDispose terjadi saat activity ditutup,
+                        // sehingga scope bisa dibatalkan di tengah. Tanpa ini
+                        // image layer bisa hilang karena save tidak selesai.
+                        scope.launch(NonCancellable + Dispatchers.IO) {
+                            // Sama seperti persistProjectNow: image layer
+                            // disimpan terpisah bila berhasil, baru PNG dasar
+                            // dirender TANPA image (kalau tidak dobel).
+                            val imagesJson = runCatching {
+                                ImageLayerStore.save(layerManager, projectManager.projectDirFor(projectId))
+                            }.getOrNull()
+                            if (imagesJson != null) {
+                                runCatching { projectManager.saveImages(projectId, imagesJson) }
+                            } else {
+                                runCatching { projectManager.saveImages(projectId, "") }
+                            }
+                            layerManager.renderDrawingOnly(base, includeImage = imagesJson == null)
                             runCatching { projectManager.saveArtwork(projectId, base) }
                             runCatching { projectManager.saveTexts(projectId, textsJson) }
                             runCatching { base.recycle() }
@@ -915,6 +947,48 @@ fun CanvasEditorScreen(
                 refreshComposite()
             }
         }
+    }
+
+    // Restore image layer (watermark/stiker) sebagai layer EDITABLE.
+    // Tanpa ini, gambar yang di-add akan "bakar" jadi piksel di PNG dasar
+    // dan tak bisa diedit lagi setelah project ditutup.
+    LaunchedEffect(projectId) {
+        val raw = withContext(Dispatchers.IO) {
+            runCatching { projectManager.loadImages(projectId) }.getOrNull()
+        }
+        if (raw.isNullOrBlank()) return@LaunchedEffect
+        val specs = ImageLayerStore.parse(raw)
+        if (specs.isEmpty()) return@LaunchedEffect
+        val dir = projectManager.projectDirFor(projectId)
+        // Decode di IO. Layer yang gagal dimuat (file hilang/rusak) dilewati
+        // satu-per-satu, bukan menggagalkan seluruh project.
+        val loaded = withContext(Dispatchers.IO) {
+            specs.mapNotNull { spec ->
+                val file = File(dir, "images/${spec.assetFile}")
+                val bmp = runCatching {
+                    ImageImport.decodeFileHeapAware(file.absolutePath)
+                }.getOrNull()
+                if (bmp == null) null else spec to bmp
+            }
+        }
+        if (loaded.isEmpty()) return@LaunchedEffect
+        // Sisipkan sesuai urutan & folder induknya. Daftar hasil parse berurutan
+        // atas-dulu (sama seperti layers), sedangkan add(0) menyisipkan di
+        // depan → iterate terbalik supaya urutannya kembali persis.
+        for ((spec, bmp) in loaded.asReversed()) {
+            val layer = ImageLayerStore.buildLayer(spec, bmp)
+            if (layerManager.findLayerById(spec.id) != null) {
+                runCatching { bmp.recycle() }
+                continue
+            }
+            val parent = spec.parentId?.let { layerManager.findLayerById(it) }
+            if (parent != null && parent.isFolder) {
+                parent.children.add(0, layer)
+            } else {
+                layerManager.layers.add(0, layer)
+            }
+        }
+        refreshComposite()
     }
 
     // Style preset untuk pencocokan prefix otomatis ala TypeR.

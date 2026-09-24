@@ -189,6 +189,8 @@ class ProjectManager(private val context: Context) {
             if (f.exists()) f.delete()
             runCatching { textsFileFor(id).takeIf { it.exists() }?.delete() }
             runCatching { previewFileFor(id).takeIf { it.exists() }?.delete() }
+            runCatching { imagesMetaFileFor(id).takeIf { it.exists() }?.delete() }
+            runCatching { ImageLayerStore.assetDir(projectsDir).takeIf { it.exists() }?.deleteRecursively() }
             current.remove(target)
             persistProjects(current)
         }
@@ -204,6 +206,26 @@ class ProjectManager(private val context: Context) {
 
     /** Preview kecil komposit + teks untuk thumbnail galeri (opsional). */
     fun previewFileFor(id: String): File = File(projectsDir, "proj_${id}_preview.png")
+
+    // ---------- State editable (image/watermark tetap bisa diedit) -----------
+    // Metrik image layer diserialisasi ke JSON terpisah; bitmap sumber tiap
+    // layer ditulis sebagai PNG sendiri di projects/images/. Dengan begitu
+    // watermark tidak lagi "bakar" jadi piksel saat project disimpan.
+
+    /** JSON metadata image layer per project. */
+    fun imagesMetaFileFor(id: String): File = File(projectsDir, "proj_${id}_images.json")
+
+    /** Direktori proyek (induk aset image). */
+    fun projectDirFor(id: String): File = projectsDir
+
+    fun saveImages(id: String, json: String) {
+        runCatching { imagesMetaFileFor(id).writeText(json) }
+    }
+
+    /** null bila project belum pernah punya image layer editable. */
+    fun loadImages(id: String): String? = runCatching {
+        imagesMetaFileFor(id).takeIf { it.exists() }?.readText()
+    }.getOrNull()
 
     fun saveTexts(id: String, json: String) {
         runCatching { textsFileFor(id).writeText(json) }

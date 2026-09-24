@@ -523,11 +523,18 @@ class LayerManager(val width: Int, val height: Int) {
      * Basis tanpa teks + JSON teks terpisah = teks tetap editable setelah
      * apk ditutup (tidak lagi menyatu/baked ke Layer 1).
      */
-    fun renderDrawingOnly(targetBitmap: Bitmap) {
-        renderInternal(targetBitmap, withText = false)
+    /**
+     * Render layer piksel + image (tanpa teks) ke bitmap target.
+     *
+     * @param includeImage false saat image layer ikut DISIMPAN sebagai layer
+     *   editable (lihat ImageLayerStore). Kalau image tetap di-render ke PNG
+     *   basis DAN sekaligus dipulihkan sebagai layer, gambarnya jadi dobel.
+     */
+    fun renderDrawingOnly(targetBitmap: Bitmap, includeImage: Boolean = true) {
+        renderInternal(targetBitmap, withText = false, withImage = includeImage)
     }
 
-    private fun renderInternal(targetBitmap: Bitmap, withText: Boolean) {
+    private fun renderInternal(targetBitmap: Bitmap, withText: Boolean, withImage: Boolean = true) {
         val canvas = Canvas(targetBitmap)
         canvas.drawColor(android.graphics.Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
 
@@ -537,7 +544,9 @@ class LayerManager(val width: Int, val height: Int) {
         fun collectLayers(items: List<LayerItem>) {
             for (item in items) {
                 if (item.isVisible) {
-                    if (item is DrawingLayer || item is TextLayer || item is ImageLayer) {
+                    if (item is DrawingLayer || item is TextLayer ||
+                        (item is ImageLayer && withImage)
+                    ) {
                         flatLayers.add(item)
                     } else if (item.isFolder) {
                         collectLayers(item.children)

@@ -267,6 +267,24 @@ assert(imageImportSrc.includes('fun decodeForReference') && imageImportSrc.inclu
 assert(imageImportSrc.includes('estimateJpegBytes') && imageImportSrc.includes('bmp.compress'), 'reference: hasil diverifikasi kompresi JPEG nyata, bukan asal perkiraan');
 assert(editor.includes('loadReferenceBitmap') && editor.includes('showReferenceWindow'), 'reference: jendela punya status buka/muat/error sendiri (tidak auto-open saat add image)');
 
+// 18. Persistensi image layer (watermark tidak boleh "bakar" jadi piksel).
+//     Termasuk jebakan compile yang pernah menggagalkan CI: nativeCanvas adalah
+//     EXTENSION PROPERTY dan wajib di-import di file yang memakainya.
+const imgStore = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ImageLayerStore.kt'));
+{
+  const o = (imgStore.match(/{/g) || []).length;
+  const c = (imgStore.match(/}/g) || []).length;
+  assert(o === c, 'ImageLayerStore braces balanced (' + o + '/' + c + ')');
+}
+assert(refWin.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'reference: import nativeCanvas ada (extension property, tanpa ini build gagal)');
+assert(imgStore.includes('fun save(') && imgStore.includes('fun parse(') && imgStore.includes('fun buildLayer('), 'image layer: simpan/parse/build utuh (layer editable, bukan bake piksel)');
+assert(editor.includes('ImageLayerStore.save(layerManager') && editor.includes('ImageLayerStore.parse(raw)'), 'editor: save & restore image layer terhubung');
+assert(editor.includes('renderDrawingOnly(base, includeImage = imagesJson == null)'), 'editor: image tidak dobel (tidak dibake bila sudah jadi layer)');
+assert(editor.includes('NonCancellable + Dispatchers.IO'), 'editor: save-on-exit tidak dibatalkan saat activity ditutup');
+assert(editor.includes('projectManager.saveImages') && editor.includes('projectManager.loadImages'), 'editor: metadata image disimpan & dimuat via ProjectManager');
+assert(editor.includes('loaded.asReversed()'), 'editor: urutan layer pulih benar (atas-dulu)');
+assert(editor.includes('ImageImport.decodeFileHeapAware(file.absolutePath)'), 'editor: decode aset image heap-aware (aman 720x16000)');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
