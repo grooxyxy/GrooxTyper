@@ -35,6 +35,16 @@ open class LayerItem(
     var isAlphaLocked by mutableStateOf(false)
     var isClippingMask by mutableStateOf(false)
     val children = mutableStateListOf<LayerItem>()
+    /**
+     * Posisi asli saat project dibuka (0 = paling atas). HANYA dipakai untuk
+     * menyortir ulang sesaat setelah restore, tidak masuk JSON.
+     *
+     * Tanpa ini, layer teks dan image yang dipulihkan dari dua sumber berbeda
+     * akan saling menimpa urutannya: watermark yang asalnya di bawah bubble
+     * teks bisa meloncat ke atas (atau sebaliknya) setiap project ditutup.
+     * Default MAX_VALUE = "bukan dari file" → tetap di paling bawah.
+     */
+    var restoreZ: Float = Float.MAX_VALUE
 }
 
 class DrawingLayer(
@@ -453,6 +463,22 @@ class LayerManager(val width: Int, val height: Int) {
             return null
         }
         return find(layers)
+    }
+
+    /**
+     * Urutkan ulang layer berdasarkan [LayerItem.restoreZ] (posisi asli saat
+     * project disimpan). Dipanggil setelah restore teks DAN image selesai,
+     * supaya z-order gabungan kembali persis seperti waktu disimpan.
+     * Aman dipanggil berulang: setiap daftar disalin lalu ditimpa utuh.
+     */
+    fun sortByRestoreZ() {
+        fun sortList(items: MutableList<LayerItem>) {
+            val sorted = items.sortedBy { it.restoreZ }
+            items.clear()
+            items.addAll(sorted)
+            for (item in sorted) if (item.isFolder) sortList(item.children)
+        }
+        sortList(layers)
     }
 
     /**

@@ -250,8 +250,10 @@ assert(layerSrc.includes('opacityInit: Float = 1f') && layerSrc.includes('layer.
 assert(editor.includes('if (showImageProps) selectedImage()?.let { img ->') && editor.includes('if (activeTool == ActiveTool.IMAGE && selectedImage() != null)'), 'add image: panel properti terpisah dari seleksi (tidak memblokir drag kanvas)');
 assert(editor.includes('fun oppositeCorner(') && editor.includes('imageAnchorPoint'), 'add image: skala beranchor di sudut lawannya (tidak meluncur)');
 assert(editor.includes('img.cornerPoints()') && editor.includes('val cp = img.cornerPoints()'), 'add image: handle + bingkai ikut rotasi (cornerPoints), bukan AABB');
-assert(editor.includes('.findFirst { it.hitTest('), 'add image: image yang diketuk = layer teratas (findFirst, bukan findLast)');
-assert((editor.match(/refreshCompositeCoalesced\(\)/g) || []).length >= 10, 'add image: gestre & slider memakai render coalesced (realtime di kanvas 720x16000)');
+assert(editor.includes('.firstOrNull { it.hitTest('), 'add image: image yang diketuk = layer teratas (firstOrNull, bukan findLast)');
+assert(!editor.includes('PanelLight'), 'add image: tidak memakai PanelLight privat TextEditorPanel di CanvasEditorScreen');
+assert((editor.match(/refreshCompositeCoalesced\(\)/g) || []).length >= 10, 'add image: gesture & slider memakai render coalesced (realtime di kanvas 720x16000)');
+assert(layerSrc.includes('fun sortByRestoreZ()') && layerSrc.includes('var restoreZ'), 'add image: z-order gabungan teks+image disusun ulang setelah restore');
 assert(editor.includes('Icons.Default.Preview'), 'add image: tombol Reference Window ada di top bar');
 assert(editor.includes('activeTool = ActiveTool.IMAGE') && editor.includes('showImageProps = true'), 'add image: layer baru langsung aktif + tool IMAGE + panel properti terbuka');
 
@@ -278,6 +280,7 @@ const imgStore = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mode
 }
 assert(refWin.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'reference: import nativeCanvas ada (extension property, tanpa ini build gagal)');
 assert(imgStore.includes('fun save(') && imgStore.includes('fun parse(') && imgStore.includes('fun buildLayer('), 'image layer: simpan/parse/build utuh (layer editable, bukan bake piksel)');
+assert(imgStore.includes('entries.add(') && imgStore.includes('entries.isEmpty()'), 'image layer: pakai List API Kotlin (add/isEmpty), bukan API JSONArray');
 assert(editor.includes('ImageLayerStore.save(layerManager') && editor.includes('ImageLayerStore.parse(raw)'), 'editor: save & restore image layer terhubung');
 assert(editor.includes('renderDrawingOnly(base, includeImage = imagesJson == null)'), 'editor: image tidak dobel (tidak dibake bila sudah jadi layer)');
 assert(editor.includes('NonCancellable + Dispatchers.IO'), 'editor: save-on-exit tidak dibatalkan saat activity ditutup');

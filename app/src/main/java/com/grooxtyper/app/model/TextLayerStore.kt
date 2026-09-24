@@ -20,26 +20,29 @@ object TextLayerStore {
             put("activeLayerId", activeLayerId)
         }
         val arr = JSONArray()
-        // Hanya node teks & folder (gambar sudah di PNG basis).
-        for (item in layers) {
-            nodeToJson(item)?.let { arr.put(it) }
+        // Hanya node teks & folder (gambar_disimpan terpisah oleh ImageLayerStore).
+        // z = indeks asli di dalam induknya; dipakai untuk menyusun ulang
+        // z-order gabungan teks+image setelah project dibuka.
+        for ((index, item) in layers.withIndex()) {
+            nodeToJson(item, index)?.let { arr.put(it) }
         }
         root.put("layers", arr)
         return root.toString()
     }
 
-    private fun nodeToJson(item: LayerItem): JSONObject? {
+    private fun nodeToJson(item: LayerItem, z: Int): JSONObject? {
         return when {
-            item is TextLayer -> textNodeToJson(item)
+            item is TextLayer -> textNodeToJson(item, z)
             item.isFolder -> {
                 val children = JSONArray()
-                for (child in item.children) {
-                    nodeToJson(child)?.let { children.put(it) }
+                for ((index, child) in item.children.withIndex()) {
+                    nodeToJson(child, index)?.let { children.put(it) }
                 }
                 JSONObject().apply {
                     put("id", item.id)
                     put("kind", "folder")
                     put("name", item.name)
+                    put("z", z)
                     putLayerProps(this, item)
                     put("children", children)
                 }
@@ -48,10 +51,11 @@ object TextLayerStore {
         }
     }
 
-    private fun textNodeToJson(layer: TextLayer): JSONObject = JSONObject().apply {
+    private fun textNodeToJson(layer: TextLayer, z: Int): JSONObject = JSONObject().apply {
         put("id", layer.id)
         put("kind", "text")
         put("name", layer.name)
+        put("z", z)
         putLayerProps(this, layer)
         put("box", with(TextBox) { layer.box.toJson() })
     }
@@ -106,7 +110,10 @@ object TextLayerStore {
                     box = box,
                     name = o.optString("name", "Text: ${box.text.take(16)}"),
                     layerId = o.optString("id", java.util.UUID.randomUUID().toString())
-                ).apply { applyLayerProps(o, this) }
+                ).apply {
+                    applyLayerProps(o, this)
+                    restoreZ = o.optDouble("z", Float.MAX_VALUE.toDouble()).toFloat()
+                }
             }
             "folder" -> {
                 LayerItem(
@@ -115,11 +122,12 @@ object TextLayerStore {
                     id = o.optString("id", java.util.UUID.randomUUID().toString())
                 ).apply {
                     applyLayerProps(o, this)
+                    restoreZ = o.optDouble("z", Float.MAX_VALUE.toDouble()).toFloat()
                     val children = o.optJSONArray("children") ?: JSONArray()
                     for (i in 0 until children.length()) {
                         runCatching { nodeFromJson(children.getJSONObject(i), typefaceFor) }
                             .getOrNull()?.let { child ->
-                                // Hanya teks/folder yang dipertahankan (gambar di basis).
+                                // Hanya teks/folder yang dipertahankan (gambar di store sendiri).
                                 if (child is TextLayer || child.isFolder) this.children.add(child)
                             }
                     }
@@ -154,6 +162,9 @@ object TextLayerStore {
                 layers.add(0, node)
             }
         }
+        // Susun ulang berdasarkan posisi asli supaya image (yang direstore
+        // terpisah) bisa masuk di posisi yang benar juga.
+        sortByRestoreZ()
         val active = restored.activeLayerId
         if (!active.isNullOrBlank() && findLayerById(active) != null) {
             activeLayerId = active

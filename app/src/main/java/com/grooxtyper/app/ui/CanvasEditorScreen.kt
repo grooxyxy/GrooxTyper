@@ -988,6 +988,9 @@ fun CanvasEditorScreen(
                 layerManager.layers.add(0, layer)
             }
         }
+        // Susun ulang z-order gabungan teks + image supaya watermark kembali
+        // persis di posisi (atas/bawah) seperti saat project disimpan.
+        layerManager.sortByRestoreZ()
         refreshComposite()
     }
 
@@ -2587,12 +2590,12 @@ fun CanvasEditorScreen(
                                                 undoRedoManager.pushImageTransform(current.id, com.grooxtyper.app.model.ImageTransform.of(current))
                                             } else {
                                                 // visibleImageLayers() sudah topmost-first
-                                                // (index 0 = paling atas) → findFirst.
+                                                // (index 0 = paling atas) → firstOrNull.
                                                 // Versi lama findLast → memilih image
                                                 // paling BAWAH, sehingga yang "diambil"
                                                 // bukan yang diketuk.
                                                 val hit = layerManager.visibleImageLayers()
-                                                    .findFirst { it.hitTest(touchCanvasPos.x, touchCanvasPos.y) }
+                                                    .firstOrNull { it.hitTest(touchCanvasPos.x, touchCanvasPos.y) }
                                                 if (hit != null) {
                                                     selectedImageId = hit.id
                                                     layerManager.activeLayerId = hit.id
@@ -3922,7 +3925,7 @@ fun CanvasEditorScreen(
                                 Button(
                                     onClick = { applyFit(mode) },
                                     colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (pendingImportFit == mode) Accent else PanelLight
+                                        containerColor = if (pendingImportFit == mode) Accent else PanelBg
                                     ),
                                     shape = RoundedCornerShape(8.dp),
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp),
@@ -4148,7 +4151,7 @@ fun CanvasEditorScreen(
                                     img.toggleFlipX()
                                     refreshCompositeCoalesced()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.weight(1f)
                             ) { Text("Balik H", color = Color.White, fontSize = 11.sp) }
@@ -4158,7 +4161,7 @@ fun CanvasEditorScreen(
                                     img.toggleFlipY()
                                     refreshCompositeCoalesced()
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
                                 shape = RoundedCornerShape(8.dp),
                                 modifier = Modifier.weight(1f)
                             ) { Text("Balik V", color = Color.White, fontSize = 11.sp) }
@@ -4188,7 +4191,7 @@ fun CanvasEditorScreen(
                                         }
                                         refreshComposite()
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
                                     shape = RoundedCornerShape(8.dp),
                                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp, vertical = 4.dp),
                                     modifier = Modifier.weight(1f)

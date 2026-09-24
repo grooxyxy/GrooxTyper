@@ -42,7 +42,7 @@ object ImageLayerStore {
      * metadata. Kembalikan null bila tidak ada image layer (tidak perlu
      * menulis file sama sekali).
      *
-     * Node yang gagal ditulis TIDAK ikut masuk JSON — pemanggil lalu KNOW
+     * Node yang gagal ditulis TIDAK ikut masuk JSON — pemanggil tahu bahwa
      * ada image yang gagal dan bisa membakar sisanya ke PNG dasar sebagai
      * fallback (lihat CanvasEditorScreen.saveProjectInternal), sehingga user
      * tidak pernah kehilangan gambar.
@@ -54,7 +54,7 @@ object ImageLayerStore {
         val entries = mutableListOf<JSONObject>()
         var count = 0
 
-        fun writeNode(item: LayerItem, parentId: String?) {
+        fun writeNode(item: LayerItem, parentId: String?, z: Int) {
             if (item is ImageLayer) {
                 count++
                 if (item.bitmap.isRecycled) return
@@ -82,10 +82,11 @@ object ImageLayerStore {
                     }
                 }.getOrDefault(false)
                 if (!ok) return // gagal → jangan daftarkan, caller akan fallback bake
-                entries.put(
+                entries.add(
                     JSONObject().apply {
                         put("id", item.id)
                         put("parentId", parentId ?: JSONObject.NULL)
+                        put("z", z)
                         put("name", item.name)
                         put("asset", target.name)
                         put("centerX", item.centerX.toDouble())
@@ -104,17 +105,17 @@ object ImageLayerStore {
                     }
                 )
             } else if (item.isFolder) {
-                for (child in item.children) writeNode(child, item.id)
+                for ((index, child) in item.children.withIndex()) writeNode(child, item.id, index)
             }
         }
-        for (item in manager.layers) writeNode(item, null)
+        for ((index, item) in manager.layers.withIndex()) writeNode(item, null, index)
 
         if (count == 0) {
             // Tak ada image: hapus file lama supaya tidak menumpuk sia-sia.
             runCatching { assetDir(projectDir).deleteRecursively() }
             return null
         }
-        if (entries.length() == 0) {
+        if (entries.isEmpty()) {
             // Semua gagal ditulis → kembalikan null agar caller bake ke PNG.
             return null
         }
@@ -139,6 +140,7 @@ object ImageLayerStore {
                     ImageLayerSpec(
                         id = o.optString("id", java.util.UUID.randomUUID().toString()),
                         parentId = if (o.isNull("parentId")) null else o.optString("parentId"),
+                        z = o.optDouble("z", Float.MAX_VALUE.toDouble()).toFloat(),
                         name = o.optString("name", "Image"),
                         assetFile = asset,
                         centerX = o.optDouble("centerX", 0.0).toFloat(),
@@ -167,6 +169,7 @@ object ImageLayerStore {
     data class ImageLayerSpec(
         val id: String,
         val parentId: String?,
+        val z: Float,
         val name: String,
         val assetFile: String,
         val centerX: Float,
@@ -198,6 +201,7 @@ object ImageLayerStore {
     ).apply {
         lockedAspect = spec.lockedAspect
         opacity = spec.opacity.coerceIn(0f, 1f)
+        restoreZ = spec.z
         isVisible = spec.isVisible
         blendMode = runCatching { LayerBlendMode.valueOf(spec.blendMode) }
             .getOrDefault(LayerBlendMode.NORMAL)
