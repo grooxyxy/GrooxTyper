@@ -1951,6 +1951,9 @@ fun CanvasEditorScreen(
             if (sl != null) {
                 undoRedoManager.undo(layerManager)
                 brushEngine.syncTiles(sl)
+                // Stroke dibatalkan → ekor SFX yang tertahan harus dibuang,
+                // bukan digambar runcing di atas hasil undo.
+                brushEngine.discardSfxTail()
                 brushEngine.endStroke()
                 strokeLayer = null
             }

@@ -186,9 +186,22 @@ for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxS
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
 }
-assert(brush.includes('SFX_TAPER') && brush.includes('SFX_OUTLINE'), 'brush SFX: kategori SFX (Taper + Outline) terdaftar');
-assert(brush.includes('Taper EKSTREM'), 'brush SFX Taper: ujung stroke meruncing (bukan ujung datar)');
-assert(brush.includes('SFX Outline: pass GANDA'), 'brush SFX Outline: pass outline kontras + isi (ganda)');
+assert(brush.includes('SFX_LETTER') && brush.includes('SFX_TAPER') && brush.includes('SFX_OUTLINE'), 'brush SFX: 3 kuas (Lettering utama + Taper + Outline)');
+// Rombakan sesuai video: kuas keras, lebar per-dab (taper awal, kecepatan,
+// kontras arah turun/atas, lift), outline yang mengikuti lebar, dan ujung
+// runcing di akhir stroke lewat buffer ekor.
+assert(brush.includes('fun sfxDabWidth'), 'SFX: lebar dihitung per-dab (sfxDabWidth)');
+assert(brush.includes('val contrast = 0.72f'), 'SFX: kontras arah — turun tebal, atas tipis ala kaligrafi video');
+assert(brush.includes('val dir = 0.5f + 0.5f * (dy / len)'), 'SFX: arah goresan (dy) menentukan tebal/tipis');
+assert(brush.includes('fun sfxLiftFactor'), 'SFX: jeda = kuas diangkat (sfxLiftFactor)');
+assert(brush.includes('BrushType.SFX_LETTER -> Color.WHITE'), 'SFX Lettering: outline PUTIH seperti layer di-duplicate di video');
+assert(brush.includes('private val sfxPending = ArrayList<Offset>'), 'SFX: buffer ekor untuk runcing akhir stroke');
+assert(brush.includes('fun flushSfxTail'), 'SFX: ekor diruncingkan saat stroke selesai (flushSfxTail)');
+assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: ekor masuk cache tile walau syncTiles dipanggil sebelum endStroke');
+assert(brush.includes('fun discardSfxTail'), 'SFX: buang ekor saat stroke di-undo (tidak menggambar ulang di atas undo)');
+assert(brush.includes('it.strokeWidth = paint.strokeWidth + sfxOutlineWidth'), 'SFX: outline mengikuti lebar goresan (bukan lebar tetap)');
+assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
+assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
 assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');
 assert(textBoxSrc.includes('var sfx: SfxSpec?'), 'TextBox: field mode SFX');
 assert(textBoxSrc.includes('put("sfx"') && textBoxSrc.includes('optJSONObject("sfx")'), 'TextBox: SfxSpec tersimpan di project JSON');
