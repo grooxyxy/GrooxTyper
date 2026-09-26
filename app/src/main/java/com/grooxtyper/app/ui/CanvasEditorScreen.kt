@@ -2112,8 +2112,8 @@ fun CanvasEditorScreen(
     }
 
     // Magic Wand: mode "manual" (toleransi slider) atau "auto" (ketuk bubble
-    // langsung pilih bubble-nya, selainnya toleransi dihitung dari kontras
-    // lokal). Titik tekan untuk deteksi ketuk-vs-geser + flag sibuk.
+    // gabung = pecah jadi 2 via leher interior; selainnya toleransi dihitung
+    // dari kontras lokal). Titik tekan untuk deteksi ketuk-vs-geser + flag sibuk.
     // Ditaruh di sini (sebelum runWandAt) karena fungsi lokal Kotlin hanya
     // melihat deklarasi di atasnya.
     var wandMode by remember { mutableStateOf("manual") }
@@ -2122,12 +2122,75 @@ fun CanvasEditorScreen(
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
 
     /**
+     * Pecah bubble gabung yang diketuk (mode Otomatis): cari "leher" interior
+     * kertas di dalam kotak bubble, belah jadi 2 area. Snapshot piksel di
+     * Main, komputasi di Default. Bila tak ada leher (satu bubble utuh),
+     * pilih bubble utuh seperti biasa.
+     */
+    fun splitBubbleAt(box: RectF) {
+        if (wandBusy) return
+        val l = box.left.toInt().coerceIn(0, canvasWidth - 1)
+        val t = box.top.toInt().coerceIn(0, canvasHeight - 1)
+        val r = box.right.toInt().coerceIn(l + 1, canvasWidth)
+        val b = box.bottom.toInt().coerceIn(t + 1, canvasHeight)
+        val bw = r - l
+        val bh = b - t
+        if (bw < 16 || bh < 16) {
+            selectionEngine.selectOval(box)
+            refreshComposite()
+            return
+        }
+        val px = try {
+            IntArray(bw * bh).also { compositeBitmap.getPixels(it, 0, bw, l, t, bw, bh) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            healError = "Wand gagal baca kanvas — coba lagi"
+            return
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            healError = "Wand OOM — coba area lebih kecil"
+            return
+        }
+        wandBusy = true
+        scope.launch(Dispatchers.Default) {
+            var halves: List<RectF>? = null
+            var err: String? = null
+            try {
+                halves = selectionEngine.splitMergedBubble(px, bw, bh, l, t)
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Wand OOM — coba area lebih kecil"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Wand gagal: ${e.message ?: "error"}"
+            } finally {
+                val done = halves
+                val msg = err
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) {
+                        healError = msg
+                    } else if (done != null && done.size == 2) {
+                        selectionEngine.selectOval(done[0])
+                        selectionEngine.selectOval(done[1])
+                        healError = "Bubble gabung dipecah jadi 2 area"
+                    } else {
+                        selectionEngine.selectOval(box)
+                    }
+                    refreshComposite()
+                }
+            }
+        }
+    }
+
+    /**
      * Jalankan Magic Wand di titik layar: mode "auto" yang ketukannya jatuh
-     * di dalam bubble terdeteksi langsung memilih bubble itu (oval);
-     * selainnya (dan seluruh mode "manual") banjir warna dari titik seed
-     * dengan toleransi. Berat (baca piksel + flood fill) → snapshot di Main,
-     * komputasi di Default. Ditaruh di sini (setelah semua state dideklarasi)
-     * karena fungsi lokal Kotlin hanya melihat deklarasi di atasnya.
+     * di dalam bubble terdeteksi memecah bubble gabung jadi 2 (lihat
+     * splitBubbleAt); selainnya (dan seluruh mode "manual") banjir warna
+     * dari titik seed dengan toleransi. Berat (baca piksel + flood fill) →
+     * snapshot di Main, komputasi di Default. Ditaruh di sini (setelah semua
+     * state dideklarasi) karena fungsi lokal Kotlin hanya melihat deklarasi
+     * di atasnya.
      */
     fun runWandAt(screenPos: Offset) {
         if (wandBusy) return
@@ -2142,8 +2205,10 @@ fun CanvasEditorScreen(
                 }
                 .minByOrNull { it.second }?.first
             if (hit != null) {
-                selectionEngine.selectOval(detectedBubbles[hit].boundingBox)
-                refreshComposite()
+                // Ketuk bubble = pecah bubble gabung (kasus webtoon: dua
+                // bubble menyatu terdeteksi satu kotak). Bila ternyata hanya
+                // satu bubble utuh, pilih utuh seperti biasa.
+                splitBubbleAt(detectedBubbles[hit].boundingBox)
                 return
             }
         }
@@ -4791,7 +4856,7 @@ fun CanvasEditorScreen(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         if (wandBusy) "Memproses…"
-                        else if (wandMode == "auto") "Ketuk bubble = pilih bubble"
+                        else if (wandMode == "auto") "Ketuk bubble gabung = pecah jadi 2"
                         else "Ketuk area warna mirip",
                         color = Color.Gray, fontSize = 11.sp,
                         modifier = Modifier.weight(1f)

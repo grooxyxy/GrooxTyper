@@ -232,6 +232,193 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
+     * Pecah bubble GABUNG jadi dua (mode Otomatis tongkat sihir).
+     *
+     * Kasus webtoon: dua bubble menyatu (berbagi dinding/overlap) terdeteksi
+     * sebagai satu kotak. Di dalam kotak, interior kertas (near-white) dari
+     * kedua bubble menyambung lewat "leher" yang sempit. Fungsi ini mencari
+     * leher tersempit di sepertiga tengah (vertikal = gabung kiri-kanan,
+     * horizontal = gabung atas-bawah) lalu mengembalikan dua kotak isi
+     * (koordinat kanvas). Null bila hanya satu bubble utuh (tak ada leher).
+     *
+     * @param px piksel ARGB area kotak (baris-mayor, selebar [bw]).
+     * @param offX/offY offset kiri-atas kotak dalam koordinat kanvas.
+     */
+    fun splitMergedBubble(
+        px: IntArray,
+        bw: Int,
+        bh: Int,
+        offX: Int,
+        offY: Int
+    ): List<RectF>? {
+        if (bw < 16 || bh < 16 || px.size < bw * bh) return null
+        // Mask interior kertas (teks & garis outline = gelap, dikecualikan).
+        val mask = BooleanArray(bw * bh)
+        for (i in 0 until bw * bh) {
+            val p = px[i]
+            val m = minOf(
+                (p shr 16) and 0xFF,
+                (p shr 8) and 0xFF,
+                p and 0xFF
+            )
+            mask[i] = m > 200
+        }
+        // Komponen terhubung terbesar = interior gabungan (abaikan noise kecil).
+        val seen = BooleanArray(bw * bh)
+        var best: MutableList<Int>? = null
+        for (s in 0 until bw * bh) {
+            if (!mask[s] || seen[s]) continue
+            val comp = ArrayList<Int>(256)
+            val stack = ArrayDeque<Int>()
+            seen[s] = true
+            stack.addLast(s)
+            while (stack.isNotEmpty()) {
+                val i = stack.removeLast()
+                comp.add(i)
+                val x = i % bw
+                val y = i / bw
+                if (x > 0) {
+                    val j = i - 1
+                    if (mask[j] && !seen[j]) {
+                        seen[j] = true
+                        stack.addLast(j)
+                    }
+                }
+                if (x < bw - 1) {
+                    val j = i + 1
+                    if (mask[j] && !seen[j]) {
+                        seen[j] = true
+                        stack.addLast(j)
+                    }
+                }
+                if (y > 0) {
+                    val j = i - bw
+                    if (mask[j] && !seen[j]) {
+                        seen[j] = true
+                        stack.addLast(j)
+                    }
+                }
+                if (y < bh - 1) {
+                    val j = i + bw
+                    if (mask[j] && !seen[j]) {
+                        seen[j] = true
+                        stack.addLast(j)
+                    }
+                }
+            }
+            if (best == null || comp.size > best.size) best = comp
+        }
+        val comp = best ?: return null
+        if (comp.size < 200) return null
+        val total = comp.size.toFloat()
+        // Profil kolom & baris komponen.
+        val colCount = IntArray(bw)
+        val rowCount = IntArray(bh)
+        for (i in comp) {
+            colCount[i % bw]++
+            rowCount[i / bw]++
+        }
+        fun colMax(a: Int, b: Int): Int {
+            var m = 0
+            for (x in a..b) if (colCount[x] > m) m = colCount[x]
+            return m
+        }
+        fun rowMax(a: Int, b: Int): Int {
+            var m = 0
+            for (y in a..b) if (rowCount[y] > m) m = rowCount[y]
+            return m
+        }
+        // Leher vertikal: kolom tersempit di sepertiga tengah.
+        var vx = -1
+        var vxDepth = 0f
+        run {
+            val x0 = bw / 3
+            val x1 = bw * 2 / 3
+            var minC = Int.MAX_VALUE
+            var minX = -1
+            for (x in x0..x1) {
+                if (colCount[x] < minC) {
+                    minC = colCount[x]
+                    minX = x
+                }
+            }
+            if (minX >= 0) {
+                var left = 0L
+                for (x in 0..minX) left += colCount[x]
+                var right = 0L
+                for (x in minX + 1 until bw) right += colCount[x]
+                val peak = maxOf(colMax(0, minX), colMax(minX + 1, bw - 1)).toFloat()
+                if (peak > 0f && minOf(left, right) > total * 0.2) {
+                    vxDepth = 1f - minC / peak
+                    if (vxDepth > 0.35f) vx = minX
+                }
+            }
+        }
+        // Leher horizontal: baris tersempit di sepertiga tengah.
+        var hy = -1
+        var hyDepth = 0f
+        run {
+            val y0 = bh / 3
+            val y1 = bh * 2 / 3
+            var minC = Int.MAX_VALUE
+            var minY = -1
+            for (y in y0..y1) {
+                if (rowCount[y] < minC) {
+                    minC = rowCount[y]
+                    minY = y
+                }
+            }
+            if (minY >= 0) {
+                var top = 0L
+                for (y in 0..minY) top += rowCount[y]
+                var bot = 0L
+                for (y in minY + 1 until bh) bot += rowCount[y]
+                val peak = maxOf(rowMax(0, minY), rowMax(minY + 1, bh - 1)).toFloat()
+                if (peak > 0f && minOf(top, bot) > total * 0.2) {
+                    hyDepth = 1f - minC / peak
+                    if (hyDepth > 0.35f) hy = minY
+                }
+            }
+        }
+        if (vx < 0 && hy < 0) return null
+        // Potong pada leher terdalam; tiap belahan = bbox isinya + pad.
+        val pad = 4
+        fun halfBox(
+            keep: (x: Int, y: Int) -> Boolean
+        ): RectF? {
+            var l = bw
+            var t = bh
+            var r = -1
+            var b = -1
+            for (i in comp) {
+                val x = i % bw
+                val y = i / bw
+                if (!keep(x, y)) continue
+                if (x < l) l = x
+                if (x > r) r = x
+                if (y < t) t = y
+                if (y > b) b = y
+            }
+            if (r < 0 || r - l < 8 || b - t < 8) return null
+            return RectF(
+                (offX + l - pad).toFloat(),
+                (offY + t - pad).toFloat(),
+                (offX + r + pad).toFloat(),
+                (offY + b + pad).toFloat()
+            )
+        }
+        return if (vxDepth >= hyDepth && vx >= 0) {
+            val a = halfBox { x, _ -> x <= vx }
+            val c = halfBox { x, _ -> x > vx }
+            if (a != null && c != null) listOf(a, c) else null
+        } else if (hy >= 0) {
+            val a = halfBox { _, y -> y <= hy }
+            val c = halfBox { _, y -> y > hy }
+            if (a != null && c != null) listOf(a, c) else null
+        } else null
+    }
+
+    /**
      * Perkirakan toleransi otomatis dari kontras lokal 9x9 di sekitar seed:
      * area datar → toleransi kecil (ketat), area gradasi → lebih longgar.
      * Dipakai mode Otomatis tongkat sihir.
