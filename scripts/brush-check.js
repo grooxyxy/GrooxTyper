@@ -326,6 +326,24 @@ assert(inpaintMgr.includes('dilateMaskAlpha(maskCropPre)') && inpaintMgr.include
 assert(agnesInpaintSrc.includes('never erase, move') || agnesInpaintSrc.includes('stay exactly where they are'), 'ai-inpaint: prompt melarang ubah/hapus garis bubble');
 assert(editor.includes('it.copy(text = v)') && editor.includes('"+ Baris"'), 'script: tiap naskah bisa diedit manual + tambah baris manual');
 
+// 21. Magic Wand (Manual/Otomatis) + 3 fitur bebas (Fokus bubble,
+//     geser urutan naskah, Pas Layar).
+const selectEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SelectionEngine.kt'));
+{
+  const o = (selectEng.match(/{/g) || []).length;
+  const c = (selectEng.match(/}/g) || []).length;
+  assert(o === c, 'SelectionEngine braces balanced (' + o + '/' + c + ')');
+}
+assert(editor.includes('SELECT_WAND,'), 'wand: ActiveTool.SELECT_WAND terdaftar');
+assert(selectEng.includes('fun selectWand(') && selectEng.includes('fun traceContour(') && selectEng.includes('fun autoTolerance('), 'wand: flood fill + marching squares + toleransi otomatis di SelectionEngine');
+assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), 'wand: tap-vs-geser dibedakan (seleksi hanya saat ketuk)');
+assert(editor.includes('"Manual"') && editor.includes('"Otomatis"') && editor.includes('wandTolerance') && editor.includes('wandMode == "auto"'), 'wand: bar pengaturan mode Manual/Otomatis + slider toleransi');
+assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
+assert(editor.includes('fun focusRect(') && editor.includes('fun fitCanvasToScreen()'), 'navigasi: focusRect + fitCanvasToScreen');
+assert(editor.includes('"Fokus"') && editor.includes('focusRect(r)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
+assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEntry(idx, idx - 1)'), 'script: geser urutan naskah naik/turun');
+assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {

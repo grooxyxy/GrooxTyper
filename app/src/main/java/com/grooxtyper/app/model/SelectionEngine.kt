@@ -151,6 +151,165 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
+     * Magic Wand: banjir (flood fill) warna mirip dari titik seed, lalu
+     * batasnya ditelusur jadi Path (marching squares) dan ditambah sebagai
+     * SATU area baru. Konektivitas 4-arah (lebih ketat, tidak bocor lewat
+     * diagonal celah line-art).
+     *
+     * @param px piksel ARGB baris-mayor selebar [w].
+     * @param maxDist jarak Euclidean RGB maksimum dari warna seed.
+     * @return true bila satu area berhasil ditambah.
+     */
+    fun selectWand(
+        px: IntArray,
+        w: Int,
+        h: Int,
+        sx: Int,
+        sy: Int,
+        maxDist: Float
+    ): Boolean {
+        if (sx !in 0 until w || sy !in 0 until h) return false
+        if (px.size < w * h) return false
+        val seed = px[sy * w + sx]
+        val sr = (seed shr 16) and 0xFF
+        val sg = (seed shr 8) and 0xFF
+        val sb = seed and 0xFF
+        val thr2 = maxDist * maxDist
+        fun close(i: Int): Boolean {
+            val p = px[i]
+            val dr = (((p shr 16) and 0xFF) - sr).toFloat()
+            val dg = (((p shr 8) and 0xFF) - sg).toFloat()
+            val db = ((p and 0xFF) - sb).toFloat()
+            return dr * dr + dg * dg + db * db <= thr2
+        }
+        if (!close(sy * w + sx)) return false
+        val mask = BooleanArray(w * h)
+        val stack = ArrayDeque<Int>()
+        mask[sy * w + sx] = true
+        stack.addLast(sy * w + sx)
+        var count = 0
+        // Batas agar tap di latar raksasa tak menggantung UI selamanya.
+        val cap = minOf(w.toLong() * h, 12_000_000L)
+        while (stack.isNotEmpty()) {
+            val i = stack.removeLast()
+            count++
+            if (count > cap) return false
+            val x = i % w
+            val y = i / w
+            if (x > 0) {
+                val j = i - 1
+                if (!mask[j] && close(j)) {
+                    mask[j] = true
+                    stack.addLast(j)
+                }
+            }
+            if (x < w - 1) {
+                val j = i + 1
+                if (!mask[j] && close(j)) {
+                    mask[j] = true
+                    stack.addLast(j)
+                }
+            }
+            if (y > 0) {
+                val j = i - w
+                if (!mask[j] && close(j)) {
+                    mask[j] = true
+                    stack.addLast(j)
+                }
+            }
+            if (y < h - 1) {
+                val j = i + w
+                if (!mask[j] && close(j)) {
+                    mask[j] = true
+                    stack.addLast(j)
+                }
+            }
+        }
+        if (count < 4) return false
+        val path = traceContour(mask, w, h) ?: return false
+        addRegion(path)
+        return true
+    }
+
+    /**
+     * Perkirakan toleransi otomatis dari kontras lokal 9x9 di sekitar seed:
+     * area datar → toleransi kecil (ketat), area gradasi → lebih longgar.
+     * Dipakai mode Otomatis tongkat sihir.
+     */
+    fun autoTolerance(px: IntArray, w: Int, h: Int, sx: Int, sy: Int): Float {
+        if (px.size < w * h) return 40f
+        val seed = px[sy.coerceIn(0, h - 1) * w + sx.coerceIn(0, w - 1)]
+        val sr = ((seed shr 16) and 0xFF).toFloat()
+        val sg = ((seed shr 8) and 0xFF).toFloat()
+        val sb = (seed and 0xFF).toFloat()
+        var maxD2 = 0f
+        for (dy in -4..4) {
+            for (dx in -4..4) {
+                val x = (sx + dx).coerceIn(0, w - 1)
+                val y = (sy + dy).coerceIn(0, h - 1)
+                val p = px[y * w + x]
+                val dr = (((p shr 16) and 0xFF).toFloat() - sr)
+                val dg = (((p shr 8) and 0xFF).toFloat() - sg)
+                val db = ((p and 0xFF).toFloat() - sb)
+                val d2 = dr * dr + dg * dg + db * db
+                if (d2 > maxD2) maxD2 = d2
+            }
+        }
+        return (kotlin.math.sqrt(maxD2) * 1.5f + 12f).coerceIn(18f, 110f)
+    }
+
+    /**
+     * Telusur batas mask biner jadi Path (marching squares per sel,
+     * tiap segmen jadi sub-path sendiri — cukup untuk overlay marching-ants,
+     * union, dan uji Region). Koordinat = tepi piksel persis.
+     */
+    private fun traceContour(mask: BooleanArray, w: Int, h: Int): Path? {
+        val path = Path()
+        var segs = 0
+        fun seg(x1: Float, y1: Float, x2: Float, y2: Float) {
+            path.moveTo(x1, y1)
+            path.lineTo(x2, y2)
+            segs++
+        }
+        for (y in 0 until h - 1) {
+            val r0 = y * w
+            for (x in 0 until w - 1) {
+                val tl = mask[r0 + x]
+                val tr = mask[r0 + x + 1]
+                val br = mask[r0 + x + 1 + w]
+                val bl = mask[r0 + x + w]
+                val idx = (if (tl) 1 else 0) or (if (tr) 2 else 0) or
+                    (if (br) 4 else 0) or (if (bl) 8 else 0)
+                val fx = x.toFloat()
+                val fy = y.toFloat()
+                when (idx) {
+                    1 -> seg(fx + 0.5f, fy, fx, fy + 0.5f)
+                    2 -> seg(fx + 0.5f, fy, fx + 1f, fy + 0.5f)
+                    3 -> seg(fx, fy + 0.5f, fx + 1f, fy + 0.5f)
+                    4 -> seg(fx + 1f, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    5 -> {
+                        seg(fx + 0.5f, fy, fx, fy + 0.5f)
+                        seg(fx + 1f, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    }
+                    6 -> seg(fx + 0.5f, fy, fx + 0.5f, fy + 1f)
+                    7 -> seg(fx, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    8 -> seg(fx, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    9 -> seg(fx + 0.5f, fy, fx + 0.5f, fy + 1f)
+                    10 -> {
+                        seg(fx + 0.5f, fy, fx + 1f, fy + 0.5f)
+                        seg(fx, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    }
+                    11 -> seg(fx + 1f, fy + 0.5f, fx + 0.5f, fy + 1f)
+                    12 -> seg(fx, fy + 0.5f, fx + 1f, fy + 0.5f)
+                    13 -> seg(fx + 0.5f, fy, fx + 1f, fy + 0.5f)
+                    14 -> seg(fx + 0.5f, fy, fx, fy + 0.5f)
+                }
+            }
+        }
+        return if (segs == 0) null else path
+    }
+
+    /**
      * Tambah kotak sebagai SATU area baru (drag menumpuk, multi-seleksi).
      * Koordinat dinormalisasi + dijepit ke kanvas. Dipakai untuk tambah
      * bubble manual dan seleksi area cepat via drag.

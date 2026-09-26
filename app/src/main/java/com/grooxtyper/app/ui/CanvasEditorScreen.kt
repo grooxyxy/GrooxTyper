@@ -173,6 +173,7 @@ enum class ActiveTool {
     INPAINT,
     LASSO,
     SELECT_BOX,
+    SELECT_WAND,
     TEXT,
     IMAGE,
     EYEDROPPER
@@ -1097,6 +1098,15 @@ fun CanvasEditorScreen(
     fun unusedScriptEntries(): List<ScriptEntry> = scriptEntries.filter { !it.used }
     fun resetScriptUsage() { scriptEntries = scriptEntries.map { it.copy(used = false) } }
 
+    /** Geser posisi satu naskah (urutan baca manga) tanpa mengubah isinya. */
+    fun moveScriptEntry(from: Int, to: Int) {
+        if (from !in scriptEntries.indices || to !in scriptEntries.indices || from == to) return
+        val m = scriptEntries.toMutableList()
+        val e = m.removeAt(from)
+        m.add(to, e)
+        scriptEntries = m
+    }
+
     // Mode panel Script: false = Bubble (deteksi teks + antrean baris),
     // true = Teks (TANPA deteksi teks — cukup samakan jumlah naskah dengan
     // jumlah bubble/area seleksi, render mengikuti Style Rules + cek latar +
@@ -1156,6 +1166,76 @@ fun CanvasEditorScreen(
                 ) idx to ((b.width() * b.height()).toLong()) else null
             }
             .minByOrNull { it.second }?.first
+
+    /**
+     * Jalankan Magic Wand di titik layar: mode "auto" yang ketukannya jatuh
+     * di dalam bubble terdeteksi langsung memilih bubble itu (oval);
+     * selainnya (dan seluruh mode "manual") banjir warna dari titik seed
+     * dengan toleransi. Berat (baca piksel + flood fill) → snapshot di Main,
+     * komputasi di Default.
+     */
+    fun runWandAt(screenPos: Offset) {
+        if (wandBusy) return
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        if (wandMode == "auto") {
+            val hit = detectedBubbles
+                .mapIndexedNotNull { idx, b ->
+                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
+                }
+                .minByOrNull { it.second }?.first
+            if (hit != null) {
+                selectionEngine.selectOval(detectedBubbles[hit].boundingBox)
+                refreshComposite()
+                return
+            }
+        }
+        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
+        val w = compositeBitmap.width
+        val h = compositeBitmap.height
+        if (w <= 0 || h <= 0) return
+        val px = try {
+            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            healError = "Wand gagal baca kanvas — coba lagi"
+            return
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            healError = "Wand OOM — coba area lebih kecil"
+            return
+        }
+        wandBusy = true
+        scope.launch(Dispatchers.Default) {
+            var added = false
+            var err: String? = null
+            try {
+                val tol = if (wandMode == "auto") {
+                    selectionEngine.autoTolerance(px, w, h, cx, cy)
+                } else {
+                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                }
+                added = selectionEngine.selectWand(px, w, h, cx, cy, tol)
+                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Wand OOM — coba toleransi lebih kecil"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Wand gagal: ${e.message ?: "error"}"
+            } finally {
+                val msg = err
+                val ok = added
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) healError = msg
+                    if (ok) refreshComposite()
+                }
+            }
+        }
+    }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by remember { mutableStateOf(false) }
     var lassoPath by remember { mutableStateOf<Path?>(null) }
@@ -1802,6 +1882,30 @@ fun CanvasEditorScreen(
     /** Langkah joystick adaptif zoom (tampil ~6px di layar). */
     fun dpadStep(): Float = (6f / viewState.scale).coerceIn(2f, 48f)
 
+    /**
+     * Pusatkan viewport ke rect kanvas (bubble/area) dengan zoom pas.
+     * Dipakai tombol "Fokus" di daftar bubble dan "Pas Layar" di top bar.
+     */
+    fun focusRect(r: RectF, maxZoom: Float = 4f) {
+        val vw = viewportSize.width.toFloat().coerceAtLeast(1f)
+        val vh = viewportSize.height.toFloat().coerceAtLeast(1f)
+        val s = minOf(
+            vw / r.width().coerceAtLeast(1f),
+            vh / r.height().coerceAtLeast(1f),
+            maxZoom
+        ).coerceIn(0.05f, 10f)
+        viewState.pivotFracX = 0.5f
+        viewState.pivotFracY = 0.5f
+        viewState.scale = s
+        viewState.offsetX = s * (vw / 2f - r.centerX())
+        viewState.offsetY = s * (vh / 2f - r.centerY())
+    }
+
+    /** Pas Layar: seluruh kanvas terlihat tengah (zoom dihitung otomatis). */
+    fun fitCanvasToScreen() {
+        focusRect(RectF(0f, 0f, canvasWidth.toFloat(), canvasHeight.toFloat()), 10f)
+    }
+
     /** Geser teks terpilih via joystick (undo digabung per rentetan). */
     fun nudgeSelectedText(dx: Float, dy: Float) {
         val box = selectedTextBox ?: return
@@ -2128,6 +2232,13 @@ fun CanvasEditorScreen(
     // Titik awal tekan di tool PAN (untuk deteksi ketuk-hapus region teks:
     // ketuk = lepas tanpa geser; geser = pan biasa, tidak menghapus).
     var panTapStart by remember { mutableStateOf<Offset?>(null) }
+    // Magic Wand: mode "manual" (toleransi slider) atau "auto" (ketuk bubble
+    // langsung pilih bubble-nya, selainnya toleransi dihitung dari kontras
+    // lokal). Titik tekan untuk deteksi ketuk-vs-geser + flag sibuk.
+    var wandMode by remember { mutableStateOf("manual") }
+    var wandTolerance by remember { mutableFloatStateOf(32f) }
+    var wandBusy by remember { mutableStateOf(false) }
+    var wandPressStart by remember { mutableStateOf<Offset?>(null) }
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
     var strokeProgress by remember { mutableStateOf(0f) }
     var strokeLength by remember { mutableStateOf(0f) }
@@ -2479,6 +2590,7 @@ fun CanvasEditorScreen(
                                 cursorPosition = null
                                 strokeLength = 0f
                                 panTapStart = null
+                                wandPressStart = null
                                 var zoom = 1f
                                 var pan = Offset.Zero
 
@@ -2877,6 +2989,13 @@ fun CanvasEditorScreen(
                                             boxCurrent = touchCanvasPos
                                         }
                                         refreshComposite()
+                                    } else if (activeTool == ActiveTool.SELECT_WAND) {
+                                        // Magic Wand: cukup ketuk (tanpa geser).
+                                        // Titik tekan dicatat; seleksi jalan
+                                        // saat jari dilepas (lihat blok release).
+                                        if (wandPressStart == null && !wandBusy) {
+                                            wandPressStart = change.position
+                                        }
                                     } else if (activeTool == ActiveTool.INPAINT) {
                                         if (lastCanvasPoint == null) {
                                             val activeLayer = layerManager.ensureDrawingLayer()
@@ -3147,6 +3266,18 @@ fun CanvasEditorScreen(
                                     pressId++
                                     twoFingerActive = false
                                     rotAccum = 0f
+                                    // Wand: lepas tanpa geser = seleksi tongkat
+                                    // sihir di titik tekan (tap, bukan drag).
+                                    if (activeTool == ActiveTool.SELECT_WAND) {
+                                        val start = wandPressStart
+                                        wandPressStart = null
+                                        if (start != null && !wandBusy &&
+                                            (change.position - start).getDistance() <= 24f
+                                        ) {
+                                            runWandAt(start)
+                                            change.consume()
+                                        }
+                                    }
                                     // Kunci sketsa lasso bebas menjadi SATU area baru (multi).
                                     // Sketsa super-kecil = tap → hapus area yang diketuk.
                                     lassoPath?.let { sketch ->
@@ -3219,6 +3350,7 @@ fun CanvasEditorScreen(
                                 lastScreenPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
+                                wandPressStart = null
                                 // Jangkar skala hanya hidup selama satu gestur.
                                 imageAnchorPoint = null
                                 imageHandleMode = ImageHandleMode.NONE
@@ -3934,6 +4066,12 @@ fun CanvasEditorScreen(
                 )
             }
 
+            // Pas Layar: zoom + tengah otomatis supaya seluruh kanvas
+            // (mis. 720x16000) terlihat — titik awal navigasi jangkung.
+            TextButton(onClick = { fitCanvasToScreen() }) {
+                Text("Pas Layar", color = Color.White, fontSize = 12.sp)
+            }
+
             IconButton(onClick = { showExportMenu = true }) {
                 Icon(Icons.Default.Download, contentDescription = "Export", tint = Color.White)
             }
@@ -4618,9 +4756,67 @@ fun CanvasEditorScreen(
             }
         }
 
+        // Bar pengaturan Magic Wand (mode + toleransi), tampil saat tool aktif.
+        if (activeTool == ActiveTool.SELECT_WAND) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 72.dp, start = 12.dp, end = 12.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(PanelBg)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {}
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    listOf("manual" to "Manual", "auto" to "Otomatis").forEach { (mode, label) ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (wandMode == mode) Accent else Color.Transparent)
+                                .clickable { wandMode = mode }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        if (wandBusy) "Memproses…"
+                        else if (wandMode == "auto") "Ketuk bubble = pilih bubble"
+                        else "Ketuk area warna mirip",
+                        color = Color.Gray, fontSize = 11.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (wandMode == "manual") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Toleransi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
+                        Slider(
+                            value = wandTolerance,
+                            onValueChange = { wandTolerance = it },
+                            valueRange = 1f..100f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                        )
+                        Text(
+                            "${wandTolerance.toInt()}",
+                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(28.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.End
+                        )
+                    }
+                }
+            }
+        }
+
         // Hint bar multi-seleksi (di atas toolbar bawah, gantian dengan bubble).
         if (!isMultiBubbleActive() &&
-            (activeTool == ActiveTool.LASSO || activeTool == ActiveTool.SELECT_BOX) &&
+            (activeTool == ActiveTool.LASSO || activeTool == ActiveTool.SELECT_BOX || activeTool == ActiveTool.SELECT_WAND) &&
             selectionEngine.hasSelection
         ) {
             Row(
@@ -4766,6 +4962,21 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.OpenInFull, contentDescription = "Kotak Seleksi", tint = if (activeTool == ActiveTool.SELECT_BOX) Accent else Color.White)
             }
 
+            // Magic Wand: ketuk area warna mirip untuk seleksi (manual/otomatis).
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (activeTool == ActiveTool.SELECT_WAND) Accent else PanelBg)
+                    .clickable {
+                        activeTool = ActiveTool.SELECT_WAND
+                        showBrushSettings = false
+                    }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("Wand", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+
             // Image: pindah/putar/ubah ukuran image layer.
             IconButton(onClick = {
                 activeTool = ActiveTool.IMAGE
@@ -4839,6 +5050,14 @@ fun CanvasEditorScreen(
                     text = { Text("Kotak Seleksi") },
                     onClick = {
                         activeTool = ActiveTool.SELECT_BOX
+                        showBrushSettings = false
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Magic Wand") },
+                    onClick = {
+                        activeTool = ActiveTool.SELECT_WAND
                         showBrushSettings = false
                         showLassoMenu = false
                     }
@@ -5555,6 +5774,10 @@ fun CanvasEditorScreen(
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text("#${idx + 1} (${r.left.toInt()},${r.top.toInt()} ${r.width().toInt()}x${r.height().toInt()})", color = Color.White, fontSize = 12.sp)
                                         }
+                                        TextButton(onClick = {
+                                            showBubbleDialog = false
+                                            focusRect(r)
+                                        }) { Text("Fokus", color = Accent, fontSize = 11.sp) }
                                         IconButton(
                                             onClick = { removeBubbleAt(idx) },
                                             modifier = Modifier.size(28.dp)
@@ -5919,6 +6142,20 @@ fun CanvasEditorScreen(
                                                 Spacer(modifier = Modifier.width(6.dp))
                                             }
                                             Spacer(modifier = Modifier.weight(1f))
+                                            IconButton(
+                                                onClick = { moveScriptEntry(idx, idx - 1) },
+                                                enabled = idx > 0,
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Naik", tint = Color.LightGray, modifier = Modifier.size(18.dp))
+                                            }
+                                            IconButton(
+                                                onClick = { moveScriptEntry(idx, idx + 1) },
+                                                enabled = idx < scriptEntries.size - 1,
+                                                modifier = Modifier.size(28.dp)
+                                            ) {
+                                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Turun", tint = Color.LightGray, modifier = Modifier.size(18.dp))
+                                            }
                                             IconButton(
                                                 onClick = {
                                                     scriptEntries = scriptEntries.filter { it.id != entry.id }
