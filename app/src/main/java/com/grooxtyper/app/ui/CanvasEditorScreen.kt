@@ -1166,76 +1166,6 @@ fun CanvasEditorScreen(
                 ) idx to ((b.width() * b.height()).toLong()) else null
             }
             .minByOrNull { it.second }?.first
-
-    /**
-     * Jalankan Magic Wand di titik layar: mode "auto" yang ketukannya jatuh
-     * di dalam bubble terdeteksi langsung memilih bubble itu (oval);
-     * selainnya (dan seluruh mode "manual") banjir warna dari titik seed
-     * dengan toleransi. Berat (baca piksel + flood fill) → snapshot di Main,
-     * komputasi di Default.
-     */
-    fun runWandAt(screenPos: Offset) {
-        if (wandBusy) return
-        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
-        val cx = cp.x.toInt()
-        val cy = cp.y.toInt()
-        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
-        if (wandMode == "auto") {
-            val hit = detectedBubbles
-                .mapIndexedNotNull { idx, b ->
-                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
-                }
-                .minByOrNull { it.second }?.first
-            if (hit != null) {
-                selectionEngine.selectOval(detectedBubbles[hit].boundingBox)
-                refreshComposite()
-                return
-            }
-        }
-        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
-        val w = compositeBitmap.width
-        val h = compositeBitmap.height
-        if (w <= 0 || h <= 0) return
-        val px = try {
-            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            healError = "Wand gagal baca kanvas — coba lagi"
-            return
-        } catch (e: OutOfMemoryError) {
-            e.printStackTrace()
-            healError = "Wand OOM — coba area lebih kecil"
-            return
-        }
-        wandBusy = true
-        scope.launch(Dispatchers.Default) {
-            var added = false
-            var err: String? = null
-            try {
-                val tol = if (wandMode == "auto") {
-                    selectionEngine.autoTolerance(px, w, h, cx, cy)
-                } else {
-                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
-                }
-                added = selectionEngine.selectWand(px, w, h, cx, cy, tol)
-                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
-            } catch (e: OutOfMemoryError) {
-                e.printStackTrace()
-                err = "Wand OOM — coba toleransi lebih kecil"
-            } catch (e: Exception) {
-                e.printStackTrace()
-                err = "Wand gagal: ${e.message ?: "error"}"
-            } finally {
-                val msg = err
-                val ok = added
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    wandBusy = false
-                    if (msg != null) healError = msg
-                    if (ok) refreshComposite()
-                }
-            }
-        }
-    }
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by remember { mutableStateOf(false) }
     var lassoPath by remember { mutableStateOf<Path?>(null) }
@@ -2179,6 +2109,77 @@ fun CanvasEditorScreen(
         val ry = dx * Math.sin(rad) + dy * Math.cos(rad)
 
         return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
+    }
+
+    /**
+     * Jalankan Magic Wand di titik layar: mode "auto" yang ketukannya jatuh
+     * di dalam bubble terdeteksi langsung memilih bubble itu (oval);
+     * selainnya (dan seluruh mode "manual") banjir warna dari titik seed
+     * dengan toleransi. Berat (baca piksel + flood fill) → snapshot di Main,
+     * komputasi di Default. Ditaruh di sini (setelah semua state dideklarasi)
+     * karena fungsi lokal Kotlin hanya melihat deklarasi di atasnya.
+     */
+    fun runWandAt(screenPos: Offset) {
+        if (wandBusy) return
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        if (wandMode == "auto") {
+            val hit = detectedBubbles
+                .mapIndexedNotNull { idx, b ->
+                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
+                }
+                .minByOrNull { it.second }?.first
+            if (hit != null) {
+                selectionEngine.selectOval(detectedBubbles[hit].boundingBox)
+                refreshComposite()
+                return
+            }
+        }
+        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
+        val w = compositeBitmap.width
+        val h = compositeBitmap.height
+        if (w <= 0 || h <= 0) return
+        val px = try {
+            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            healError = "Wand gagal baca kanvas — coba lagi"
+            return
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            healError = "Wand OOM — coba area lebih kecil"
+            return
+        }
+        wandBusy = true
+        scope.launch(Dispatchers.Default) {
+            var added = false
+            var err: String? = null
+            try {
+                val tol = if (wandMode == "auto") {
+                    selectionEngine.autoTolerance(px, w, h, cx, cy)
+                } else {
+                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                }
+                added = selectionEngine.selectWand(px, w, h, cx, cy, tol)
+                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Wand OOM — coba toleransi lebih kecil"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Wand gagal: ${e.message ?: "error"}"
+            } finally {
+                val msg = err
+                val ok = added
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) healError = msg
+                    if (ok) refreshComposite()
+                }
+            }
+        }
     }
 
     /**
