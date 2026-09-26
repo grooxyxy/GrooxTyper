@@ -27,7 +27,10 @@ import kotlin.math.min
  */
 enum class InpaintMode(val displayName: String) {
     TELEA("Telea (cepat)"),
-    PATCH_MATCH("PatchMatch (bagus)")
+    PATCH_MATCH("PatchMatch (bagus)"),
+    // Isi area teks terdeteksi dengan putih polos (tanpa sampling tekstur).
+    // Cocok untuk bubble/kertas putih: instan, tanpa risiko artefak salinan.
+    FILL_WHITE("Putih (fill)")
 }
 
 class InpaintingManager {
@@ -146,8 +149,38 @@ class InpaintingManager {
 
     /** Radius/dilatasi mask dikelola per panggilan (lihat dilateMaskAlpha). */
     // Mode hapus-teks/area (dipilih di dialog, bukan opsi brush):
-    // PATCH_MATCH = Content-Aware Fill, TELEA = difusi cepat.
-    var mode: InpaintMode = InpaintMode.PATCH_MATCH
+    // PATCH_MATCH = Content-Aware Fill, TELEA = difusi cepat,
+    // FILL_WHITE = timpa putih polos (manga bubble/kertas putih).
+    // Default FILL_WHITE: jalur text-detection membersihkan teks di bubble
+    // putih — instan tanpa artefak salinan tekstur.
+    var mode: InpaintMode = InpaintMode.FILL_WHITE
+
+    /**
+     * Timpa area bermask dengan putih opak (tanpa inpaint tekstur).
+     * Dipakai untuk membersihkan teks di bubble/kertas putih: cepat dan
+     * deterministik. Mask ALPHA_8 didukung langsung (baca alpha saja).
+     */
+    private fun fillMaskWhite(src: Bitmap, mask: Bitmap) {
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0 || mask.width != w || mask.height != h) return
+        // Baris-per-baris agar tidak alokasi IntArray selebar kanvas penuh
+        // (hemat untuk 720x16000).
+        val srcRow = IntArray(w)
+        val maskRow = IntArray(w)
+        for (y in 0 until h) {
+            src.getPixels(srcRow, 0, w, 0, y, w, 1)
+            mask.getPixels(maskRow, 0, w, 0, y, w, 1)
+            var dirty = false
+            for (x in 0 until w) {
+                if ((maskRow[x] ushr 24) > 30) {
+                    srcRow[x] = -1 // putih opak
+                    dirty = true
+                }
+            }
+            if (dirty) src.setPixels(srcRow, 0, w, 0, y, w, 1)
+        }
+    }
 
     /**
      * Inpaint area seleksi (lasso/kotak/bubble) memakai pyramid push-pull
@@ -241,6 +274,20 @@ class InpaintingManager {
     ) {
         val srcBitmap = layer.getBitmap()
         if (dilateMask) dilateMaskAlpha(maskBitmap)
+        if (mode == InpaintMode.FILL_WHITE) {
+            // Isi putih polos untuk teks di bubble/kertas putih (tanpa
+            // sampling tekstur sekitar, tanpa fallback).
+            try {
+                fillMaskWhite(srcBitmap, maskBitmap)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+            }
+            layer.tileMap.importFromBitmap(srcBitmap)
+            layer.markDirty()
+            return
+        }
         if (mode == InpaintMode.PATCH_MATCH) {
             // Content-Aware Fill (PatchMatch + seamless blend) — fallback ke Telea bila gagal
             try {

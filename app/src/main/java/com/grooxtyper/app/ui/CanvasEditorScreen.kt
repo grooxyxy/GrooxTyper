@@ -207,6 +207,68 @@ private fun parseScriptRaw(raw: String): List<ScriptEntry> {
         .map { ScriptEntry(text = it) }
 }
 
+/**
+ * Penanda jeda baris MANUAL dalam 1 naskah script: 1 bubble boleh terdiri
+ * dari beberapa baris. Marker terlihat & bisa digeser/dihapus/ditambah di
+ * editor Ketik Script; saat render diganti "\n" (lihat applyScriptBreaks).
+ */
+const val SCRIPT_LINE_BREAK = "⏎"
+
+/** Terapkan jeda manual: tiap segmen antar-marker jadi 1 baris (trim). */
+private fun applyScriptBreaks(text: String): String =
+    text.split(SCRIPT_LINE_BREAK).joinToString("\n") { it.trim() }
+
+/**
+ * Bentuk-komik otomatis: pecah [text] jadi baris-baris SEIMBANG seperti
+ * penataan huruf komik (tanpa kata terpenggal di tengah).
+ * Dipakai di fitur Script: 1 naskah tetap = 1 bubble, hasilnya memakai
+ * [SCRIPT_LINE_BREAK] sehingga jedanya tetap bisa diubah manual.
+ * Tidak pernah memenggal kata, kecuali satu kata melebihi maxWidth
+ * (dipaksa satu baris sendiri, render yang akan mengecilkannya).
+ */
+private fun comicShapeLines(
+    text: String,
+    measure: (String) -> Float,
+    maxWidth: Float
+): String {
+    val words = text.replace(SCRIPT_LINE_BREAK, " ").trim()
+        .split(Regex("\\s+")).filter { it.isNotEmpty() }
+    if (words.size <= 1) return words.firstOrNull() ?: ""
+    if (maxWidth <= 0f) return words.joinToString(" ")
+    val widths = words.map { measure(it) }
+    val spaceW = measure(" ")
+    val n = words.size
+    // DP: pilih jeda dengan total kuadrat sisa ruang minimal (raggedness
+    // seimbang ala kolom komik), bukan greedy yang menyisakan ekor pendek.
+    val INF = Float.MAX_VALUE / 4f
+    val cost = FloatArray(n + 1) { INF }
+    val next = IntArray(n + 1) { -1 }
+    cost[n] = 0f
+    for (i in n - 1 downTo 0) {
+        var w = 0f
+        for (j in i until n) {
+            w += widths[j] + if (j > i) spaceW else 0f
+            if (w > maxWidth && j > i) break
+            val slack = (maxWidth - w).coerceAtLeast(0f)
+            val c = slack * slack + cost[j + 1]
+            if (c < cost[i]) {
+                cost[i] = c
+                next[i] = j + 1
+            }
+        }
+        if (next[i] < 0) next[i] = i + 1
+    }
+    val lines = mutableListOf<String>()
+    var i = 0
+    var guard = 0
+    while (i < n && guard++ <= n) {
+        val j = next[i].coerceIn(i + 1, n)
+        lines.add(words.subList(i, j).joinToString(" "))
+        i = j
+    }
+    return lines.joinToString(" $SCRIPT_LINE_BREAK ")
+}
+
 /** Pil status kecil di kepala dialog script. */
 @Composable
 private fun StatusPill(label: String, highlight: Boolean = false) {
@@ -1333,6 +1395,55 @@ fun CanvasEditorScreen(
         refreshComposite()
     }
 
+    /** Lebar target median untuk auto-bentuk: inset bubble / seleksi / kanvas. */
+    fun scriptShapeWidth(): Float {
+        val ws = detectedBubbles.map { it.boundingBox.width() * 0.76f }
+            .filter { it > 24f }
+        if (ws.isNotEmpty()) return ws.sorted()[ws.size / 2]
+        selectionEngine.selectionBounds()?.let { return it.width().coerceAtLeast(24f) }
+        return canvasWidth * 0.6f
+    }
+
+    /** Ukur lebar teks dengan font template terpilih (untuk auto-bentuk). */
+    fun scriptMeasureFn(): (String) -> Float {
+        val template = selectedTextBox?.copy() ?: TextBox(text = "X")
+        val paint = template.basePaint()
+        val extra = template.letterSpacing * template.scale
+        val wordExtra = template.wordSpacing * template.scale
+        return { s -> TextBox.spacedWidth(paint, s, extra, wordExtra) }
+    }
+
+    /**
+     * Auto-bentuk semua naskah SISA jadi baris komik seimbang (marker ⏎).
+     * Jumlah entri tidak berubah (1 naskah tetap = 1 bubble); marker bisa
+     * diubah manual di editor Ketik. Mengembalikan jumlah entri yang berubah.
+     */
+    fun autoShapeScripts(): Int {
+        val measure = scriptMeasureFn()
+        val maxW = scriptShapeWidth()
+        var n = 0
+        scriptEntries = scriptEntries.map { e ->
+            if (e.used) e
+            else {
+                val shaped = comicShapeLines(e.text, measure, maxW)
+                if (shaped != e.text) {
+                    n++
+                    e.copy(text = shaped)
+                } else e
+            }
+        }
+        return n
+    }
+
+    /** Auto-bentuk draf Ketik Script per baris (baris kosong dibiarkan). */
+    fun shapeDraftText(draft: String): String {
+        val measure = scriptMeasureFn()
+        val maxW = scriptShapeWidth()
+        return draft.lines().joinToString("\n") { line ->
+            if (line.isBlank()) line else comicShapeLines(line, measure, maxW)
+        }
+    }
+
     /** Jalankan script: render baris belum terpakai ke bubble/seleksi urut manga. */
     fun runScript(): Int {
         val unused = unusedScriptEntries()
@@ -1359,7 +1470,7 @@ fun CanvasEditorScreen(
                     b.bottom - b.height() * 0.12f
                 )
                 val box = TextBox(
-                    text = unused[i].text,
+                    text = applyScriptBreaks(unused[i].text),
                     position = Offset(inset.centerX(), inset.centerY()),
                     color = brushEngine.color
                 )
@@ -1391,7 +1502,7 @@ fun CanvasEditorScreen(
             val bounds = selectionEngine.selectionBounds() ?: return 0
             val entry = unused.first()
             val box = TextBox(
-                text = entry.text,
+                text = applyScriptBreaks(entry.text),
                 position = Offset(bounds.centerX(), bounds.centerY()),
                 color = brushEngine.color
             )
@@ -1604,7 +1715,7 @@ fun CanvasEditorScreen(
         for (row in rows) {
             val b = row.box
             val box = TextBox(
-                text = row.script,
+                text = applyScriptBreaks(row.script),
                 position = Offset(b.centerX(), b.centerY()),
                 color = brushEngine.color
             )
@@ -2364,8 +2475,12 @@ fun CanvasEditorScreen(
                                             // Event pertama dua-jari: previous tak stabil,
                                             // jangan ubah apa pun selain settle (tanpa
                                             // menggeser pivot agar tak teleport).
+                                            // Berlaku di SEMUA tool termasuk TEXT: cubit =
+                                            // geser + zoom kanvas, bukan aksi teks.
                                             twoFingerActive = true
                                             rotAccum = 0f
+                                            textHandleMode = TextHandle.NONE
+                                            imageHandleMode = ImageHandleMode.NONE
                                             lastScreenPoint = null
                                             viewState.pivotFracX = 0.5f
                                             viewState.pivotFracY = 0.5f
@@ -4524,6 +4639,16 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.PanTool, contentDescription = "Pan", tint = if (activeTool == ActiveTool.PAN) Accent else Color.White)
             }
 
+            // Text: ditaruh tepat di sebelah Pan (navigasi & teks = pasangan
+            // kerja utama, tidak lagi terpisah brush/lasso/seleksi).
+            IconButton(onClick = {
+                activeTool = ActiveTool.TEXT
+                showBrushSettings = false
+                if (selectedTextBox != null) showTextEditor = true
+            }) {
+                Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
+            }
+
             // Brush / Eraser toggle pill
             Row(
                 modifier = Modifier
@@ -4601,15 +4726,6 @@ fun CanvasEditorScreen(
             // Kotak Seleksi: drag persegi untuk seleksi cepat / tambah bubble.
             IconButton(onClick = { activeTool = ActiveTool.SELECT_BOX; showBrushSettings = false }) {
                 Icon(Icons.Default.OpenInFull, contentDescription = "Kotak Seleksi", tint = if (activeTool == ActiveTool.SELECT_BOX) Accent else Color.White)
-            }
-
-            // Text
-            IconButton(onClick = {
-                activeTool = ActiveTool.TEXT
-                showBrushSettings = false
-                if (selectedTextBox != null) showTextEditor = true
-            }) {
-                Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
             }
 
             // Image: pindah/putar/ubah ukuran image layer.
@@ -5163,7 +5279,7 @@ fun CanvasEditorScreen(
                         Spacer(modifier = Modifier.height(4.dp))
                         Text("Mode Inpaint:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         Text(
-                            "PatchMatch = pelestari tekstur (lebih bagus dari Photoshop Content-Aware). Telea = halus cepat.",
+                            "Putih = timpa area teks dengan putih polos (cepat, untuk bubble/kertas putih). Telea = halus cepat.",
                             color = Color.Gray, fontSize = 11.sp
                         )
                         Row(
@@ -5171,10 +5287,10 @@ fun CanvasEditorScreen(
                             horizontalArrangement = Arrangement.SpaceAround
                         ) {
                             Button(
-                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.PATCH_MATCH },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.PATCH_MATCH) Accent else PanelBg)
+                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.FILL_WHITE },
+                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.FILL_WHITE) Accent else PanelBg)
                             ) {
-                                Text("PatchMatch", color = Color.White, fontSize = 11.sp)
+                                Text("Putih", color = Color.White, fontSize = 11.sp)
                             }
                             Button(
                                 onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.TELEA },
@@ -5244,7 +5360,7 @@ fun CanvasEditorScreen(
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Inpaint with Telea C++", color = Color.White) }
+                    ) { Text("Jalankan Inpaint", color = Color.White) }
                 },
                 dismissButton = {
                     TextButton(onClick = { if (!isMLInpainting) showMLInpaintDialog = false }) { Text("Cancel", color = Color.Gray) }
@@ -5584,7 +5700,7 @@ fun CanvasEditorScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                         } else {
                             Text(
-                                "Belum ada script. Import file atau ketik manual — satu baris = satu bubble.",
+                                "Belum ada script. Import file atau ketik manual — satu baris = satu bubble, ⏎ = jeda baris di dalamnya.",
                                 color = Color.LightGray, fontSize = 12.sp
                             )
                             Spacer(modifier = Modifier.height(8.dp))
@@ -5741,6 +5857,31 @@ fun CanvasEditorScreen(
                                         activeTool = ActiveTool.SELECT_BOX
                                         showScriptPanel = false
                                     }
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            // Auto-bentuk komik: pecah tiap naskah sisa jadi
+                            // baris seimbang (marker ⏎) tanpa mengubah jumlah
+                            // naskah; marker bisa diubah manual di Ketik.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                ScriptActionButton(
+                                    label = "Auto-bentuk",
+                                    icon = Icons.Default.AutoFixHigh,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = {
+                                        val n = autoShapeScripts()
+                                        bubbleWarn = if (n > 0) "$n naskah dibentuk ulang — cek/ubah marker ⏎ di Ketik bila perlu."
+                                        else "Semua naskah sudah seimbang."
+                                    }
+                                )
+                                Text(
+                                    "⏎ = jeda baris manual",
+                                    color = Color.Gray, fontSize = 10.sp,
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -5946,7 +6087,7 @@ fun CanvasEditorScreen(
                             StatusPill("$draftLines baris", highlight = draftLines > 0)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                "Satu baris = satu bubble.",
+                                "Satu baris = satu bubble. Pakai ⏎ untuk jeda baris manual di dalam satu bubble.",
                                 color = Color.Gray, fontSize = 12.sp
                             )
                         }
@@ -5964,6 +6105,21 @@ fun CanvasEditorScreen(
                             maxLines = 16,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { scriptDraft = shapeDraftText(scriptDraft) }) {
+                                Text("Bentuk komik", color = Accent, fontSize = 12.sp)
+                            }
+                            Text(
+                                "⏎ = pindah baris dalam 1 bubble (bisa diedit manual)",
+                                color = Color.Gray, fontSize = 10.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 },
                 confirmButton = {

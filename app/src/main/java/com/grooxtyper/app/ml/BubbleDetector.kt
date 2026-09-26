@@ -18,13 +18,15 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BUBBLE -> `models/bd.onnx` (Kiuyha YOLO26-small detect end-to-end NMS-free,
- * 1 kelas text, input 640x640, single output (1,300,6) = x1,y1,x2,y2,score,cls).
+ * BUBBLE -> `models/bd.onnx` (ogkalu RT-DETR v2 int8 "middle", 3 kelas
+ * bubble/text_bubble/text_free, input 640x640, 2 output logits (1,300,3) +
+ * boxes (1,300,4) cxcywh ternormalisasi, end-to-end NMS-free).
  * Model DIEKSEKUSI LANGSUNG di perangkat via ONNX Runtime Mobile.
  * Nama file disamarkan agar tak terekspos di APK.
  *
- * Kompatibel mundur: klasik 2-output seg (37ch + protos) dan klasik detect
- * (1,6,8400) tetap didukung bila model lama dipakai; jalur detect tanpa mask.
+ * Kompatibel mundur: YOLO26 end-to-end (1,300,6), klasik detect (1,6,8400),
+ * dan klasik 2-output seg (37ch + protos) tetap didukung bila model lama
+ * dipakai; jalur detect tanpa mask.
  */
 enum class BubbleModel(
     val displayName: String,
@@ -33,7 +35,7 @@ enum class BubbleModel(
 ) {
     BUBBLE(
         "Bubble Detector • on-device",
-        "Kiuyha YOLO26s (mAP50 0.961) via ONNX Runtime, input 640x640",
+        "ogkalu RT-DETR v2 int8 (middle, ~44MB) via ONNX Runtime, input 640x640",
         "models/bd.onnx"
     )
 }
@@ -56,16 +58,15 @@ object YoloBubbleModel {
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model aktif: Kiuyha YOLO26s detect end-to-end NMS-free (Apache-2.0,
- *   Kiuyha/Manga-Bubble-YOLO, 1 kelas text, mAP50 0.961, latih 1280
- *   dijalankan 640), input 640x640, single output (1,300,6) =
- *   x1,y1,x2,y2,score,cls → box (mask=null, tanpa NMS karena head
- *   sudah one-to-one).
- *   Model (~20MB ONNX hasil export .pt 20MB) di-download & di-export
- *   saat build di GitHub Actions, tidak di-commit ke repo
+ * - Model aktif: ogkalu RT-DETR v2 int8 "middle" (Apache-2.0,
+ *   ogkalu/comic-text-and-bubble-detector `detector_int8.onnx`, ~44MB,
+ *   3 kelas bubble/text_bubble/text_free, latih 640), input 640x640,
+ *   2 output logits (1,300,3) + boxes (1,300,4) cxcywh ternormalisasi
+ *   → box kelas bubble (mask=null, tanpa NMS karena head sudah one-to-one).
+ *   Model di-download saat build di GitHub Actions, tidak di-commit ke repo
  *   (batas <50MB terpenuhi).
- * - Legacy: YOLO seg 1-class, output (1,37,8400) + protos (1,32,160,160)
- *   dengan mask ALPHA_8 per bubble.
+ * - Legacy: Kiuyha YOLO26s detect end-to-end (1,300,6); YOLO seg 1-class,
+ *   output (1,37,8400) + protos (1,32,160,160) dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
  * ber-overlap 30%; setiap tile di-letterbox ke 640x640, dijalankan
  * lewat model, lalu duplikat di sambungan tile dibuang via NMS global.
@@ -276,6 +277,16 @@ class BubbleDetector {
                         // Jatuh ke jalur detect di bawah.
                     }
                 }
+                // Jalur RT-DETR (ogkalu middle/int8): 2 output — logits
+                // (1,300,3) + boxes (1,300,4). Dicek SEBELUM jalur generik
+                // agar tidak salah decode sebagai YOLO klasik.
+                if (res.size() >= 2) {
+                    val rt = decodeRtDetr(res, src.width, src.height, scale, padX, padY, conf)
+                    if (rt != null) {
+                        lastOutputDesc = "rtdetr kept=${rt.size}"
+                        return@withLock rt
+                    }
+                }
                 // Jalur detect: 1 output (1,C,N) klasik, (1,N,C) transpos, atau
                 // (1,N,6) end-to-end NMS-free (YOLO26: x1,y1,x2,y2,score,cls).
                 val rawVal = res[0].value
@@ -353,6 +364,71 @@ class BubbleDetector {
             out.add(DetectedBubble(box, score, null, cls))
         }
         return out.sortedByDescending { it.score }
+    }
+
+    /**
+     * Decode output RT-DETR v2 (ogkalu middle/int8): logits (1,300,3) untuk
+     * kelas [bubble, text_bubble, text_free] + boxes (1,300,4) cxcywh yang
+     * dinormalisasi 0..1 terhadap input 640. Skor = sigmoid (focal loss),
+     * tanpa NMS (end-to-end one-to-one). Hanya kelas 0 (bubble) yang dipakai,
+     * konsisten dengan filter classId == 0 di jalur lain.
+     * Mengembalikan null bila bentuk output tidak cocok (biar jatuh ke jalur lain).
+     */
+    private fun decodeRtDetr(
+        res: OrtSession.Result,
+        origW: Int, origH: Int,
+        scale: Float, padX: Float, padY: Float,
+        conf: Float = CONF_THRESH
+    ): List<DetectedBubble>? {
+        return try {
+            fun batchOf(idx: Int): Array<FloatArray>? {
+                val v = res[idx].value as? Array<*> ?: return null
+                @Suppress("UNCHECKED_CAST")
+                val m = (v as Array<*>)[0] as? Array<FloatArray> ?: return null
+                if (m.isEmpty() || m[0].isEmpty()) return null
+                return m
+            }
+            if (res.size() < 2) return null
+            val m0 = batchOf(0) ?: return null
+            val m1 = batchOf(1) ?: return null
+            // Tetapkan peran berdasar bentuk (urutan output bisa beda):
+            // inner 3 = logits, inner 4 = boxes.
+            val (logits, boxes) = when {
+                m0[0].size == 3 && m1[0].size == 4 -> m0 to m1
+                m0[0].size == 4 && m1[0].size == 3 -> m1 to m0
+                else -> return null
+            }
+            if (logits.size != 300 || boxes.size != 300) return null
+            val out = ArrayList<DetectedBubble>(64)
+            for (i in 0 until 300) {
+                val l = logits[i]
+                val b = boxes[i]
+                var best = 0
+                var bestS = Float.NEGATIVE_INFINITY
+                for (c in 0..2) {
+                    val s = 1f / (1f + kotlin.math.exp(-l[c]))
+                    if (s > bestS) { bestS = s; best = c }
+                }
+                if (bestS < conf || best != 0) continue
+                // cxcywh ternormalisasi → piksel letterbox → koordinat asli.
+                val cx = (b[0] * INPUT_SIZE - padX) / scale
+                val cy = (b[1] * INPUT_SIZE - padY) / scale
+                val bw = b[2] * INPUT_SIZE / scale
+                val bh = b[3] * INPUT_SIZE / scale
+                val box = RectF(
+                    cx - bw / 2f, cy - bh / 2f, cx + bw / 2f, cy + bh / 2f
+                )
+                box.left = box.left.coerceIn(0f, origW.toFloat())
+                box.top = box.top.coerceIn(0f, origH.toFloat())
+                box.right = box.right.coerceIn(0f, origW.toFloat())
+                box.bottom = box.bottom.coerceIn(0f, origH.toFloat())
+                if (box.width() < 8f || box.height() < 8f) continue
+                out.add(DetectedBubble(box, bestS, null, best))
+            }
+            out.sortedByDescending { it.score }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**
