@@ -5823,6 +5823,84 @@ fun CanvasEditorScreen(
                             }
                         }
                         Spacer(modifier = Modifier.height(8.dp))
+                        // Daftar naskah: selalu terlihat setelah import/tempel/
+                        // ketik — tiap baris bisa diedit & dihapus manual.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Daftar naskah",
+                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            StatusPill("${scriptEntries.size} baris", highlight = scriptEntries.isNotEmpty())
+                            Spacer(modifier = Modifier.width(6.dp))
+                            TextButton(onClick = {
+                                scriptEntries = scriptEntries + ScriptEntry(text = "")
+                            }) { Text("+ Baris", color = Accent, fontSize = 12.sp) }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (scriptEntries.isEmpty()) {
+                            Text(
+                                "Belum ada naskah — Import file, Ketik manual, atau tambah baris di atas.",
+                                color = Color.Gray, fontSize = 11.sp
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                itemsIndexed(
+                                    scriptEntries,
+                                    key = { _, e -> e.id }
+                                ) { idx, entry ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(if (entry.used) Color(0xFF1F3D2B) else PanelBg)
+                                            .border(
+                                                1.dp,
+                                                if (entry.used) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                                RoundedCornerShape(10.dp)
+                                            )
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            StatusPill("#${idx + 1}", highlight = false)
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            if (entry.used) {
+                                                StatusPill("terpakai", highlight = true)
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                            }
+                                            Spacer(modifier = Modifier.weight(1f))
+                                            IconButton(
+                                                onClick = {
+                                                    scriptEntries = scriptEntries.filter { it.id != entry.id }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Hapus naskah", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                        OutlinedTextField(
+                                            value = entry.text,
+                                            onValueChange = { v ->
+                                                scriptEntries = scriptEntries.map {
+                                                    if (it.id == entry.id) it.copy(text = v) else it
+                                                }
+                                            },
+                                            placeholder = { Text("Tulis naskah baris ini…") },
+                                            maxLines = 3,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White, fontSize = 12.sp
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
                         if (scriptTextMode) {
                             // Mode Teks: TANPA deteksi teks — cukup samakan jumlah
                             // naskah sisa dengan jumlah bubble/area seleksi.

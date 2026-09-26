@@ -312,6 +312,8 @@ assert(editor.includes('Berlaku di SEMUA tool termasuk TEXT'), 'text: cubit dua 
 assert(editor.includes('const val SCRIPT_LINE_BREAK = "⏎"') && editor.includes('fun comicShapeLines('), 'script: marker jeda manual ⏎ + auto-bentuk baris seimbang (tanpa penggal kata)');
 assert(editor.includes('applyScriptBreaks(unused[i].text)') && editor.includes('applyScriptBreaks(entry.text)') && editor.includes('applyScriptBreaks(row.script)'), 'script: marker ⏎ dirender jadi baris di 3 jalur (bubble teks/seleksi/bubble-rows)');
 assert(editor.includes('"Auto-bentuk"') && editor.includes('"Bentuk komik"') && editor.includes('autoShapeScripts()') && editor.includes('shapeDraftText(scriptDraft)'), 'script: tombol Auto-bentuk + Bentuk komik (jumlah naskah tetap, jeda bisa diedit manual)');
+assert(editor.includes('"Daftar naskah"') && editor.includes('itemsIndexed(') && editor.includes('scriptEntries = scriptEntries.filter { it.id != entry.id }'), 'script: daftar naskah terlihat per baris + hapus manual');
+assert(editor.includes('it.copy(text = v)') && editor.includes('"+ Baris"'), 'script: tiap naskah bisa diedit manual + tambah baris manual');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');
