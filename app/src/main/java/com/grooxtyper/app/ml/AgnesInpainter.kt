@@ -17,6 +17,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * Penyimpanan API key Agnes di perangkat (SharedPreferences, tidak di-commit).
@@ -117,11 +118,13 @@ object AgnesInpainter {
                             lastError = "Decode hasil AI gagal"
                             return@withContext null
                         }
-                        val out = if (raw.width != w || raw.height != h) {
-                            val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
-                            runCatching { raw.recycle() }
-                            scaled
-                        } else raw
+                        if (raw.width != w || raw.height != h) {
+                            android.util.Log.i(
+                                "Agnes",
+                                "hasil server ${raw.width}x${raw.height} != crop ${w}x${h} → cover+crop tengah (tanpa stretch)"
+                            )
+                        }
+                        val out = fitCoverCenter(raw, w, h)
                         lastError = null
                         onProgress?.invoke(1f)
                         out
@@ -146,8 +149,44 @@ object AgnesInpainter {
         }
     }
 
-    /** Tandai lubang dengan overlay merah agar model tahu objek yang dihapus. */
-    private fun markMask(src: Bitmap, mask: Bitmap): Bitmap? {
+    /**
+     * Samakan ukuran hasil AI ke crop TANPA stretch: skala cover lalu crop
+     * tengah. Server boleh mengembalikan dimensi/aspek berbeda dari yang
+     * diminta; stretch langsung menggeser tata letak (objek jadi gepeng /
+     * tidak sejajar mask) — inilah "salah tata letak saat place".
+     */
+    private fun fitCoverCenter(raw: Bitmap, w: Int, h: Int): Bitmap {
+        if (raw.width == w && raw.height == h) return raw
+        return try {
+            val s = max(w / raw.width.toFloat(), h / raw.height.toFloat())
+            val sw = max(1, (raw.width * s).roundToInt())
+            val sh = max(1, (raw.height * s).roundToInt())
+            val scaled = Bitmap.createScaledBitmap(raw, sw, sh, true)
+            runCatching { raw.recycle() }
+            val x = ((sw - w) / 2).coerceAtLeast(0)
+            val y = ((sh - h) / 2).coerceAtLeast(0)
+            val out = Bitmap.createBitmap(
+                scaled, x, y, min(w, sw - x), min(h, sh - y)
+            )
+            if (out !== scaled) runCatching { scaled.recycle() }
+            // Jaga pembulatan: paksa tepat w×h (selisih 1px mustahil terlihat).
+            if (out.width == w && out.height == h) out
+            else {
+                val exact = Bitmap.createScaledBitmap(out, w, h, true)
+                runCatching { out.recycle() }
+                exact
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            lastError = "Penyesuaian ukuran hasil AI gagal"
+            raw
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            raw
+        }
+    }
+
+    /** Tandai lubang dengan overlay merah agar model tahu objek yang dihapus. */    private fun markMask(src: Bitmap, mask: Bitmap): Bitmap? {
         return try {
             val out = src.copy(Bitmap.Config.ARGB_8888, true) ?: return null
             val cv = Canvas(out)
@@ -189,7 +228,9 @@ object AgnesInpainter {
                     "prompt",
                     "Remove ONLY the red-marked text and lettering completely. Reconstruct the " +
                         "background behind it to match the surrounding texture, gradient, lighting " +
-                        "and manga art style seamlessly. Every pixel outside the red mark must stay " +
+                        "and manga art style seamlessly. Speech-bubble borders, panel borders and " +
+                        "all other line art must stay exactly where they are — never erase, move, " +
+                        "redraw or brighten them. Every pixel outside the red mark must stay " +
                         "pixel-identical: do not redraw, restyle, add, or move anything else. " +
                         "Same dimensions. No new objects, no new text, no watermark."
                 )

@@ -18,7 +18,7 @@ import kotlin.math.min
 /**
  * Opsi model bubble yang bisa dipilih user di dialog Bubble Detector.
  *
- * BUBBLE -> `models/bd.onnx` (ogkalu RT-DETR v2 int8 "middle", 3 kelas
+ * BUBBLE -> `models/bd.onnx` (ogkalu RT-DETR v2 v4-small int8, 3 kelas
  * bubble/text_bubble/text_free, input 640x640, 2 output logits (1,300,3) +
  * boxes (1,300,4) cxcywh ternormalisasi, end-to-end NMS-free).
  * Model DIEKSEKUSI LANGSUNG di perangkat via ONNX Runtime Mobile.
@@ -35,7 +35,7 @@ enum class BubbleModel(
 ) {
     BUBBLE(
         "Bubble Detector • on-device",
-        "ogkalu RT-DETR v2 int8 (middle, ~44MB) via ONNX Runtime, input 640x640",
+        "ogkalu RT-DETR v2 v4-small int8 (~11MB) via ONNX Runtime, input 640x640",
         "models/bd.onnx"
     )
 }
@@ -58,8 +58,8 @@ object YoloBubbleModel {
  * Detektor balon teks manga on-device.
  *
  * Jalur utama: inferensi ONNX via ONNX Runtime Mobile.
- * - Model aktif: ogkalu RT-DETR v2 int8 "middle" (Apache-2.0,
- *   ogkalu/comic-text-and-bubble-detector `detector_int8.onnx`, ~44MB,
+ * - Model aktif: ogkalu RT-DETR v2 v4-small int8 (Apache-2.0,
+ *   ogkalu/comic-text-and-bubble-detector `detector-v4-s_int8.onnx`, ~11MB,
  *   3 kelas bubble/text_bubble/text_free, latih 640), input 640x640,
  *   2 output logits (1,300,3) + boxes (1,300,4) cxcywh ternormalisasi
  *   → box kelas bubble (mask=null, tanpa NMS karena head sudah one-to-one).
@@ -277,7 +277,7 @@ class BubbleDetector {
                         // Jatuh ke jalur detect di bawah.
                     }
                 }
-                // Jalur RT-DETR (ogkalu middle/int8): 2 output — logits
+                // Jalur RT-DETR (ogkalu v4-small int8): 2 output — logits
                 // (1,300,3) + boxes (1,300,4). Dicek SEBELUM jalur generik
                 // agar tidak salah decode sebagai YOLO klasik.
                 if (res.size() >= 2) {
@@ -367,7 +367,7 @@ class BubbleDetector {
     }
 
     /**
-     * Decode output RT-DETR v2 (ogkalu middle/int8): logits (1,300,3) untuk
+     * Decode output RT-DETR v2 (ogkalu v4-small int8): logits (1,300,3) untuk
      * kelas [bubble, text_bubble, text_free] + boxes (1,300,4) cxcywh yang
      * dinormalisasi 0..1 terhadap input 640. Skor = sigmoid (focal loss),
      * tanpa NMS (end-to-end one-to-one). Hanya kelas 0 (bubble) yang dipakai,

@@ -93,6 +93,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -1133,6 +1134,28 @@ fun CanvasEditorScreen(
         detectedTextRegions = detectedTextRegions.toMutableList().also { it.removeAt(index) }
         refreshComposite()
     }
+
+    /** Hapus SEMUA region teks terdeteksi (tak ikut di-inpaint). */
+    fun clearTextRegions() {
+        if (detectedTextRegions.isEmpty()) return
+        detectedTextRegions = emptyList()
+        refreshComposite()
+    }
+
+    /**
+     * Region teks terkecil yang memuat titik kanvas (untuk hapus via ketuk).
+     * Null bila tidak ada. Memakai luas terkecil agar region dalam yang
+     * bertumpuk dengan region luar tetap bisa dipilih.
+     */
+    fun smallestTextRegionAt(cp: Offset): Int? =
+        detectedTextRegions
+            .mapIndexedNotNull { idx, r ->
+                val b = r.boundingBox
+                if (cp.x in b.left.toFloat()..b.right.toFloat() &&
+                    cp.y in b.top.toFloat()..b.bottom.toFloat()
+                ) idx to ((b.width() * b.height()).toLong()) else null
+            }
+            .minByOrNull { it.second }?.first
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by remember { mutableStateOf(false) }
     var lassoPath by remember { mutableStateOf<Path?>(null) }
@@ -2102,6 +2125,9 @@ fun CanvasEditorScreen(
 
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
     var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
+    // Titik awal tekan di tool PAN (untuk deteksi ketuk-hapus region teks:
+    // ketuk = lepas tanpa geser; geser = pan biasa, tidak menghapus).
+    var panTapStart by remember { mutableStateOf<Offset?>(null) }
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
     var strokeProgress by remember { mutableStateOf(0f) }
     var strokeLength by remember { mutableStateOf(0f) }
@@ -2452,6 +2478,7 @@ fun CanvasEditorScreen(
                                 lastCanvasPoint = null
                                 cursorPosition = null
                                 strokeLength = 0f
+                                panTapStart = null
                                 var zoom = 1f
                                 var pan = Offset.Zero
 
@@ -2557,6 +2584,10 @@ fun CanvasEditorScreen(
                                 } else if (pointerCount == 1 && activeTool == ActiveTool.PAN) {
                                     val change = changes[0]
                                     if (change.pressed) {
+                                        if (lastScreenPoint == null && textEraseMode) {
+                                            // Catat awal tekan untuk ketuk-hapus.
+                                            panTapStart = change.position
+                                        }
                                         if (lastScreenPoint != null) {
                                             val dragDelta = change.position - lastScreenPoint!!
                                             viewState.offsetX += dragDelta.x
@@ -2565,6 +2596,20 @@ fun CanvasEditorScreen(
                                         lastScreenPoint = change.position
                                         change.consume()
                                     } else {
+                                        // Lepas tanpa geser + mode hapus → hapus region
+                                        // teks yang diketuk (bukan mulai pan).
+                                        val start = panTapStart
+                                        panTapStart = null
+                                        if (textEraseMode && start != null &&
+                                            (change.position - start).getDistance() <= 16f
+                                        ) {
+                                            val cp = screenToCanvasCoordinates(change.position.x, change.position.y)
+                                            val textIdx = smallestTextRegionAt(cp)
+                                            if (textIdx != null) {
+                                                removeTextRegionAt(textIdx)
+                                                change.consume()
+                                            }
+                                        }
                                         lastScreenPoint = null
                                     }
                                 }
@@ -2810,14 +2855,7 @@ fun CanvasEditorScreen(
                                         if (boxStart == null) {
                                             var textConsumed = false
                                             if (textEraseMode) {
-                                                val textIdx = detectedTextRegions
-                                                    .mapIndexedNotNull { idx, r ->
-                                                        val b = r.boundingBox
-                                                        if (touchCanvasPos.x in b.left.toFloat()..b.right.toFloat() &&
-                                                            touchCanvasPos.y in b.top.toFloat()..b.bottom.toFloat()
-                                                        ) idx to ((b.width() * b.height()).toLong()) else null
-                                                    }
-                                                    .minByOrNull { it.second }?.first
+                                                val textIdx = smallestTextRegionAt(touchCanvasPos)
                                                 if (textIdx != null) {
                                                     removeTextRegionAt(textIdx)
                                                     refreshComposite()
@@ -5168,6 +5206,7 @@ fun CanvasEditorScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Mode hapus (ketuk teks di kanvas)", color = Color.White, fontSize = 12.sp)
+                                Text("Ketuk tanpa geser di tool Pan / Kotak Seleksi", color = Color.Gray, fontSize = 10.sp)
                             }
                             Switch(
                                 checked = textEraseMode,
@@ -5176,7 +5215,12 @@ fun CanvasEditorScreen(
                             )
                         }
                         if (detectedTextRegions.isNotEmpty()) {
-                            Text("Daftar teks (buang yang tak ingin di-inpaint):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Daftar teks (buang yang tak ingin di-inpaint):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                                TextButton(onClick = { clearTextRegions() }) {
+                                    Text("Hapus semua", color = Color.Red, fontSize = 12.sp)
+                                }
+                            }
                             LazyColumn(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -5844,16 +5888,17 @@ fun CanvasEditorScreen(
                                 color = Color.Gray, fontSize = 11.sp
                             )
                         } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(200.dp),
+                            // FIX glitch saat mengetik: JANGAN LazyColumn di
+                            // dalam dialog yang sudah verticalScroll — scroll
+                            // bersarang + recompose per ketikan membuat fokus
+                            // teks "melompat"/patah. Column biasa + key(id)
+                            // menjaga fokus tiap kolom tetap di barisnya.
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                itemsIndexed(
-                                    scriptEntries,
-                                    key = { _, e -> e.id }
-                                ) { idx, entry ->
+                                scriptEntries.forEachIndexed { idx, entry ->
+                                    key(entry.id) {
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -5896,6 +5941,7 @@ fun CanvasEditorScreen(
                                             ),
                                             modifier = Modifier.fillMaxWidth()
                                         )
+                                    }
                                     }
                                 }
                             }
@@ -6052,13 +6098,14 @@ fun CanvasEditorScreen(
                                     color = Color.Gray, fontSize = 11.sp
                                 )
                             } else {
-                                LazyColumn(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(220.dp),
+                                // FIX glitch yang sama seperti daftar naskah:
+                                // Column + key, bukan LazyColumn bersarang.
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    itemsIndexed(detectedRows) { idx, row ->
+                                    detectedRows.forEachIndexed { idx, row ->
+                                        key(row.id) {
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -6120,6 +6167,7 @@ fun CanvasEditorScreen(
                                                 ),
                                                 modifier = Modifier.fillMaxWidth()
                                             )
+                                        }
                                         }
                                     }
                                 }

@@ -289,10 +289,11 @@ assert(editor.includes('loaded.asReversed()'), 'editor: urutan layer pulih benar
 assert(editor.includes('ImageImport.decodeFileHeapAware(file.absolutePath)'), 'editor: decode aset image heap-aware (aman 720x16000)');
 
 // 19. Lima permintaan: fill-white text-detection, model bubble ogkalu
-//     RT-DETR middle, Text di sebelah Pan, cubit dua jari di tool Text,
-//     dan pemenggalan komik otomatis yang bisa diedit manual.
+//     RT-DETR int8, hapus teks semua/ketuk, AI inpaint anti-gepeng,
+//     dan anti-glitch kolom script.
 const inpaintMgr = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/InpaintingManager.kt'));
 const bubbleDet = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/BubbleDetector.kt'));
+const agnesInpaintSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt'));
 const ciYml = read(path.join(ROOT, '.github/workflows/android.yml'));
 for (const [name, text] of [['InpaintingManager', inpaintMgr], ['BubbleDetector', bubbleDet]]) {
   const o = (text.match(/{/g) || []).length;
@@ -304,15 +305,25 @@ assert(inpaintMgr.includes('var mode: InpaintMode = InpaintMode.FILL_WHITE'), 't
 assert(editor.includes('inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.FILL_WHITE') && editor.includes('Text("Putih", color = Color.White, fontSize = 11.sp)'), 'text-detection: tombol Putih menggantikan PatchMatch di dialog');
 assert(!editor.includes('Text("PatchMatch"'), 'text-detection: tidak ada lagi opsi PatchMatch di dialog');
 assert(bubbleDet.includes('fun decodeRtDetr(') && bubbleDet.includes('1f / (1f + kotlin.math.exp(-l[c]))'), 'bubble: decoder RT-DETR (sigmoid focal, tanpa NMS)');
-assert(bubbleDet.includes('ogkalu RT-DETR v2 int8') && bubbleDet.includes('ogkalu/comic-text-and-bubble-detector'), 'bubble: model ogkalu RT-DETR middle (~44MB)');
+assert(bubbleDet.includes('ogkalu RT-DETR v2 v4-small int8') && bubbleDet.includes('ogkalu/comic-text-and-bubble-detector'), 'bubble: model ogkalu RT-DETR v4-small int8 (~11MB)');
 assert(!bubbleDet.includes('Model aktif: Kiuyha') && !bubbleDet.includes('Kiuyha/Manga-Bubble-YOLO'), 'bubble: Kiuyha bukan lagi model aktif (hanya disebut sebagai legacy-compat)');
-assert(ciYml.includes('ogkalu/comic-text-and-bubble-detector/resolve/main/detector_int8.onnx') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: unduh detector_int8.onnx langsung (tanpa export ultralytics)');
+assert(ciYml.includes('ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: unduh detector-v4-s_int8.onnx langsung (tanpa export ultralytics)');
 assert(editor.indexOf('contentDescription = "Text"') < editor.indexOf('contentDescription = "Brush"'), 'toolbar: Text tepat di sebelah Pan (sebelum Brush)');
 assert(editor.includes('Berlaku di SEMUA tool termasuk TEXT'), 'text: cubit dua jari = geser+zoom kanvas di semua tool termasuk TEXT');
 assert(editor.includes('const val SCRIPT_LINE_BREAK = "⏎"') && editor.includes('fun comicShapeLines('), 'script: marker jeda manual ⏎ + auto-bentuk baris seimbang (tanpa penggal kata)');
 assert(editor.includes('applyScriptBreaks(unused[i].text)') && editor.includes('applyScriptBreaks(entry.text)') && editor.includes('applyScriptBreaks(row.script)'), 'script: marker ⏎ dirender jadi baris di 3 jalur (bubble teks/seleksi/bubble-rows)');
 assert(editor.includes('"Auto-bentuk"') && editor.includes('"Bentuk komik"') && editor.includes('autoShapeScripts()') && editor.includes('shapeDraftText(scriptDraft)'), 'script: tombol Auto-bentuk + Bentuk komik (jumlah naskah tetap, jeda bisa diedit manual)');
-assert(editor.includes('"Daftar naskah"') && editor.includes('itemsIndexed(') && editor.includes('scriptEntries = scriptEntries.filter { it.id != entry.id }'), 'script: daftar naskah terlihat per baris + hapus manual');
+assert(editor.includes('"Daftar naskah"') && editor.includes('scriptEntries = scriptEntries.filter { it.id != entry.id }'), 'script: daftar naskah terlihat per baris + hapus manual');
+assert(editor.includes('key(entry.id)') && editor.includes('key(row.id)') && editor.includes('JANGAN LazyColumn di'), 'script: daftar naskah & tabel rows pakai Column+key (anti-glitch ketik, tanpa LazyColumn bersarang)');
+
+// 20. Hapus teks semua/ketuk + AI inpaint anti-gepeng/cerah/bubble.
+assert(editor.includes('fun clearTextRegions()') && editor.includes('fun smallestTextRegionAt('), 'text-detector: hapus semua + helper region terkecil untuk ketuk');
+assert(editor.includes('"Hapus semua"') && editor.includes('clearTextRegions()'), 'text-detector: tombol Hapus semua di dialog');
+assert(editor.includes('panTapStart') && editor.includes('smallestTextRegionAt(cp)'), 'text-detector: ketuk tanpa geser di tool Pan menghapus region (geser = pan biasa)');
+assert(agnesInpaintSrc.includes('fun fitCoverCenter(') && agnesInpaintSrc.includes('tanpa stretch'), 'ai-inpaint: hasil server disamakan cover+crop tengah (anti-gepeng, anti-geser tata letak)');
+assert(inpaintMgr.includes('fun exposureDelta(') && inpaintMgr.includes('colorMatch = true'), 'ai-inpaint: eksposur lubang disamakan ke konteks (anti lebih cerah)');
+assert(inpaintMgr.includes('dilateMaskAlpha(maskCropPre)') && inpaintMgr.includes('tanpa isi interior'), 'ai-inpaint: mask lembut tanpa isi interior (garis bubble tidak ikut terhapus)');
+assert(agnesInpaintSrc.includes('never erase, move') || agnesInpaintSrc.includes('stay exactly where they are'), 'ai-inpaint: prompt melarang ubah/hapus garis bubble');
 assert(editor.includes('it.copy(text = v)') && editor.includes('"+ Baris"'), 'script: tiap naskah bisa diedit manual + tambah baris manual');
 
 if (process.exitCode) {

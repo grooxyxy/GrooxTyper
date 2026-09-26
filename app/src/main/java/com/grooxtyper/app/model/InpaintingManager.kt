@@ -680,7 +680,11 @@ class InpaintingManager {
             if (dilateMask) {
                 val maskCropPre = try { Bitmap.createBitmap(mask, cl, ct, cw, ch) } catch (e: Exception) { null }
                 if (maskCropPre != null) {
-                    expandEraseMask(maskCropPre, max(bw, bh))
+                    // AI: dilatasi LEMBUT saja (~1-2px, tanpa isi interior).
+                    // expandEraseMask mengisi interior tertutup → sapuan yang
+                    // melingkari bubble ikut menandai SELURUH bubble sebagai
+                    // lubang → AI menghapus garis bubble ("ngehapus bubblenya").
+                    dilateMaskAlpha(maskCropPre)
                     try {
                         val dst = Canvas(mask)
                         val clear = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
@@ -696,8 +700,10 @@ class InpaintingManager {
                 try {
                     val out = com.grooxtyper.app.ml.AgnesInpainter.inpaint(apiKey, srcCrop, maskCrop, onProgress)
                     if (out != null) {
-                        // Text-only: hanya lubang yang ditempel (valid tak tersentuh).
-                        val aiFinal = compositeHoleOnly(srcCrop, out, maskCrop)
+                        // Text-only + samakan warna: hanya lubang yang
+                        // ditempel (valid tak tersentuh), eksposur lubang
+                        // disamakan ke konteks sekitar (anti "lebih cerah").
+                        val aiFinal = compositeHoleOnly(srcCrop, out, maskCrop, colorMatch = true)
                         runCatching { out.recycle() }
                         if (aiFinal != null) {
                             android.graphics.Canvas(src).drawBitmap(aiFinal, cl.toFloat(), ct.toFloat(), null)
@@ -758,8 +764,17 @@ class InpaintingManager {
      * Tempel khusus-lubang: piksel model HANYA di dalam mask yang dipakai,
      * lalu disambung mulus via SeamlessBlender. Area valid TIDAK PERNAH
      * diubah — model generatif tak bisa merusak luar lubang. Null bila gagal.
+     *
+     * @param colorMatch true = samakan eksposur/warna lubang ke konteks
+     *   sekitar sebelum ditempel (model generatif sering mengembalikan lubang
+     *   yang lebih cerah/dingin dari sekitarnya).
      */
-    private fun compositeHoleOnly(orig: Bitmap, filled: Bitmap, mask: Bitmap): Bitmap? {
+    private fun compositeHoleOnly(
+        orig: Bitmap,
+        filled: Bitmap,
+        mask: Bitmap,
+        colorMatch: Boolean = false
+    ): Bitmap? {
         val w = orig.width
         val h = orig.height
         if (w <= 0 || h <= 0 || filled.width != w || filled.height != h ||
@@ -775,10 +790,15 @@ class InpaintingManager {
             val mb = BooleanArray(w * h)
             val comp = op.copyOf()
             var any = false
+            val (dr, dg, db) = if (colorMatch) exposureDelta(op, fp, mp, w, h) else Triple(0, 0, 0)
             for (i in mp.indices) {
                 if ((mp[i] ushr 24) > 30) {
                     mb[i] = true
-                    comp[i] = fp[i]
+                    val f = fp[i]
+                    comp[i] = -16777216 or
+                        ((((f shr 16) and 0xFF) + dr).coerceIn(0, 255) shl 16) or
+                        ((((f shr 8) and 0xFF) + dg).coerceIn(0, 255) shl 8) or
+                        (((f and 0xFF) + db).coerceIn(0, 255))
                     any = true
                 }
             }
@@ -794,6 +814,78 @@ class InpaintingManager {
             e.printStackTrace()
             null
         }
+    }
+
+    /**
+     * Selisih eksposur per kanal (validSekitar - lubang): dihitung dari
+     * rata-rata lubang vs rata-rata konteks di sekeliling bounding-box lubang
+     * (diekspansi 32px). Dijepit ±64 agar koreksi tak pernah ekstrem.
+     * Sampling stride 3 agar murah di crop besar.
+     */
+    private fun exposureDelta(
+        op: IntArray,
+        fp: IntArray,
+        mp: IntArray,
+        w: Int,
+        h: Int
+    ): Triple<Int, Int, Int> {
+        var minX = w
+        var minY = h
+        var maxX = -1
+        var maxY = -1
+        var i = 0
+        while (i < mp.size) {
+            if ((mp[i] ushr 24) > 30) {
+                val x = i % w
+                val y = i / w
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
+            i += 2
+        }
+        if (maxX < 0) return Triple(0, 0, 0)
+        val pad = 32
+        var vr = 0L
+        var vg = 0L
+        var vb = 0L
+        var vn = 0L
+        var hr = 0L
+        var hg = 0L
+        var hb = 0L
+        var hn = 0L
+        var y = (minY - pad).coerceAtLeast(0)
+        val yEnd = (maxY + pad).coerceAtMost(h - 1)
+        while (y <= yEnd) {
+            var x = (minX - pad).coerceAtLeast(0)
+            val xEnd = (maxX + pad).coerceAtMost(w - 1)
+            while (x <= xEnd) {
+                val j = y * w + x
+                if ((mp[j] ushr 24) > 30) {
+                    val f = fp[j]
+                    hr += (f shr 16) and 0xFF
+                    hg += (f shr 8) and 0xFF
+                    hb += f and 0xFF
+                    hn++
+                } else {
+                    val o = op[j]
+                    vr += (o shr 16) and 0xFF
+                    vg += (o shr 8) and 0xFF
+                    vb += o and 0xFF
+                    vn++
+                }
+                x += 3
+            }
+            y += 3
+        }
+        // Konteks/lubang terlalu sedikit → jangan koreksi (hindari tebak).
+        if (vn < 20 || hn < 20) return Triple(0, 0, 0)
+        return Triple(
+            (vr / vn - hr / hn).toInt().coerceIn(-64, 64),
+            (vg / vn - hg / hn).toInt().coerceIn(-64, 64),
+            (vb / vn - hb / hn).toInt().coerceIn(-64, 64)
+        )
     }
 
     /**
