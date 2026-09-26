@@ -2111,6 +2111,16 @@ fun CanvasEditorScreen(
         return Offset((rx + pivotX).toFloat(), (ry + pivotY).toFloat())
     }
 
+    // Magic Wand: mode "manual" (toleransi slider) atau "auto" (ketuk bubble
+    // langsung pilih bubble-nya, selainnya toleransi dihitung dari kontras
+    // lokal). Titik tekan untuk deteksi ketuk-vs-geser + flag sibuk.
+    // Ditaruh di sini (sebelum runWandAt) karena fungsi lokal Kotlin hanya
+    // melihat deklarasi di atasnya.
+    var wandMode by remember { mutableStateOf("manual") }
+    var wandTolerance by remember { mutableFloatStateOf(32f) }
+    var wandBusy by remember { mutableStateOf(false) }
+    var wandPressStart by remember { mutableStateOf<Offset?>(null) }
+
     /**
      * Jalankan Magic Wand di titik layar: mode "auto" yang ketukannya jatuh
      * di dalam bubble terdeteksi langsung memilih bubble itu (oval);
@@ -2233,13 +2243,6 @@ fun CanvasEditorScreen(
     // Titik awal tekan di tool PAN (untuk deteksi ketuk-hapus region teks:
     // ketuk = lepas tanpa geser; geser = pan biasa, tidak menghapus).
     var panTapStart by remember { mutableStateOf<Offset?>(null) }
-    // Magic Wand: mode "manual" (toleransi slider) atau "auto" (ketuk bubble
-    // langsung pilih bubble-nya, selainnya toleransi dihitung dari kontras
-    // lokal). Titik tekan untuk deteksi ketuk-vs-geser + flag sibuk.
-    var wandMode by remember { mutableStateOf("manual") }
-    var wandTolerance by remember { mutableFloatStateOf(32f) }
-    var wandBusy by remember { mutableStateOf(false) }
-    var wandPressStart by remember { mutableStateOf<Offset?>(null) }
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
     var strokeProgress by remember { mutableStateOf(0f) }
     var strokeLength by remember { mutableStateOf(0f) }
