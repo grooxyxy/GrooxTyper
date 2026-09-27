@@ -313,11 +313,11 @@ private fun ScriptActionButton(
     }
 }
 
-internal val Accent = Color(0xFFFF5722)
+private val Accent = Color(0xFFFF5722)
 private val BgDark = Color(0xFF000000)
 private val TopBarBg = Color(0xFF1C1C1E)
 private val BottomBarBg = Color(0xFF1C1C1E)
-internal val PanelBg = Color(0xFF2C2C2E)
+private val PanelBg = Color(0xFF2C2C2E)
 
 /**
  * Muat bitmap untuk jendela referensi dengan budget byte (default 2MB).

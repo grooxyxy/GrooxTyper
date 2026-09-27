@@ -38,6 +38,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.TextLayer
 
+// Warna lokal file (setiap file UI mendefinisikan sendiri; lihat
+// BrushDrawerPanel/TextEditorPanel — JANGAN internal agar tak bentrok).
+private val BulkAccent = Color(0xFFFF5722)
+private val BulkPanelBg = Color(0xFF2C2C2E)
+
 /**
  * Dialog Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /
  * warna / tebal sekaligus, atau hapus yang dipilih. Ditaruh di file sendiri
@@ -80,7 +85,7 @@ fun BulkTextDialog(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (checked) Color(0xFF1F3D2B) else PanelBg)
+                                    .background(if (checked) Color(0xFF1F3D2B) else BulkPanelBg)
                                     .clickable {
                                         bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
                                     }
@@ -91,7 +96,7 @@ fun BulkTextDialog(
                                     onCheckedChange = {
                                         bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
                                     },
-                                    colors = CheckboxDefaults.colors(checkedColor = Accent)
+                                    colors = CheckboxDefaults.colors(checkedColor = BulkAccent)
                                 )
                                 Text(
                                     tl.box.text.take(28).ifBlank { "(kosong)" },
@@ -109,14 +114,14 @@ fun BulkTextDialog(
                     value = bulkSize,
                     onValueChange = { bulkSize = it },
                     valueRange = 1f..220f,
-                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                    colors = SliderDefaults.colors(thumbColor = BulkAccent, activeTrackColor = BulkAccent)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Tebal (bold)", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     Switch(
                         checked = bulkBold,
                         onCheckedChange = { bulkBold = it },
-                        colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                        colors = SwitchDefaults.colors(checkedThumbColor = BulkAccent)
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -132,7 +137,7 @@ fun BulkTextDialog(
                             }
                             onApply(bulkChecked, bulkSize, bulkBold)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                        colors = ButtonDefaults.buttonColors(containerColor = BulkAccent),
                         modifier = Modifier.weight(1f)
                     ) { Text("Terapkan", color = Color.White, fontSize = 12.sp) }
                     Button(
@@ -143,7 +148,7 @@ fun BulkTextDialog(
                             }
                             onApplyColor(bulkChecked)
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                        colors = ButtonDefaults.buttonColors(containerColor = BulkPanelBg),
                         modifier = Modifier.weight(1f)
                     ) { Text("Warna brush", color = Color.White, fontSize = 12.sp) }
                 }
@@ -151,7 +156,7 @@ fun BulkTextDialog(
         },
         confirmButton = {
             TextButton(onClick = onClose) {
-                Text("Selesai", color = Accent)
+                Text("Selesai", color = BulkAccent)
             }
         },
         dismissButton = {
@@ -160,6 +165,6 @@ fun BulkTextDialog(
                 enabled = bulkChecked.isNotEmpty()
             ) { Text("Hapus dipilih", color = Color.Red) }
         },
-        containerColor = PanelBg
+        containerColor = BulkPanelBg
     )
 }
