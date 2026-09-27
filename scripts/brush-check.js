@@ -359,6 +359,7 @@ assert(bubbleDet.includes('isLogitsName') && bubbleDet.includes('ByteArray'), 'b
 assert(bubbleDet.includes('n < 10 || n > 5000') && bubbleDet.includes('lg[0].size !in 2..8'), 'bubble: jumlah query & kelas fleksibel (bukan hardcode 300/3)');
 assert(bubbleDet.includes('fun isTileBlank(') && bubbleDet.includes('maxTiles'), 'bubble: lewati tile kosong + batas tile (anti-delay/OOM)');
 assert(bubbleDet.includes('ensureActive()') && bubbleDet.includes('CancellationException'), 'bubble: inferensi bisa dibatalkan (tidak menggantung/crash)');
+assert(bubbleDet.includes('import kotlinx.coroutines.ensureActive'), 'bubble: import ensureActive ada (tanpa ini build gagal)');
 assert(editor.includes('bubbleDetectJob') && editor.includes('px > 8_000_000L'), 'bubble: cancel deteksi lama + snapshot downscale di kanvas raksasa');
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('KONTRAKSI') && selectEng.includes('WATERSHED: tumbuhkan'), 'wand: pecah bubble via watershed (erosi kontraksi → seed → tumbuh serentak)');
 assert(textEditor.includes('onOpenBulkEdit') && editor.includes('showBulkTextDialog'), 'bulk: tombol Massal di panel teks + dialog');
