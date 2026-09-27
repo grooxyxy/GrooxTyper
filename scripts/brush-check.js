@@ -351,6 +351,8 @@ assert(editor.includes('fun focusRect(') && editor.includes('fun fitCanvasToScre
 assert(editor.includes('"Fokus"') && editor.includes('focusRect(r)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
 assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEntry(idx, idx - 1)'), 'script: geser urutan naskah naik/turun');
 assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
+assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt')), 'bulk: dialog di file sendiri (badan editor tak boleh >64KB)');
+assert(editor.includes('BulkTextDialog(') && editor.includes('fun WandSettingsBar('), 'refaktor: BulkTextDialog + WandSettingsBar terpisah (anti Method too large)');
 
 // 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,
 //     kuas SFX lettering + gapless, bulk text edit.
@@ -363,7 +365,14 @@ assert(bubbleDet.includes('import kotlinx.coroutines.Job') && bubbleDet.includes
 assert(editor.includes('bubbleDetectJob') && editor.includes('px > 8_000_000L'), 'bubble: cancel deteksi lama + snapshot downscale di kanvas raksasa');
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('KONTRAKSI') && selectEng.includes('WATERSHED: tumbuhkan'), 'wand: pecah bubble via watershed (erosi kontraksi → seed → tumbuh serentak)');
 assert(textEditor.includes('onOpenBulkEdit') && editor.includes('showBulkTextDialog'), 'bulk: tombol Massal di panel teks + dialog');
-assert(editor.includes('"Edit Teks Massal"') && editor.includes('bulkChecked') && editor.includes('pushTextBox(tl.id, tl.box.copy())'), 'bulk: pilih multi-teks + terapkan ukuran/tebal/warna + undo per kotak');
+const bulkDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt'));
+{
+  const o = (bulkDlg.match(/{/g) || []).length;
+  const c = (bulkDlg.match(/}/g) || []).length;
+  assert(o === c, 'BulkTextDialog braces balanced (' + o + '/' + c + ')');
+}
+assert(bulkDlg.includes('bulkChecked') && bulkDlg.includes('"Edit Teks Massal"'), 'bulk: dialog pilih multi-teks (checkbox per kotak)');
+assert(editor.includes('BulkTextDialog(') && editor.includes('pushTextBox(tl.id, tl.box.copy())'), 'bulk: terapkan ukuran/tebal/warna + undo per kotak');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

@@ -313,11 +313,11 @@ private fun ScriptActionButton(
     }
 }
 
-private val Accent = Color(0xFFFF5722)
+internal val Accent = Color(0xFFFF5722)
 private val BgDark = Color(0xFF000000)
 private val TopBarBg = Color(0xFF1C1C1E)
 private val BottomBarBg = Color(0xFF1C1C1E)
-private val PanelBg = Color(0xFF2C2C2E)
+internal val PanelBg = Color(0xFF2C2C2E)
 
 /**
  * Muat bitmap untuk jendela referensi dengan budget byte (default 2MB).
@@ -4864,60 +4864,16 @@ fun CanvasEditorScreen(
         }
 
         // Bar pengaturan Magic Wand (mode + toleransi), tampil saat tool aktif.
+        // (UI di bawah sebagai composable terpisah — batas method JVM 64KB.)
         if (activeTool == ActiveTool.SELECT_WAND) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 72.dp, start = 12.dp, end = 12.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(PanelBg)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = {}
-                    )
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    listOf("manual" to "Manual", "auto" to "Otomatis").forEach { (mode, label) ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(if (wandMode == mode) Accent else Color.Transparent)
-                                .clickable { wandMode = mode }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        if (wandBusy) "Memproses…"
-                        else if (wandMode == "auto") "Ketuk bubble gabung = pecah jadi 2"
-                        else "Ketuk area warna mirip",
-                        color = Color.Gray, fontSize = 11.sp,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                if (wandMode == "manual") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Toleransi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
-                        Slider(
-                            value = wandTolerance,
-                            onValueChange = { wandTolerance = it },
-                            valueRange = 1f..100f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-                        )
-                        Text(
-                            "${wandTolerance.toInt()}",
-                            color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.width(28.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.End
-                        )
-                    }
-                }
+            Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                WandSettingsBar(
+                    wandMode = wandMode,
+                    onMode = { wandMode = it },
+                    wandTolerance = wandTolerance,
+                    onTolerance = { wandTolerance = it },
+                    wandBusy = wandBusy
+                )
             }
         }
 
@@ -5431,155 +5387,52 @@ fun CanvasEditorScreen(
 
         // === Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /
         // warna / tebal sekaligus. Satu langkah undo per kotak yang diubah.
+        // (UI di BulkTextDialog.kt — composable raksasa di badan fungsi ini
+        // melebihi batas method JVM 64KB → build gagal "Method too large".)
         if (showBulkTextDialog) {
-            val allTexts = layerManager.visibleTextLayers()
-            var bulkChecked by remember(showBulkTextDialog) {
-                mutableStateOf(
-                    (selectedTextBox?.let { sel ->
-                        allTexts.find { it.box.id == sel.id }?.let { setOf(it.id) }
-                    } ?: allTexts.map { it.id }.toSet())
-                )
-            }
-            var bulkSize by remember(showBulkTextDialog) {
-                mutableFloatStateOf(
-                    allTexts.firstOrNull { it.id in bulkChecked }?.box?.fontSize
-                        ?: selectedTextBox?.fontSize ?: 64f
-                )
-            }
-            var bulkBold by remember(showBulkTextDialog) {
-                mutableStateOf(
-                    allTexts.firstOrNull { it.id in bulkChecked }?.box?.bold ?: true
-                )
-            }
-            fun bulkTargets() = allTexts.filter { it.id in bulkChecked }
-            AlertDialog(
-                onDismissRequest = { showBulkTextDialog = false },
-                title = { Text("Edit Teks Massal", color = Color.White, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                        Text(
-                            "Centang kotak teks, lalu terapkan ukuran/warna/tebal sekaligus.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (allTexts.isEmpty()) {
-                            Text("Belum ada teks di kanvas.", color = Color.LightGray, fontSize = 12.sp)
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                allTexts.forEach { tl ->
-                                    val checked = tl.id in bulkChecked
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (checked) Color(0xFF1F3D2B) else PanelBg)
-                                            .clickable {
-                                                bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
-                                            }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        Checkbox(
-                                            checked = checked,
-                                            onCheckedChange = {
-                                                bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
-                                            },
-                                            colors = CheckboxDefaults.colors(checkedColor = Accent)
-                                        )
-                                        Text(
-                                            tl.box.text.take(28).ifBlank { "(kosong)" },
-                                            color = if (checked) Color.White else Color.Gray,
-                                            fontSize = 12.sp,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Ukuran font: ${bulkSize.toInt()}px", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Slider(
-                            value = bulkSize,
-                            onValueChange = { bulkSize = it },
-                            valueRange = 1f..220f,
-                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Tebal (bold)", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = bulkBold,
-                                onCheckedChange = { bulkBold = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    val targets = bulkTargets()
-                                    if (targets.isEmpty()) {
-                                        healError = "Bulk: tidak ada teks yang dicentang"
-                                        return@Button
-                                    }
-                                    for (tl in targets) {
-                                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
-                                        tl.box.fontSize = bulkSize
-                                        tl.box.bold = bulkBold
-                                    }
-                                    refreshComposite()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Terapkan", color = Color.White, fontSize = 12.sp) }
-                            Button(
-                                onClick = {
-                                    val targets = bulkTargets()
-                                    if (targets.isEmpty()) {
-                                        healError = "Bulk: tidak ada teks yang dicentang"
-                                        return@Button
-                                    }
-                                    for (tl in targets) {
-                                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
-                                        tl.box.color = brushEngine.color
-                                    }
-                                    refreshComposite()
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Warna brush", color = Color.White, fontSize = 12.sp) }
+            val bulkLayers = layerManager.visibleTextLayers()
+            val bulkInitChecked: Set<String> = selectedTextBox?.let { sel ->
+                bulkLayers.find { it.box.id == sel.id }?.let { setOf(it.id) }
+            } ?: bulkLayers.map { it.id }.toSet()
+            BulkTextDialog(
+                layers = bulkLayers,
+                initialChecked = bulkInitChecked,
+                initialSize = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.fontSize
+                    ?: selectedTextBox?.fontSize ?: 64f,
+                initialBold = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.bold ?: true,
+                onApply = { ids, size, bold ->
+                    for (tl in bulkLayers.filter { it.id in ids }) {
+                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
+                        tl.box.fontSize = size
+                        tl.box.bold = bold
+                    }
+                    refreshComposite()
+                },
+                onApplyColor = { ids ->
+                    for (tl in bulkLayers.filter { it.id in ids }) {
+                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
+                        tl.box.color = brushEngine.color
+                    }
+                    refreshComposite()
+                },
+                onDelete = { ids ->
+                    val targets = bulkLayers.filter { it.id in ids }
+                    for (tl in targets) {
+                        val idx = layerManager.indexOfLayer(tl.id)
+                        if (idx >= 0) {
+                            undoRedoManager.pushLayerRemove(tl, idx)
+                            layerManager.removeLayerById(tl.id)
                         }
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showBulkTextDialog = false }) {
-                        Text("Selesai", color = Accent)
+                    if (selectedTextBox != null && targets.any { it.box.id == selectedTextBox!!.id }) {
+                        selectedTextBox = null
+                        showTextEditor = false
                     }
+                    showBulkTextDialog = false
+                    refreshComposite()
                 },
-                dismissButton = {
-                    TextButton(
-                        onClick = {
-                            val targets = bulkTargets()
-                            for (tl in targets) {
-                                val idx = layerManager.indexOfLayer(tl.id)
-                                if (idx >= 0) {
-                                    undoRedoManager.pushLayerRemove(tl, idx)
-                                    layerManager.removeLayerById(tl.id)
-                                }
-                            }
-                            if (selectedTextBox != null && targets.any { it.box.id == selectedTextBox!!.id }) {
-                                selectedTextBox = null
-                                showTextEditor = false
-                            }
-                            showBulkTextDialog = false
-                            refreshComposite()
-                        },
-                        enabled = bulkChecked.isNotEmpty()
-                    ) { Text("Hapus dipilih", color = Color.Red) }
-                },
-                containerColor = PanelBg
+                onEmptySelection = { healError = "Bulk: tidak ada teks yang dicentang" },
+                onClose = { showBulkTextDialog = false }
             )
         }
 
@@ -6900,6 +6753,73 @@ fun CanvasEditorScreen(
                 },
                 containerColor = PanelBg
             )
+        }
+    }
+}
+
+/**
+ * Bar pengaturan Magic Wand (mode + toleransi). Composable terpisah (bukan
+ * di badan CanvasEditorScreen) karena method raksasa melebihi batas JVM 64KB.
+ */
+@Composable
+private fun WandSettingsBar(
+    wandMode: String,
+    onMode: (String) -> Unit,
+    wandTolerance: Float,
+    onTolerance: (Float) -> Unit,
+    wandBusy: Boolean
+) {
+    Column(
+        modifier = Modifier
+            .padding(bottom = 72.dp, start = 12.dp, end = 12.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(PanelBg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            listOf("manual" to "Manual", "auto" to "Otomatis").forEach { (mode, label) ->
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (wandMode == mode) Accent else Color.Transparent)
+                        .clickable { onMode(mode) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                if (wandBusy) "Memproses…"
+                else if (wandMode == "auto") "Ketuk bubble gabung = pecah jadi 2"
+                else "Ketuk area warna mirip",
+                color = Color.Gray, fontSize = 11.sp,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (wandMode == "manual") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Toleransi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
+                Slider(
+                    value = wandTolerance,
+                    onValueChange = onTolerance,
+                    valueRange = 1f..100f,
+                    modifier = Modifier.weight(1f),
+                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                )
+                Text(
+                    "${wandTolerance.toInt()}",
+                    color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.width(28.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End
+                )
+            }
         }
     }
 }
