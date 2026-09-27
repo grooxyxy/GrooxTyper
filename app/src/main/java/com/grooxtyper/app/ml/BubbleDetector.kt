@@ -6,8 +6,10 @@ import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -226,9 +228,17 @@ class BubbleDetector {
      * - detect 2-class baru: 1 output (1,6,8400) atau (1,8400,6), tanpa mask.
      * - seg legacy: 2 output (1,37,8400) + (1,32,160,160) dengan mask.
      */
+    /** Lempar CancellationException bila job deteksi dibatalkan (dialog
+     *  ditutup / deteksi baru). Dipakai di titik-titik berat agar berhenti
+     *  cepat, bukan menggantung sampai tile habis. */
+    private suspend fun checkNotCancelled() {
+        val job = currentCoroutineContext()[Job]
+        if (job != null && !job.isActive) throw CancellationException("bubble dibatalkan")
+    }
+
     private suspend fun runOnnx(session: OrtSession, src: Bitmap, conf: Float = CONF_THRESH): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
-        kotlinx.coroutines.ensureActive()
+        checkNotCancelled()
         // Resize langsung (stretch) 640x640 sesuai preprocessor training.
         val scaleX = INPUT_SIZE / src.width.toFloat()
         val scaleY = INPUT_SIZE / src.height.toFloat()
@@ -753,7 +763,7 @@ class BubbleDetector {
         var offset = 0
         var tileIdx = 0
         while (offset < longSide) {
-            kotlinx.coroutines.ensureActive()
+            checkNotCancelled()
             val end = min(offset + win, longSide)
             val start = max(0, end - win)
             val crop = try {
