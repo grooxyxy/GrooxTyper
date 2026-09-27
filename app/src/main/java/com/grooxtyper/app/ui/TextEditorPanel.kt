@@ -108,6 +108,7 @@ fun TextEditorPanel(
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
     onOpenPerspectiveGrid: () -> Unit = {},
+    onOpenBulkEdit: () -> Unit = {},
     // Mode pipet: screen mendaftarkan konsumer warna (dipanggil saat user
     // mengetuk kanvas) untuk target warna yang sedang dipilih di panel ini.
     onStartEyedrop: ((Int) -> Unit) -> Unit = {},
@@ -315,6 +316,14 @@ fun TextEditorPanel(
                     }
                     IconButton(onClick = onDelete) {
                         Icon(Icons.Default.Delete, contentDescription = "Hapus", tint = Color(0xFFEF5350))
+                    }
+                    Button(
+                        onClick = onOpenBulkEdit,
+                        colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text("Massal", color = Color.White, fontSize = 12.sp)
                     }
                     Button(
                         onClick = onClose,

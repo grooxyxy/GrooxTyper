@@ -68,7 +68,7 @@ object YoloBubbleModel {
  * - Legacy: Kiuyha YOLO26s detect end-to-end (1,300,6); YOLO seg 1-class,
  *   output (1,37,8400) + protos (1,32,160,160) dengan mask ALPHA_8 per bubble.
  * Untuk kanvas jangkung (mis. 720x16000) gambar dipotong jadi tile persegi
- * ber-overlap 30%; setiap tile di-letterbox ke 640x640, dijalankan
+ * ber-overlap 30%; setiap tile di-resize ke 640x640, dijalankan
  * lewat model, lalu duplikat di sambungan tile dibuang via NMS global.
  *
  * Bila session ONNX gagal dibuat (asset hilang / runtime tidak tersedia),
@@ -152,6 +152,10 @@ class BubbleDetector {
                 nms(dets, IOU_THRESH)
                     .sortedByDescending { it.score }
                     .take(MAX_DETECTIONS)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Pembatalan (dialog ditutup / deteksi baru) bukan error:
+                // lempar ulang agar coroutine benar-benar berhenti.
+                throw e
             } catch (e: Exception) {
                 e.printStackTrace()
                 emptyList()
@@ -212,43 +216,34 @@ class BubbleDetector {
     )
 
     /**
-     * Inferensi satu bitmap ukuran bebas: letterbox ke 640x640, decode
-     * output YOLO, kembalikan deteksi dalam koordinat bitmap asli.
-     * Mendukung dua varian:
+     * Inferensi satu bitmap ukuran bebas: RESIZE langsung ke 640x640, decode
+     * output, kembalikan deteksi dalam koordinat bitmap asli.
+     * Resize (bukan letterbox) karena model card ogkalu eksplisit: "Training
+     * Images were resized, not cropped" — padding abu ala YOLO di luar
+     * distribusi latih dan menekan skor. Mendukung varian:
+     * - RT-DETR: 2 output logits + boxes (bentuk fleksibel, lihat decodeRtDetr).
      * - detect 2-class baru: 1 output (1,6,8400) atau (1,8400,6), tanpa mask.
      * - seg legacy: 2 output (1,37,8400) + (1,32,160,160) dengan mask.
      */
     private suspend fun runOnnx(session: OrtSession, src: Bitmap, conf: Float = CONF_THRESH): List<DetectedBubble> {
         if (src.width <= 0 || src.height <= 0) return emptyList()
-        // Letterbox: skala seragam + padding abu (114) ala YOLO.
-        val scale = min(
-            INPUT_SIZE / src.width.toFloat(),
-            INPUT_SIZE / src.height.toFloat()
-        )
-        val nw = max(1, (src.width * scale).toInt())
-        val nh = max(1, (src.height * scale).toInt())
-        val padX = (INPUT_SIZE - nw) / 2f
-        val padY = (INPUT_SIZE - nh) / 2f
+        kotlinx.coroutines.ensureActive()
+        // Resize langsung (stretch) 640x640 sesuai preprocessor training.
+        val scaleX = INPUT_SIZE / src.width.toFloat()
+        val scaleY = INPUT_SIZE / src.height.toFloat()
 
-        val resized = Bitmap.createScaledBitmap(src, nw, nh, true)
-        val rpx = IntArray(nw * nh)
-        resized.getPixels(rpx, 0, nw, 0, 0, nw, nh)
+        val resized = Bitmap.createScaledBitmap(src, INPUT_SIZE, INPUT_SIZE, true)
+        val rpx = IntArray(INPUT_SIZE * INPUT_SIZE)
+        resized.getPixels(rpx, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
         resized.recycle()
 
-        val data = FloatArray(3 * INPUT_SIZE * INPUT_SIZE) { 114f / 255f }
+        val data = FloatArray(3 * INPUT_SIZE * INPUT_SIZE)
         val plane = INPUT_SIZE * INPUT_SIZE
-        for (y in 0 until nh) {
-            val dy = (y + padY).toInt()
-            val rowBase = y * nw
-            val outBase = dy * INPUT_SIZE
-            for (x in 0 until nw) {
-                val dx = (x + padX).toInt()
-                val p = rpx[rowBase + x]
-                val o = outBase + dx
-                data[o] = ((p shr 16) and 0xFF) / 255f
-                data[plane + o] = ((p shr 8) and 0xFF) / 255f
-                data[2 * plane + o] = (p and 0xFF) / 255f
-            }
+        for (i in rpx.indices) {
+            val p = rpx[i]
+            data[i] = ((p shr 16) and 0xFF) / 255f
+            data[plane + i] = ((p shr 8) and 0xFF) / 255f
+            data[2 * plane + i] = (p and 0xFF) / 255f
         }
 
         return inferMutex.withLock {
@@ -271,21 +266,23 @@ class BubbleDetector {
                         // Pastikan kanal seg agar tidak salah decode model detect.
                         if (out0[0].size == NUM_CHANNELS_SEG) {
                             lastOutputDesc = "seg 37ch+protos"
-                            return@withLock decodeSeg(out0[0], out1[0], src.width, src.height, scale, padX, padY)
+                            return@withLock decodeSeg(out0[0], out1[0], src.width, src.height, scaleX, scaleY)
                         }
                     } catch (e: Exception) {
                         // Jatuh ke jalur detect di bawah.
                     }
                 }
-                // Jalur RT-DETR (ogkalu v4-small int8): 2 output — logits
-                // (1,300,3) + boxes (1,300,4). Dicek SEBELUM jalur generik
-                // agar tidak salah decode sebagai YOLO klasik.
+                // Jalur RT-DETR (ogkalu v4-small int8): logits + boxes.
+                // Dicek SEBELUM jalur generik agar tidak salah decode
+                // sebagai YOLO klasik.
                 if (res.size() >= 2) {
-                    val rt = decodeRtDetr(res, src.width, src.height, scale, padX, padY, conf)
+                    val rt = decodeRtDetr(res, src.width, src.height, scaleX, scaleY, conf)
                     if (rt != null) {
                         lastOutputDesc = "rtdetr kept=${rt.size}"
                         return@withLock rt
                     }
+                    // else: bentuk tak cocok → lastOutputDesc sudah diisi
+                    // pola yang teramati (lihat decodeRtDetr) untuk diagnosa.
                 }
                 // Jalur detect: 1 output (1,C,N) klasik, (1,N,C) transpos, atau
                 // (1,N,6) end-to-end NMS-free (YOLO26: x1,y1,x2,y2,score,cls).
@@ -294,11 +291,11 @@ class BubbleDetector {
                 if (mat != null) {
                     lastOutputDesc = "out=${res.size()} mat=${mat.size}x${mat[0].size}"
                     if (mat.isNotEmpty() && mat[0].size == 6 && mat.size in 2..1000) {
-                        decodeE2E(mat, src.width, src.height, scale, padX, padY, conf).also {
+                        decodeE2E(mat, src.width, src.height, scaleX, scaleY, conf).also {
                             lastOutputDesc = "e2e rows=${mat.size} kept=${it.size}"
                         }
                     } else {
-                        decodeDetect(mat, src.width, src.height, scale, padX, padY, conf).also {
+                        decodeDetect(mat, src.width, src.height, scaleX, scaleY, conf).also {
                             lastOutputDesc = "detect mat=${mat.size}x${mat[0].size} kept=${it.size}"
                         }
                     }
@@ -333,14 +330,14 @@ class BubbleDetector {
 
     /**
      * Decode output YOLO end-to-end NMS-free: matriks (N,6) dengan baris
-     * [x1,y1,x2,y2,score,cls] dalam skala input letterbox (640).
+     * [x1,y1,x2,y2,score,cls] dalam skala input resize (640).
      * Sudah deduplikasi oleh head (one-to-one matching) sehingga tanpa NMS:
      * cukup threshold skor + buang box mungil. Mask=null (box-only).
      */
     private fun decodeE2E(
         mat: Array<FloatArray>,
         origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float,
+        scaleX: Float, scaleY: Float,
         conf: Float = CONF_THRESH
     ): List<DetectedBubble> {
         val out = ArrayList<DetectedBubble>(mat.size.coerceAtMost(300))
@@ -349,11 +346,11 @@ class BubbleDetector {
             val score = row[4]
             if (score < conf) continue
             val cls = row[5].toInt()
-            // Balik letterbox ke koordinat bitmap asli.
-            val x1 = (row[0] - padX) / scale
-            val y1 = (row[1] - padY) / scale
-            val x2 = (row[2] - padX) / scale
-            val y2 = (row[3] - padY) / scale
+            // Balik resize ke koordinat bitmap asli.
+            val x1 = row[0] / scaleX
+            val y1 = row[1] / scaleY
+            val x2 = row[2] / scaleX
+            val y2 = row[3] / scaleY
             val box = RectF(
                 x1.coerceIn(0f, origW.toFloat()),
                 y1.coerceIn(0f, origH.toFloat()),
@@ -367,54 +364,147 @@ class BubbleDetector {
     }
 
     /**
-     * Decode output RT-DETR v2 (ogkalu v4-small int8): logits (1,300,3) untuk
-     * kelas [bubble, text_bubble, text_free] + boxes (1,300,4) cxcywh yang
-     * dinormalisasi 0..1 terhadap input 640. Skor = sigmoid (focal loss),
-     * tanpa NMS (end-to-end one-to-one). Hanya kelas 0 (bubble) yang dipakai,
-     * konsisten dengan filter classId == 0 di jalur lain.
+     * Decode output RT-DETR v2 (ogkalu, mis. v4-small int8): logits (N,C)
+     * untuk kelas [bubble, text_bubble, text_free, ...] + boxes (N,4) cxcywh
+     * yang dinormalisasi 0..1 terhadap input 640. Skor = sigmoid (focal
+     * loss), tanpa NMS (end-to-end one-to-one). Hanya kelas 0 (bubble) yang
+     * dipakai, konsisten dengan filter classId == 0 di jalur lain.
+     *
+     * TAHAN-BENTUK (akar "model tidak mendeteksi" pada varian int8): peran
+     * output dikenali dari NAMA dulu (logit* vs box*), lalu dari bentuk;
+     * jumlah query N bebas (bukan hardcode 300); layout transpos (C,N)
+     * didukung; baris numerik non-float (Byte/Short/Int/Long/Double, lazim
+     * pada model terkuantisasi) dikonversi; kelas 2..8 didukung. Bentuk yang
+     * teramati SELALU dicatat di lastOutputDesc untuk diagnosa.
      * Mengembalikan null bila bentuk output tidak cocok (biar jatuh ke jalur lain).
      */
     private fun decodeRtDetr(
         res: OrtSession.Result,
         origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float,
+        scaleX: Float, scaleY: Float,
         conf: Float = CONF_THRESH
     ): List<DetectedBubble>? {
         return try {
-            fun batchOf(idx: Int): Array<FloatArray>? {
+            if (res.size() < 2) {
+                lastOutputDesc = "rtdetr: output<2 (size=${res.size()})"
+                return null
+            }
+            val names = try {
+                res.map { it.key }.map { it.toString() }
+            } catch (e: Exception) {
+                emptyList<String>()
+            }
+            fun toFloatMatrix(idx: Int): Array<FloatArray>? {
                 val v = res[idx].value as? Array<*> ?: return null
-                @Suppress("UNCHECKED_CAST")
-                val m = (v as Array<*>)[0] as? Array<FloatArray> ?: return null
-                if (m.isEmpty() || m[0].isEmpty()) return null
+                val batch = (v as Array<*>)[0] as? Array<*> ?: return null
+                if (batch.isEmpty()) return null
+                return Array(batch.size) { r ->
+                    when (val row = batch[r]) {
+                        is FloatArray -> row
+                        is DoubleArray -> FloatArray(row.size) { row[it].toFloat() }
+                        is IntArray -> FloatArray(row.size) { row[it].toFloat() }
+                        is LongArray -> FloatArray(row.size) { row[it].toFloat() }
+                        is ShortArray -> FloatArray(row.size) { row[it].toFloat() }
+                        is ByteArray -> FloatArray(row.size) { row[it].toFloat() }
+                        else -> return null
+                    }
+                }
+            }
+            fun shapeOf(idx: Int): String {
+                return try {
+                    val m = toFloatMatrix(idx) ?: return "?"
+                    "${m.size}x${m[0].size}"
+                } catch (e: Exception) {
+                    "?"
+                }
+            }
+            val m0 = toFloatMatrix(0)
+            val m1 = toFloatMatrix(1)
+            if (m0 == null || m1 == null || m0.isEmpty() || m1.isEmpty()) {
+                lastOutputDesc = "rtdetr: matriks tak terbaca (${shapeOf(0)}, ${shapeOf(1)})"
+                return null
+            }
+            // Normalisasi orientasi ke (N,C): dukung (C,N) juga.
+            fun orient(m: Array<FloatArray>): Array<FloatArray> {
+                val d0 = m.size
+                val d1 = m[0].size
+                if (d0 in 2..8 && d1 > 100) {
+                    // (C,N) → transpos ke (N,C).
+                    return Array(d1) { a -> FloatArray(d0) { c -> m[c][a] } }
+                }
                 return m
             }
-            if (res.size() < 2) return null
-            val m0 = batchOf(0) ?: return null
-            val m1 = batchOf(1) ?: return null
-            // Tetapkan peran berdasar bentuk (urutan output bisa beda):
-            // inner 3 = logits, inner 4 = boxes.
-            val (logits, boxes) = when {
-                m0[0].size == 3 && m1[0].size == 4 -> m0 to m1
-                m0[0].size == 4 && m1[0].size == 3 -> m1 to m0
-                else -> return null
+            var a = orient(m0)
+            var b = orient(m1)
+            // Tetapkan peran: nama dulu, lalu bentuk (logits = inner 2..8
+            // kecuali 4 yang boxes; boxes = inner tepat 4).
+            fun isLogitsName(n: String) = n.contains("logit", ignoreCase = true)
+            fun isBoxName(n: String) = n.contains("box", ignoreCase = true) ||
+                n.contains("bbox", ignoreCase = true)
+            var logits: Array<FloatArray>? = null
+            var boxes: Array<FloatArray>? = null
+            val n0 = names.getOrNull(0) ?: ""
+            val n1 = names.getOrNull(1) ?: ""
+            if ((isLogitsName(n0) && isBoxName(n1)) || (isBoxName(n0) && isLogitsName(n1))) {
+                if (isLogitsName(n0)) {
+                    logits = a
+                    boxes = b
+                } else {
+                    logits = b
+                    boxes = a
+                }
+            } else {
+                // Heuristik bentuk: inner==4 → boxes; inner 2..8 (≠4) → logits.
+                fun role(m: Array<FloatArray>): Char = when (m[0].size) {
+                    4 -> 'B'
+                    in 2..8 -> 'L'
+                    else -> '?'
+                }
+                val ra = role(a)
+                val rb = role(b)
+                if (ra == 'L' && rb == 'B') {
+                    logits = a
+                    boxes = b
+                } else if (ra == 'B' && rb == 'L') {
+                    logits = b
+                    boxes = a
+                } else {
+                    lastOutputDesc = "rtdetr: bentuk tak cocok (${a.size}x${a[0].size}, ${b.size}x${b[0].size})"
+                    return null
+                }
             }
-            if (logits.size != 300 || boxes.size != 300) return null
+            val lg = logits ?: return null
+            val bx = boxes ?: return null
+            val n = minOf(lg.size, bx.size)
+            // Jumlah query bebas (varian small/middle bisa beda dari 300).
+            if (n < 10 || n > 5000) {
+                lastOutputDesc = "rtdetr: N=$n di luar wajar"
+                return null
+            }
+            if (bx[0].size != 4 || lg[0].size !in 2..8) {
+                lastOutputDesc = "rtdetr: inner tak cocok (${lg[0].size}, ${bx[0].size})"
+                return null
+            }
+            val numClasses = lg[0].size
             val out = ArrayList<DetectedBubble>(64)
-            for (i in 0 until 300) {
-                val l = logits[i]
-                val b = boxes[i]
+            for (i in 0 until n) {
+                val l = lg[i]
+                val bb = bx[i]
                 var best = 0
                 var bestS = Float.NEGATIVE_INFINITY
-                for (c in 0..2) {
+                for (c in 0 until numClasses) {
                     val s = 1f / (1f + kotlin.math.exp(-l[c]))
-                    if (s > bestS) { bestS = s; best = c }
+                    if (s > bestS) {
+                        bestS = s
+                        best = c
+                    }
                 }
                 if (bestS < conf || best != 0) continue
-                // cxcywh ternormalisasi → piksel letterbox → koordinat asli.
-                val cx = (b[0] * INPUT_SIZE - padX) / scale
-                val cy = (b[1] * INPUT_SIZE - padY) / scale
-                val bw = b[2] * INPUT_SIZE / scale
-                val bh = b[3] * INPUT_SIZE / scale
+                // cxcywh ternormalisasi → piksel resize → koordinat asli.
+                val cx = (bb[0] * INPUT_SIZE) / scaleX
+                val cy = (bb[1] * INPUT_SIZE) / scaleY
+                val bw = bb[2] * INPUT_SIZE / scaleX
+                val bh = bb[3] * INPUT_SIZE / scaleY
                 val box = RectF(
                     cx - bw / 2f, cy - bh / 2f, cx + bw / 2f, cy + bh / 2f
                 )
@@ -427,6 +517,7 @@ class BubbleDetector {
             }
             out.sortedByDescending { it.score }
         } catch (e: Exception) {
+            lastOutputDesc = "rtdetr: exception ${e.javaClass.simpleName}"
             null
         }
     }
@@ -439,7 +530,7 @@ class BubbleDetector {
     private fun decodeDetect(
         mat: Array<FloatArray>,
         origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float,
+        scaleX: Float, scaleY: Float,
         conf: Float = CONF_THRESH
     ): List<DetectedBubble> {
         val d0 = mat.size
@@ -481,10 +572,10 @@ class BubbleDetector {
             val w = get(2, a)
             val h = get(3, a)
             if (w <= 0f || h <= 0f) continue
-            val x1 = (cx - w / 2f - padX) / scale
-            val y1 = (cy - h / 2f - padY) / scale
-            val x2 = (cx + w / 2f - padX) / scale
-            val y2 = (cy + h / 2f - padY) / scale
+            val x1 = (cx - w / 2f) / scaleX
+            val y1 = (cy - h / 2f) / scaleY
+            val x2 = (cx + w / 2f) / scaleX
+            val y2 = (cy + h / 2f) / scaleY
             raw.add(RawBox(x1, y1, x2, y2, bestScore, bestCls))
         }
         if (raw.isEmpty()) return emptyList()
@@ -526,7 +617,7 @@ class BubbleDetector {
         preds: Array<FloatArray>,
         protos: Array<Array<FloatArray>>,
         origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float
+        scaleX: Float, scaleY: Float
     ): List<DetectedBubble> {
         val numAnchors = preds[0].size
         if (numAnchors <= 0) return emptyList()
@@ -539,11 +630,11 @@ class BubbleDetector {
             val cy = preds[1][a]
             val w = preds[2][a]
             val h = preds[3][a]
-            // Balik letterbox ke koordinat bitmap asli.
-            val x1 = (cx - w / 2f - padX) / scale
-            val y1 = (cy - h / 2f - padY) / scale
-            val x2 = (cx + w / 2f - padX) / scale
-            val y2 = (cy + h / 2f - padY) / scale
+            // Balik resize ke koordinat bitmap asli.
+            val x1 = (cx - w / 2f) / scaleX
+            val y1 = (cy - h / 2f) / scaleY
+            val x2 = (cx + w / 2f) / scaleX
+            val y2 = (cy + h / 2f) / scaleY
             val coef = FloatArray(NUM_MASK_COEF) { k -> preds[5 + k][a] }
             raw.add(RawDet(x1, y1, x2, y2, score, coef))
         }
@@ -570,7 +661,7 @@ class BubbleDetector {
                 d.y2.coerceIn(0f, origH.toFloat())
             )
             if (box.width() < 8f || box.height() < 8f) continue
-            val mask = buildMask(protos, d.coef, box, origW, origH, scale, padX, padY)
+            val mask = buildMask(protos, d.coef, box, scaleX, scaleY)
             out.add(DetectedBubble(box, d.score, mask, classId = 0))
         }
         return out
@@ -585,18 +676,18 @@ class BubbleDetector {
         protos: Array<Array<FloatArray>>,
         coef: FloatArray,
         box: RectF,
-        origW: Int, origH: Int,
-        scale: Float, padX: Float, padY: Float
+        scaleX: Float,
+        scaleY: Float
     ): Bitmap? {
         return try {
             val pw = box.width().toInt().coerceIn(1, 2048)
             val ph = box.height().toInt().coerceIn(1, 2048)
 
             // Box dalam koordinat proto (160x160): box-asli -> 640 -> 160.
-            val px1 = ((box.left * scale + padX) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(0, PROTO_SIZE - 1)
-            val py1 = ((box.top * scale + padY) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(0, PROTO_SIZE - 1)
-            val px2 = ((box.right * scale + padX) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(px1 + 1, PROTO_SIZE)
-            val py2 = ((box.bottom * scale + padY) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(py1 + 1, PROTO_SIZE)
+            val px1 = ((box.left * scaleX) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(0, PROTO_SIZE - 1)
+            val py1 = ((box.top * scaleY) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(0, PROTO_SIZE - 1)
+            val px2 = ((box.right * scaleX) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(px1 + 1, PROTO_SIZE)
+            val py2 = ((box.bottom * scaleY) * PROTO_SIZE / INPUT_SIZE).toInt().coerceIn(py1 + 1, PROTO_SIZE)
 
             val cw = px2 - px1
             val ch = py2 - py1
@@ -633,8 +724,13 @@ class BubbleDetector {
     /**
      * Deteksi ONNX untuk gambar jangkung/lebar ekstrem (mis. 720x16000):
      * potong sepanjang sumbu panjang jadi jendela persegi (sisi = sisi
-     * pendek, min 512px, maks 1024px) ber-overlap 30%, inferensi per tile,
+     * pendek, min 512px, maks 1024px) ber-overlap, inferensi per tile,
      * geser koordinat, lalu NMS global untuk buang duplikat di overlap.
+     *
+     * Anti-delay/crash: tile yang hampir polos (sketsa kosong) dilewati
+     * tanpa inferensi; jumlah tile dibatasi (overlap minimum 64px);
+     * tiap tile mengecek pembatalan (ensureActive) sehingga dialog yang
+     * ditutup / deteksi baru langsung menghentikan antrean.
      */
     private suspend fun detectTallOnnx(bitmap: Bitmap, session: OrtSession, onProgress: ((Float) -> Unit)? = null): List<DetectedBubble> {
         val w = bitmap.width
@@ -644,10 +740,19 @@ class BubbleDetector {
         val shortSide = min(w, h)
         val longSide = max(w, h)
         val win = shortSide.coerceIn(512, 1024)
-        val step = max(64, (win * 0.70f).toInt())
+        // Batas tile: hitung step agar tile <= 40 dengan overlap min 64px.
+        // Tanpa batas, 720x16000 = 31 tile × inferensi = menit + OOM.
+        val maxTiles = 40
+        var step = max(64, (win * 0.70f).toInt())
+        val estTiles = (longSide - win).toFloat() / step + 1f
+        if (estTiles > maxTiles) {
+            step = max(64, ((longSide - win) / (maxTiles - 1f)).toInt().coerceAtMost(win - 64))
+        }
         val out = mutableListOf<DetectedBubble>()
         var offset = 0
+        var tileIdx = 0
         while (offset < longSide) {
+            kotlinx.coroutines.ensureActive()
             val end = min(offset + win, longSide)
             val start = max(0, end - win)
             val crop = try {
@@ -659,21 +764,26 @@ class BubbleDetector {
             }
             if (crop != null) {
                 try {
-                    val found = runOnnx(session, crop, TALL_CONF_THRESH).filter { it.classId == 0 }
-                    for (b in found) {
-                        val r = b.boundingBox
-                        val shifted = if (vertical) {
-                            RectF(r.left, r.top + start, r.right, r.bottom + start)
-                        } else {
-                            RectF(r.left + start, r.top, r.right + start, r.bottom)
+                    // Tile hampir polos (area kertas kosong) = tak ada bubble:
+                    // lewati inferensi (penghemat terbesar di halaman manga).
+                    if (!isTileBlank(crop)) {
+                        val found = runOnnx(session, crop, TALL_CONF_THRESH).filter { it.classId == 0 }
+                        for (b in found) {
+                            val r = b.boundingBox
+                            val shifted = if (vertical) {
+                                RectF(r.left, r.top + start, r.right, r.bottom + start)
+                            } else {
+                                RectF(r.left + start, r.top, r.right + start, r.bottom)
+                            }
+                            val shiftedMask = b.mask
+                            out.add(DetectedBubble(shifted, b.score, shiftedMask, b.classId))
                         }
-                        val shiftedMask = b.mask
-                        out.add(DetectedBubble(shifted, b.score, shiftedMask, b.classId))
                     }
                 } finally {
                     runCatching { crop.recycle() }
                 }
             }
+            tileIdx++
             if (end >= longSide) {
                 onProgress?.invoke(1f)
                 break
@@ -685,6 +795,43 @@ class BubbleDetector {
         return nms(out, IOU_THRESH)
             .sortedByDescending { it.score }
             .take(TALL_MAX_DETECTIONS)
+    }
+
+    /**
+     * True bila tile hampir polos (rentang kecerahan < 24 pada sampling
+     * kasar): area kertas kosong tanpa garis/teks → inferensi dilewati.
+     */
+    private fun isTileBlank(crop: Bitmap): Boolean {
+        return try {
+            val w = crop.width
+            val h = crop.height
+            if (w <= 0 || h <= 0) return true
+            val step = 16
+            var minB = 255
+            var maxB = 0
+            // Buffer SEBARIS penuh (stride = w), lalu lompat tiap 16px agar
+            // sampel tersebar merata (bukan blok kontinu di kiri).
+            val row = IntArray(w)
+            var y = 0
+            while (y < h) {
+                crop.getPixels(row, 0, w, 0, y, w, 1)
+                var x = 0
+                while (x < w) {
+                    val p = row[x]
+                    val b = (((p shr 16) and 0xFF) + ((p shr 8) and 0xFF) + (p and 0xFF)) / 3
+                    if (b < minB) minB = b
+                    if (b > maxB) maxB = b
+                    if (maxB - minB >= 24) return false
+                    x += step
+                }
+                y += step
+            }
+            true
+        } catch (e: Exception) {
+            false
+        } catch (e: OutOfMemoryError) {
+            false
+        }
     }
 
     // ------------------------------------------------------------------

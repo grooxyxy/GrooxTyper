@@ -823,6 +823,9 @@ fun CanvasEditorScreen(
     var showLayersPanel by remember { mutableStateOf(false) }
     var showBrushSettings by remember { mutableStateOf(false) }
     var showTextEditor by remember { mutableStateOf(false) }
+    // Dialog edit massal: pilih beberapa kotak teks, terapkan ukuran /
+    // warna / tebal sekaligus (satu undo per kotak).
+    var showBulkTextDialog by remember { mutableStateOf(false) }
     // Dinaikkan saat geometri teks diubah dari kanvas (SCALE/lebar/perspektif)
     // agar panel teks (slider ukuran) ikut menampilkan angka terbaru.
     var textGeomTick by remember { mutableIntStateOf(0) }
@@ -1133,6 +1136,8 @@ fun CanvasEditorScreen(
     var showBubbleDialog by remember { mutableStateOf(false) }
     var bubbleModel by remember { mutableStateOf(BubbleModel.BUBBLE) }
     var bubbleDetecting by remember { mutableStateOf(false) }
+    // Job deteksi aktif (bisa dibatalkan saat deteksi baru dimulai).
+    var bubbleDetectJob by remember { mutableStateOf<Job?>(null) }
     var showBubbleOverlay by remember { mutableStateOf(true) }
     // Preview hasil text detector di kanvas + mode hapus per-region.
     var showTextOverlay by remember { mutableStateOf(false) }
@@ -1175,15 +1180,35 @@ fun CanvasEditorScreen(
 
     fun runBubbleDetection() {
         if (bubbleDetecting) return
-        scope.launch {
+        // Batalkan deteksi sebelumnya (mis. dialog dibuka-tutup cepat):
+        // tanpa ini antrean tile lama terus jalan di background → delay
+        // bertumpuk + OOM → crash.
+        bubbleDetectJob?.cancel()
+        bubbleDetectJob = scope.launch {
             val appCtx = context.applicationContext
             // Tanpa fallback: pastikan model ONNX termuat dulu agar gagal selalu terlihat.
             if (!bubbleDetector.ensureLoaded(appCtx, bubbleModel.asset)) {
                 healError = "Model bubble gagal dimuat: ${bubbleDetector.lastError ?: "unknown"}"
                 return@launch
             }
-            val snap = runCatching {
-                compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+            // Snapshot kanvas; bila raksasa (>8MP) turunkan 0.5x untuk deteksi
+            // saja (box diskala balik) — hemat 46MB → ~11MB, anti-OOM crash.
+            // Akurasi box bubble besar tak terpengaruh signifikan.
+            var detectScale = 1f
+            var snap = runCatching {
+                val full = compositeBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                val px = full.width.toLong() * full.height
+                if (px > 8_000_000L) {
+                    detectScale = 0.5f
+                    val half = Bitmap.createScaledBitmap(
+                        full,
+                        (full.width * detectScale).toInt().coerceAtLeast(1),
+                        (full.height * detectScale).toInt().coerceAtLeast(1),
+                        true
+                    )
+                    runCatching { full.recycle() }
+                    half
+                } else full
             }.getOrNull()
             if (snap == null) {
                 healError = "Deteksi bubble gagal: memori habis saat salin kanvas"
@@ -1199,11 +1224,23 @@ fun CanvasEditorScreen(
                     if (kotlin.math.abs(c - busyFrac) > 0.03f) busyFrac = c
                 }
                 val found = bubbleDetector.detect(snap, bubbleModel, context.applicationContext, prog)
-                detectedBubbles = found
+                detectedBubbles = if (detectScale != 1f) {
+                    val inv = 1f / detectScale
+                    found.map { b ->
+                        val r = b.boundingBox
+                        com.grooxtyper.app.ml.DetectedBubble(
+                            RectF(r.left * inv, r.top * inv, r.right * inv, r.bottom * inv),
+                            b.score, b.mask, b.classId
+                        )
+                    }
+                } else found
                 if (found.isEmpty()) {
                     val info = bubbleDetector.lastOutputDesc?.let { " ($it)" } ?: ""
                     healError = "Model ONNX jalan tapi bubble tak ditemukan$info — coba area lebih dekat"
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Dibatalkan (deteksi baru dimulai) → diam, tanpa pesan error.
+                throw e
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
                 healError = "Deteksi bubble OOM — coba kanvas lebih kecil"
@@ -1211,7 +1248,8 @@ fun CanvasEditorScreen(
                 e.printStackTrace()
                 healError = "Deteksi bubble gagal: ${e.message ?: "error"}"
             } finally {
-                runCatching { snap.recycle() }
+                runCatching { snap?.recycle() }
+                snap = null
                 bubbleDetecting = false
                 busyFrac = -1f
             }
@@ -5384,10 +5422,165 @@ fun CanvasEditorScreen(
                         },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
+                        onOpenBulkEdit = { showBulkTextDialog = true },
                         onClose = { showTextEditor = false }
                     )
                 }
             } ?: run { showTextEditor = false }
+        }
+
+        // === Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /
+        // warna / tebal sekaligus. Satu langkah undo per kotak yang diubah.
+        if (showBulkTextDialog) {
+            val allTexts = layerManager.visibleTextLayers()
+            var bulkChecked by remember(showBulkTextDialog) {
+                mutableStateOf(
+                    (selectedTextBox?.let { sel ->
+                        allTexts.find { it.box.id == sel.id }?.let { setOf(it.id) }
+                    } ?: allTexts.map { it.id }.toSet())
+                )
+            }
+            var bulkSize by remember(showBulkTextDialog) {
+                mutableFloatStateOf(
+                    allTexts.firstOrNull { it.id in bulkChecked }?.box?.fontSize
+                        ?: selectedTextBox?.fontSize ?: 64f
+                )
+            }
+            var bulkBold by remember(showBulkTextDialog) {
+                mutableStateOf(
+                    allTexts.firstOrNull { it.id in bulkChecked }?.box?.bold ?: true
+                )
+            }
+            fun bulkTargets() = allTexts.filter { it.id in bulkChecked }
+            AlertDialog(
+                onDismissRequest = { showBulkTextDialog = false },
+                title = { Text("Edit Teks Massal", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        Text(
+                            "Centang kotak teks, lalu terapkan ukuran/warna/tebal sekaligus.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (allTexts.isEmpty()) {
+                            Text("Belum ada teks di kanvas.", color = Color.LightGray, fontSize = 12.sp)
+                        } else {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                allTexts.forEach { tl ->
+                                    val checked = tl.id in bulkChecked
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (checked) Color(0xFF1F3D2B) else PanelBg)
+                                            .clickable {
+                                                bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Checkbox(
+                                            checked = checked,
+                                            onCheckedChange = {
+                                                bulkChecked = if (checked) bulkChecked - tl.id else bulkChecked + tl.id
+                                            },
+                                            colors = CheckboxDefaults.colors(checkedColor = Accent)
+                                        )
+                                        Text(
+                                            tl.box.text.take(28).ifBlank { "(kosong)" },
+                                            color = if (checked) Color.White else Color.Gray,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("Ukuran font: ${bulkSize.toInt()}px", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = bulkSize,
+                            onValueChange = { bulkSize = it },
+                            valueRange = 1f..220f,
+                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Tebal (bold)", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                            Switch(
+                                checked = bulkBold,
+                                onCheckedChange = { bulkBold = it },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val targets = bulkTargets()
+                                    if (targets.isEmpty()) {
+                                        healError = "Bulk: tidak ada teks yang dicentang"
+                                        return@Button
+                                    }
+                                    for (tl in targets) {
+                                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
+                                        tl.box.fontSize = bulkSize
+                                        tl.box.bold = bulkBold
+                                    }
+                                    refreshComposite()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Terapkan", color = Color.White, fontSize = 12.sp) }
+                            Button(
+                                onClick = {
+                                    val targets = bulkTargets()
+                                    if (targets.isEmpty()) {
+                                        healError = "Bulk: tidak ada teks yang dicentang"
+                                        return@Button
+                                    }
+                                    for (tl in targets) {
+                                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
+                                        tl.box.color = brushEngine.color
+                                    }
+                                    refreshComposite()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
+                                modifier = Modifier.weight(1f)
+                            ) { Text("Warna brush", color = Color.White, fontSize = 12.sp) }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { showBulkTextDialog = false }) {
+                        Text("Selesai", color = Accent)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            val targets = bulkTargets()
+                            for (tl in targets) {
+                                val idx = layerManager.indexOfLayer(tl.id)
+                                if (idx >= 0) {
+                                    undoRedoManager.pushLayerRemove(tl, idx)
+                                    layerManager.removeLayerById(tl.id)
+                                }
+                            }
+                            if (selectedTextBox != null && targets.any { it.box.id == selectedTextBox!!.id }) {
+                                selectedTextBox = null
+                                showTextEditor = false
+                            }
+                            showBulkTextDialog = false
+                            refreshComposite()
+                        },
+                        enabled = bulkChecked.isNotEmpty()
+                    ) { Text("Hapus dipilih", color = Color.Red) }
+                },
+                containerColor = PanelBg
+            )
         }
 
         // Konfirmasi keluar agar tombol Back tak sengaja tidak menutup editor.
@@ -5765,9 +5958,16 @@ fun CanvasEditorScreen(
                         ) {
                             Button(
                                 onClick = { runBubbleDetection() },
+                                enabled = !bubbleDetecting,
                                 colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
                                 shape = RoundedCornerShape(10.dp)
-                            ) { Text("Deteksi", color = Color.White, fontSize = 12.sp) }
+                            ) { Text(if (bubbleDetecting) "Mendeteksi…" else "Deteksi", color = Color.White, fontSize = 12.sp) }
+                            if (bubbleDetecting) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                TextButton(onClick = { bubbleDetectJob?.cancel() }) {
+                                    Text("Batal", color = Color.Red, fontSize = 12.sp)
+                                }
+                            }
                             Spacer(modifier = Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Overlay", color = Color.White, fontSize = 12.sp)

@@ -187,6 +187,7 @@ for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxS
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
 }
 assert(brush.includes('SFX_LETTER') && brush.includes('SFX_TAPER') && brush.includes('SFX_OUTLINE'), 'brush SFX: 3 kuas (Lettering utama + Taper + Outline)');
+assert(brush.includes('SFX_FILL') && brush.includes('SFX_NEON') && brush.includes('SFX_SHADOW') && brush.includes('SFX_GRAD'), 'brush SFX: +4 kuas lettering (Fill + Neon + Shadow + Gradasi)');
 // Rombakan sesuai video: kuas keras, lebar per-dab (taper awal, kecepatan,
 // kontras arah turun/atas, lift), outline yang mengikuti lebar, dan ujung
 // runcing di akhir stroke lewat buffer ekor.
@@ -199,7 +200,11 @@ assert(brush.includes('private val sfxPending = ArrayList<Offset>'), 'SFX: buffe
 assert(brush.includes('fun flushSfxTail'), 'SFX: ekor diruncingkan saat stroke selesai (flushSfxTail)');
 assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: ekor masuk cache tile walau syncTiles dipanggil sebelum endStroke');
 assert(brush.includes('fun discardSfxTail'), 'SFX: buang ekor saat stroke di-undo (tidak menggambar ulang di atas undo)');
-assert(brush.includes('it.strokeWidth = paint.strokeWidth + sfxOutlineWidth'), 'SFX: outline mengikuti lebar goresan (bukan lebar tetap)');
+assert(brush.includes('fun buildSfxPasses') && brush.includes('fun setSfxPassWidths') && brush.includes('class SfxPass'), 'SFX: lapisan multi-pass (outline/neon/shadow/gradasi) mengikuti lebar goresan');
+assert(brush.includes('fun sfxMixWhite') && brush.includes('fun sfxDarken'), 'SFX: helper terang/gelap untuk inti neon & bayangan');
+assert(brush.includes('brushType == BrushType.MARKER || brushType == BrushType.FLAT'), 'gapless: Marker/Flat digambar satu path kontinu (tanpa takik sambungan)');
+assert(brush.includes('base * 0.10f'), 'SFX: lantai lebar 10% (goresan tak terbaca putus)');
+assert(brush.includes('it.strokeWidth = paint.strokeWidth + sfxOutlineWidth') || brush.includes('w += sfxOutlineWidth(w)'), 'SFX: outline mengikuti lebar goresan (bukan lebar tetap)');
 assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
 assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
 assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');
@@ -339,12 +344,25 @@ assert(selectEng.includes('fun selectWand(') && selectEng.includes('fun traceCon
 assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), 'wand: tap-vs-geser dibedakan (seleksi hanya saat ketuk)');
 assert(editor.includes('"Manual"') && editor.includes('"Otomatis"') && editor.includes('wandTolerance') && editor.includes('wandMode == "auto"'), 'wand: bar pengaturan mode Manual/Otomatis + slider toleransi');
 assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
-assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung via leher interior (kasus webtoon)');
+assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung (kasus webtoon)');
+assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('fun labelComponents(') && selectEng.includes('WATERSHED'), 'wand-otomatis: watershed biner (erosi kontraksi → seed → tumbuh serentak)');
 assert(editor.includes('Bubble gabung dipecah jadi 2 area'), 'wand-otomatis: pesan hasil pecah bubble');
 assert(editor.includes('fun focusRect(') && editor.includes('fun fitCanvasToScreen()'), 'navigasi: focusRect + fitCanvasToScreen');
 assert(editor.includes('"Fokus"') && editor.includes('focusRect(r)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
 assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEntry(idx, idx - 1)'), 'script: geser urutan naskah naik/turun');
 assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
+
+// 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,
+//     kuas SFX lettering + gapless, bulk text edit.
+assert(!bubbleDet.includes('padX') && bubbleDet.includes('scaleX'), 'bubble: preprocessing resize murni sesuai training (tanpa letterbox/pad)');
+assert(bubbleDet.includes('isLogitsName') && bubbleDet.includes('ByteArray'), 'bubble: peran output dari nama + konversi dtype generik (tahan varian int8)');
+assert(bubbleDet.includes('n < 10 || n > 5000') && bubbleDet.includes('lg[0].size !in 2..8'), 'bubble: jumlah query & kelas fleksibel (bukan hardcode 300/3)');
+assert(bubbleDet.includes('fun isTileBlank(') && bubbleDet.includes('maxTiles'), 'bubble: lewati tile kosong + batas tile (anti-delay/OOM)');
+assert(bubbleDet.includes('ensureActive()') && bubbleDet.includes('CancellationException'), 'bubble: inferensi bisa dibatalkan (tidak menggantung/crash)');
+assert(editor.includes('bubbleDetectJob') && editor.includes('px > 8_000_000L'), 'bubble: cancel deteksi lama + snapshot downscale di kanvas raksasa');
+assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('KONTRAKSI') && selectEng.includes('WATERSHED: tumbuhkan'), 'wand: pecah bubble via watershed (erosi kontraksi → seed → tumbuh serentak)');
+assert(textEditor.includes('onOpenBulkEdit') && editor.includes('showBulkTextDialog'), 'bulk: tombol Massal di panel teks + dialog');
+assert(editor.includes('"Edit Teks Massal"') && editor.includes('bulkChecked') && editor.includes('pushTextBox(tl.id, tl.box.copy())'), 'bulk: pilih multi-teks + terapkan ukuran/tebal/warna + undo per kotak');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

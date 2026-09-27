@@ -232,14 +232,20 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
-     * Pecah bubble GABUNG jadi dua (mode Otomatis tongkat sihir).
+     * Pecah bubble GABUNG jadi dua via WATERSHED (mode Otomatis tongkat sihir).
      *
-     * Kasus webtoon: dua bubble menyatu (berbagi dinding/overlap) terdeteksi
-     * sebagai satu kotak. Di dalam kotak, interior kertas (near-white) dari
-     * kedua bubble menyambung lewat "leher" yang sempit. Fungsi ini mencari
-     * leher tersempit di sepertiga tengah (vertikal = gabung kiri-kanan,
-     * horizontal = gabung atas-bawah) lalu mengembalikan dua kotak isi
-     * (koordinat kanvas). Null bila hanya satu bubble utuh (tak ada leher).
+     * Kasus webtoon: dua bubble menyatu (overlap/berbagi dinding) terdeteksi
+     * sebagai satu kotak.
+     *
+     * Cara kerja (sesuai file "magic wand bubble mode"):
+     *  1. KONTRAKSI (erosi): mask interior kertas dikontraksikan bertahap
+     *     sampai objek yang overlap terpisah menjadi 2+ komponen kecil —
+     *     tiap komponen = seed satu bubble.
+     *  2. WATERSHED: semua seed ditumbuhkan serentak di dalam mask asli
+     *     (BFS multi-sumber); garis tempat dua front bertemu = garis belah,
+     *     yaitu titik terakhir kedua bubble bersentuhan.
+     * Mengembalikan dua kotak isi (koordinat kanvas). Null bila tak terpisah
+     * (satu bubble utuh / erosi habis duluan).
      *
      * @param px piksel ARGB area kotak (baris-mayor, selebar [bw]).
      * @param offX/offY offset kiri-atas kotak dalam koordinat kanvas.
@@ -252,170 +258,237 @@ class SelectionEngine(val width: Int, val height: Int) {
         offY: Int
     ): List<RectF>? {
         if (bw < 16 || bh < 16 || px.size < bw * bh) return null
+        return try {
+            splitMergedWatershed(px, bw, bh, offX, offY)
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /** Inti watershed (dipisah agar OOM/exception tertangani di pemanggil). */
+    private fun splitMergedWatershed(
+        src: IntArray,
+        bw: Int,
+        bh: Int,
+        offX: Int,
+        offY: Int
+    ): List<RectF>? {
+        // Downsample area raksasa (batas 1.5MP) agar erosi+BFS tetap cepat.
+        var scale = 1f
+        var dat = src
+        var w = bw
+        var h = bh
+        if (bw.toLong() * bh > 1_500_000L) {
+            scale = 0.5f
+            w = maxOf(16, (bw * scale).toInt())
+            h = maxOf(16, (bh * scale).toInt())
+            dat = downsampleGray(src, bw, bh, w, h)
+        }
         // Mask interior kertas (teks & garis outline = gelap, dikecualikan).
-        val mask = BooleanArray(bw * bh)
-        for (i in 0 until bw * bh) {
-            val p = px[i]
+        val mask = BooleanArray(w * h)
+        var maskCount = 0
+        for (i in 0 until w * h) {
+            val p = dat[i]
             val m = minOf(
                 (p shr 16) and 0xFF,
                 (p shr 8) and 0xFF,
                 p and 0xFF
             )
-            mask[i] = m > 200
+            if (m > 200) {
+                mask[i] = true
+                maskCount++
+            }
         }
-        // Komponen terhubung terbesar = interior gabungan (abaikan noise kecil).
-        val seen = BooleanArray(bw * bh)
-        var best: MutableList<Int>? = null
-        for (s in 0 until bw * bh) {
-            if (!mask[s] || seen[s]) continue
-            val comp = ArrayList<Int>(256)
-            val stack = ArrayDeque<Int>()
-            seen[s] = true
+        if (maskCount < 200) return null
+        // 1) KONTRAKSI: erosi 8-neighborhood sampai mask terpisah ≥2.
+        var cur = mask
+        var labels: IntArray? = null
+        var numLabels = 0
+        // Iterasi dibatasi: leher tipis pecah dalam puluhan iterasi;
+        // lebih dari itu berarti satu blob (berhenti, jangan habiskan CPU).
+        val maxIter = minOf(200, minOf(w, h) / 2)
+        var iter = 0
+        var split = false
+        while (iter < maxIter) {
+            val next = BooleanArray(w * h)
+            var any = false
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    val i = y * w + x
+                    if (!cur[i]) continue
+                    var all = true
+                    outer@ for (dy in -1..1) {
+                        for (dx in -1..1) {
+                            val nx = x + dx
+                            val ny = y + dy
+                            if (nx !in 0 until w || ny !in 0 until h || !cur[ny * w + nx]) {
+                                all = false
+                                break@outer
+                            }
+                        }
+                    }
+                    if (all) {
+                        next[i] = true
+                        any = true
+                    }
+                }
+            }
+            if (!any) return null // habis sebelum terpisah = satu blob utuh
+            val (lab, cnt) = labelComponents(next, w, h)
+            if (cnt >= 2) {
+                labels = lab
+                numLabels = cnt
+                split = true
+                break
+            }
+            cur = next
+            iter++
+        }
+        val seedLabels = labels ?: return null
+        if (!split || numLabels < 2) return null
+        // 2) WATERSHED: tumbuhkan semua seed serentak di dalam mask asli.
+        // Tiap piksel diklaim seed yang pertama sampai (BFS lapis); garis
+        // tempat dua front bertemu = titik terakhir bubble bersentuhan.
+        val final = IntArray(w * h)
+        val queue = ArrayDeque<Int>()
+        for (i in 0 until w * h) {
+            if (seedLabels[i] > 0 && mask[i]) {
+                final[i] = seedLabels[i]
+                queue.addLast(i)
+            }
+        }
+        while (queue.isNotEmpty()) {
+            val i = queue.removeFirst()
+            val x = i % w
+            val y = i / w
+            val lab = final[i]
+            for (dy in -1..1) {
+                for (dx in -1..1) {
+                    if (dx == 0 && dy == 0) continue
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx !in 0 until w || ny !in 0 until h) continue
+                    val j = ny * w + nx
+                    if (mask[j] && final[j] == 0) {
+                        final[j] = lab
+                        queue.addLast(j)
+                    }
+                }
+            }
+        }
+        // Ambil 2 label terbesar; tiap-tiapnya wajib >5% isi (bukan noise).
+        val counts = IntArray(numLabels + 1)
+        for (v in final) if (v in 1..numLabels) counts[v]++
+        val top = (1..numLabels).sortedByDescending { counts[it] }.take(2)
+        if (top.size < 2 || counts[top[1]] * 20 < maskCount) return null
+        // Bbox tiap label + pad, kembali ke koordinat kanvas penuh.
+        fun labelBox(id: Int): RectF? {
+            var l = w
+            var t = h
+            var r = -1
+            var b = -1
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    if (final[y * w + x] != id) continue
+                    if (x < l) l = x
+                    if (x > r) r = x
+                    if (y < t) t = y
+                    if (y > b) b = y
+                }
+            }
+            if (r < 0 || r - l < 8 || b - t < 8) return null
+            val pad = 4
+            return RectF(
+                (offX + (l - pad) / scale).toFloat(),
+                (offY + (t - pad) / scale).toFloat(),
+                (offX + (r + pad) / scale).toFloat(),
+                (offY + (b + pad) / scale).toFloat()
+            )
+        }
+        val a = labelBox(top[0])
+        val c = labelBox(top[1])
+        if (a == null || c == null) return null
+        return listOf(a, c)
+    }
+
+    /** Downsample rata-rata (pertahankan kecerahan) untuk area raksasa. */
+    private fun downsampleGray(
+        src: IntArray,
+        sw: Int,
+        sh: Int,
+        dw: Int,
+        dh: Int
+    ): IntArray {
+        val out = IntArray(dw * dh)
+        for (y in 0 until dh) {
+            val sy0 = (y * sh) / dh
+            val sy1 = maxOf(((y + 1) * sh) / dh, sy0 + 1)
+            for (x in 0 until dw) {
+                val sx0 = (x * sw) / dw
+                val sx1 = maxOf(((x + 1) * sw) / dw, sx0 + 1)
+                var r = 0
+                var g = 0
+                var b = 0
+                var n = 0
+                for (sy in sy0 until minOf(sy1, sh)) {
+                    for (sx in sx0 until minOf(sx1, sw)) {
+                        val p = src[sy * sw + sx]
+                        r += (p shr 16) and 0xFF
+                        g += (p shr 8) and 0xFF
+                        b += p and 0xFF
+                        n++
+                    }
+                }
+                out[y * dw + x] = -16777216 or
+                    ((r / maxOf(1, n)) shl 16) or
+                    ((g / maxOf(1, n)) shl 8) or
+                    (b / maxOf(1, n))
+            }
+        }
+        return out
+    }
+
+    /**
+     * Labeli komponen terhubung (8 arah) pada mask; kembalikan peta label
+     * (0 = latar) + jumlah komponen.
+     */
+    private fun labelComponents(
+        mask: BooleanArray,
+        w: Int,
+        h: Int
+    ): Pair<IntArray, Int> {
+        val lab = IntArray(w * h)
+        var count = 0
+        val stack = ArrayDeque<Int>()
+        for (s in 0 until w * h) {
+            if (!mask[s] || lab[s] != 0) continue
+            count++
+            lab[s] = count
             stack.addLast(s)
             while (stack.isNotEmpty()) {
                 val i = stack.removeLast()
-                comp.add(i)
-                val x = i % bw
-                val y = i / bw
-                if (x > 0) {
-                    val j = i - 1
-                    if (mask[j] && !seen[j]) {
-                        seen[j] = true
-                        stack.addLast(j)
-                    }
-                }
-                if (x < bw - 1) {
-                    val j = i + 1
-                    if (mask[j] && !seen[j]) {
-                        seen[j] = true
-                        stack.addLast(j)
-                    }
-                }
-                if (y > 0) {
-                    val j = i - bw
-                    if (mask[j] && !seen[j]) {
-                        seen[j] = true
-                        stack.addLast(j)
-                    }
-                }
-                if (y < bh - 1) {
-                    val j = i + bw
-                    if (mask[j] && !seen[j]) {
-                        seen[j] = true
-                        stack.addLast(j)
+                val x = i % w
+                val y = i / w
+                for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        if (dx == 0 && dy == 0) continue
+                        val nx = x + dx
+                        val ny = y + dy
+                        if (nx !in 0 until w || ny !in 0 until h) continue
+                        val j = ny * w + nx
+                        if (mask[j] && lab[j] == 0) {
+                            lab[j] = count
+                            stack.addLast(j)
+                        }
                     }
                 }
             }
-            if (best == null || comp.size > best.size) best = comp
         }
-        val comp = best ?: return null
-        if (comp.size < 200) return null
-        val total = comp.size.toFloat()
-        // Profil kolom & baris komponen.
-        val colCount = IntArray(bw)
-        val rowCount = IntArray(bh)
-        for (i in comp) {
-            colCount[i % bw]++
-            rowCount[i / bw]++
-        }
-        fun colMax(a: Int, b: Int): Int {
-            var m = 0
-            for (x in a..b) if (colCount[x] > m) m = colCount[x]
-            return m
-        }
-        fun rowMax(a: Int, b: Int): Int {
-            var m = 0
-            for (y in a..b) if (rowCount[y] > m) m = rowCount[y]
-            return m
-        }
-        // Leher vertikal: kolom tersempit di sepertiga tengah.
-        var vx = -1
-        var vxDepth = 0f
-        run {
-            val x0 = bw / 3
-            val x1 = bw * 2 / 3
-            var minC = Int.MAX_VALUE
-            var minX = -1
-            for (x in x0..x1) {
-                if (colCount[x] < minC) {
-                    minC = colCount[x]
-                    minX = x
-                }
-            }
-            if (minX >= 0) {
-                var left = 0L
-                for (x in 0..minX) left += colCount[x]
-                var right = 0L
-                for (x in minX + 1 until bw) right += colCount[x]
-                val peak = maxOf(colMax(0, minX), colMax(minX + 1, bw - 1)).toFloat()
-                if (peak > 0f && minOf(left, right) > total * 0.2) {
-                    vxDepth = 1f - minC / peak
-                    if (vxDepth > 0.35f) vx = minX
-                }
-            }
-        }
-        // Leher horizontal: baris tersempit di sepertiga tengah.
-        var hy = -1
-        var hyDepth = 0f
-        run {
-            val y0 = bh / 3
-            val y1 = bh * 2 / 3
-            var minC = Int.MAX_VALUE
-            var minY = -1
-            for (y in y0..y1) {
-                if (rowCount[y] < minC) {
-                    minC = rowCount[y]
-                    minY = y
-                }
-            }
-            if (minY >= 0) {
-                var top = 0L
-                for (y in 0..minY) top += rowCount[y]
-                var bot = 0L
-                for (y in minY + 1 until bh) bot += rowCount[y]
-                val peak = maxOf(rowMax(0, minY), rowMax(minY + 1, bh - 1)).toFloat()
-                if (peak > 0f && minOf(top, bot) > total * 0.2) {
-                    hyDepth = 1f - minC / peak
-                    if (hyDepth > 0.35f) hy = minY
-                }
-            }
-        }
-        if (vx < 0 && hy < 0) return null
-        // Potong pada leher terdalam; tiap belahan = bbox isinya + pad.
-        val pad = 4
-        fun halfBox(
-            keep: (x: Int, y: Int) -> Boolean
-        ): RectF? {
-            var l = bw
-            var t = bh
-            var r = -1
-            var b = -1
-            for (i in comp) {
-                val x = i % bw
-                val y = i / bw
-                if (!keep(x, y)) continue
-                if (x < l) l = x
-                if (x > r) r = x
-                if (y < t) t = y
-                if (y > b) b = y
-            }
-            if (r < 0 || r - l < 8 || b - t < 8) return null
-            return RectF(
-                (offX + l - pad).toFloat(),
-                (offY + t - pad).toFloat(),
-                (offX + r + pad).toFloat(),
-                (offY + b + pad).toFloat()
-            )
-        }
-        return if (vxDepth >= hyDepth && vx >= 0) {
-            val a = halfBox { x, _ -> x <= vx }
-            val c = halfBox { x, _ -> x > vx }
-            if (a != null && c != null) listOf(a, c) else null
-        } else if (hy >= 0) {
-            val a = halfBox { _, y -> y <= hy }
-            val c = halfBox { _, y -> y > hy }
-            if (a != null && c != null) listOf(a, c) else null
-        } else null
+        return lab to count
     }
 
     /**
