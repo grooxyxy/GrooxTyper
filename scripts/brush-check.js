@@ -253,6 +253,7 @@ const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
 assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
 assert(perspGrid.includes('fun cornersCanvas') && editor.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
 assert(overlays.includes('fun perspectiveGrid') && overlays.includes('fun textFramePreview'), 'overlay: grid perspektif + preview kotak di file terpisah (badan editor <64KB)');
+assert(overlays.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'overlay: import nativeCanvas ada (tanpa ini build gagal)');
 assert(editor.includes('EditorOverlays.perspectiveGrid(') && editor.includes('EditorOverlays.textFramePreview('), 'editor: overlay dipanggil, bukan digambar inline');
 assert(overlays.includes('fun TextToolsExtra') || overlays.includes('fun richTextPanel'), 'overlay: host panel gaya per kata + tombol toolbar');
 assert(perspGrid.includes('fun dstPoints') && overlays.includes('PerspectiveGrid.dstPoints(box') && textRenderer.includes('PerspectiveGrid.matrix(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
