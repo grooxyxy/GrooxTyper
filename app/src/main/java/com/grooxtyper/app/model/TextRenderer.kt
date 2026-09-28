@@ -232,7 +232,7 @@ object TextRenderer {
     private fun richFillPaint(
         box: TextBox,
         line: RichTextLayout.Line,
-        shader: Shader?,
+        fillShader: Shader?,
         withShadow: Boolean
     ): (RichTextLayout.Run) -> Paint = { r ->
         val p = Paint(r.paint)
@@ -240,10 +240,10 @@ object TextRenderer {
         val col = r.style?.color
         p.color = when {
             col != null -> withAlpha(col, 1f)
-            shader != null -> Color.WHITE
+            fillShader != null -> Color.WHITE
             else -> withAlpha(box.color, 1f)
         }
-        p.shader = if (col == null) shader else null
+        p.shader = if (col == null) fillShader else null
         p.alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
         if (withShadow) applyRichShadow(box, r, p) else p.clearShadowLayer()
         p
@@ -253,7 +253,7 @@ object TextRenderer {
     private fun richOutlinePaint(
         box: TextBox,
         line: RichTextLayout.Line,
-        shader: Shader?
+        fillShader: Shader?
     ): ((RichTextLayout.Run) -> Paint)? {
         val any = line.runs.any {
             val w = it.style?.outlineWidth ?: box.outlineWidth
@@ -263,14 +263,16 @@ object TextRenderer {
         return { r ->
             val w = (r.style?.outlineWidth ?: box.outlineWidth) * box.scale
             val oc = r.style?.outlineColor ?: box.outlineColor
+            val op = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+            val ocAlpha = withAlpha(oc, box.strokeOpacity)
             Paint(r.paint).apply {
                 style = Paint.Style.STROKE
                 strokeWidth = maxOf(0.5f, w)
                 strokeJoin = Paint.Join.ROUND
                 strokeCap = Paint.Cap.ROUND
-                shader = null
-                color = withAlpha(oc, box.strokeOpacity)
-                alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                this.shader = null
+                color = ocAlpha
+                alpha = op
                 clearShadowLayer()
             }
         }
@@ -279,27 +281,31 @@ object TextRenderer {
     private fun richGlowPaint(
         box: TextBox,
         g: TextGlowSpec,
-        shader: Shader?
+        fillShader: Shader?
     ): (RichTextLayout.Run) -> Paint = { r ->
-        Paint(r.paint).apply {
+        val gp = Paint(r.paint)
+        val ga = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+        val gc = withAlpha(g.color, g.opacity)
+        gp.apply {
             style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
             strokeWidth = g.spread * box.scale
             strokeJoin = Paint.Join.ROUND
-            shader = null
+            this.shader = null
             color = Color.WHITE
-            alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
-            setShadowLayer(
-                maxOf(1f, g.blur * box.scale), 0f, 0f,
-                withAlpha(g.color, g.opacity)
-            )
+            alpha = ga
+            setShadowLayer(maxOf(1f, g.blur * box.scale), 0f, 0f, gc)
         }
     }
 
     /** Bayangan per run: span boleh override warna/offset/blur. */
     private fun applyRichShadow(box: TextBox, r: RichTextLayout.Run, p: Paint) {
         val s = box.shadow
-        val color = r.style?.shadowColor ?: s?.color
-        if (color == null || s == null) {
+        if (s == null) {
+            p.clearShadowLayer()
+            return
+        }
+        val color = r.style?.shadowColor ?: s.color
+        if (color == null) {
             p.clearShadowLayer()
             return
         }
@@ -424,8 +430,10 @@ object TextRenderer {
             val sp = box.spanAt(gi)
             val mul = sp?.fontSizeMul ?: 1f
             val off = -g.w / (2f * g.sizeMul * mul)
-            val glyphFill = if (sp?.color != null) {
-                Paint(fill).apply { color = withAlpha(sp.color, 1f) }
+            val spanColor = sp?.color
+            val glyphFill = if (spanColor != null) {
+                val ca = withAlpha(spanColor, 1f)
+                Paint(fill).apply { color = ca }
             } else fill
             val glyphOutline = if (sp?.outlineWidth != null || sp?.outlineColor != null) {
                 outline?.let {

@@ -398,8 +398,8 @@ class SfxBrushEngine {
                 val h = hashF(index * 3 + 1, seed)
                 if (h > 0.72f) {
                     val rad = Math.toRadians(ang.toDouble())
-                    val px = -sin(rad)
-                    val py = cos(rad)
+                    val px = (-sin(rad)).toFloat()
+                    val py = cos(rad).toFloat()
                     val off = r * (0.9f + 3.0f * (h - 0.72f))
                     val side = if (index % 2 == 0) 1f else -1f
                     paint.alpha = (a * 0.85f).toInt().coerceIn(0, 255)
