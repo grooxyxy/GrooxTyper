@@ -260,6 +260,7 @@ assert(editor.includes('EditorOverlays.perspectiveGrid(') && editor.includes('Ed
 assert(overlays.includes('fun TextToolsExtra') || overlays.includes('fun richTextPanel'), 'overlay: host panel gaya per kata + tombol toolbar');
 assert(perspGrid.includes('fun dstPoints') && overlays.includes('PerspectiveGrid.dstPoints(box') && textRenderer.includes('PerspectiveGrid.matrix(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
 assert(ovGest.includes('val grab = 96f / sc') && ovGest.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
+assert(!ovGest.includes('selectedTextBox') && !ovGest.includes('pbox\n'), 'gestur overlay: hanya memakai parameter sendiri (tak grab state editor)');
 assert(ovGest.includes('1 -> { p.tlX += dx; p.tlY += dy }') && ovGest.includes('4 -> { p.blX += dx; p.blY += dy }'), 'grid perspektif: 4 sudut digeser bebas (arah perspektif leluasa)');
 assert(perspGrid.includes('setPolyToPoly'), 'grid perspektif: homografi 4 titik (bukan cuma keystone atas/bawah)');
 assert(perspPanel.includes('fun CornerSliders') && perspPanel.includes('"Jauh atas"') && perspPanel.includes('"Miring"'), 'grid perspektif: panel kontrol + preset arah');

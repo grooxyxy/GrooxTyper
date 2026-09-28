@@ -97,7 +97,7 @@ fun Modifier.perspectiveRulerGestures(
             val cp = screenToCanvas(change.position.x, change.position.y)
             val rg = guide
             if (perspGridMode) {
-                val box = selectedTextBox ?: return@detectDragGestures
+                val box = selectedBox ?: return@detectDragGestures
                 if (perspHandle == 0) return@detectDragGestures
                 val sc = viewState.scale.coerceAtLeast(0.05f)
                 val area = com.grooxtyper.app.model.PerspectiveGrid.contentRect(box)
@@ -118,7 +118,7 @@ fun Modifier.perspectiveRulerGestures(
                 }
                 p.clampAll()
                 box.persp = p
-                onPerspDrag(pbox)
+                onPerspDrag(box)
                 change.consume()
             } else {
                 val dvx = drag.x / viewState.scale.coerceAtLeast(0.05f)
