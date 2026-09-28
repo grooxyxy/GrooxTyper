@@ -26,11 +26,13 @@ const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui
 const perspGrid = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PerspectiveGrid.kt'));
 const overlays = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/EditorOverlays.kt'));
 const ovGest = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/OverlayGestures.kt'));
+const bubDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BubbleDetectorDialog.kt'));
+const rulesDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/StyleRulesDialog.kt'));
 const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
 const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
 const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
 const sfxEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
-for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays], ['OverlayGestures', ovGest]]) {
+for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays], ['OverlayGestures', ovGest], ['BubbleDetectorDialog', bubDlg], ['StyleRulesDialog', rulesDlg]]) {
   const o = (tx.match(/\{/g) || []).length;
   const c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
@@ -253,6 +255,8 @@ const gridBlock = editor.slice(editor.indexOf('if (rulerAdjustMode || (perspGrid
 const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
 assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
 assert(editor.includes('.perspectiveRulerGestures(') && ovGest.includes('fun Modifier.perspectiveRulerGestures('), 'grid perspektif: gestur overlay jadi Modifier terpisah (badan editor <64KB)');
+assert(editor.includes('BubbleDetectorDialog(') && bubDlg.includes('onCancel: () -> Unit') && bubDlg.includes('onAutoFill: () -> Unit'), 'bubble: dialog dipisah ke file sendiri + tombol Batal');
+assert(editor.includes('StyleRulesDialog(') && rulesDlg.includes('fun StyleRulesDialog('), 'style rules: dialog dipisah ke file sendiri');
 assert(perspGrid.includes('fun cornersCanvas') && ovGest.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
 assert(overlays.includes('fun perspectiveGrid') && overlays.includes('fun textFramePreview'), 'overlay: grid perspektif + preview kotak di file terpisah (badan editor <64KB)');
 assert(overlays.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'overlay: import nativeCanvas ada (tanpa ini build gagal)');
@@ -379,7 +383,7 @@ assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun spli
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('fun labelComponents(') && selectEng.includes('WATERSHED'), 'wand-otomatis: watershed biner (erosi kontraksi → seed → tumbuh serentak)');
 assert(editor.includes('Bubble gabung dipecah jadi 2 area'), 'wand-otomatis: pesan hasil pecah bubble');
 assert(editor.includes('fun focusRect(') && editor.includes('fun fitCanvasToScreen()'), 'navigasi: focusRect + fitCanvasToScreen');
-assert(editor.includes('"Fokus"') && editor.includes('focusRect(r)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
+assert(bubDlg.includes('"Fokus"') && editor.includes('focusRect(rect)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
 assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEntry(idx, idx - 1)'), 'script: geser urutan naskah naik/turun');
 assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
 assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt')), 'bulk: dialog di file sendiri (badan editor tak boleh >64KB)');

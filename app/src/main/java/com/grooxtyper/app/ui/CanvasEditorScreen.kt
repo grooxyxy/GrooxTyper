@@ -5737,178 +5737,44 @@ fun CanvasEditorScreen(
         }
 
         if (showBubbleDialog) {
-            AlertDialog(
-                onDismissRequest = { showBubbleDialog = false },
-                title = { Text("Bubble Detector", color = Color.White) },
-                text = {
-                    Column {
-                        Text(
-                            if (bubbleDetecting) "Mendeteksi bubble…"
-                            else "Ditemukan ${detectedBubbles.size} bubble (mentah, tanpa refine).",
-                            color = Color.LightGray, fontSize = 13.sp
-                        )
-                        val bubbleStatus = bubbleDetector.lastError?.let { "Model error: $it" }
-                            ?: bubbleDetector.lastOutputDesc?.let { "Model OK • $it" }
-                        if (bubbleStatus != null) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(bubbleStatus, color = Color.Gray, fontSize = 11.sp)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Model (pilih satu):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        BubbleModel.values().forEach { model ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { bubbleModel = model }
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                RadioButton(
-                                    selected = bubbleModel == model,
-                                    onClick = { bubbleModel = model }
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(model.displayName, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                    Text(model.desc, color = Color.Gray, fontSize = 11.sp)
-                                    Text(model.asset, color = Color.Gray, fontSize = 10.sp)
-                                }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Button(
-                                onClick = { runBubbleDetection() },
-                                enabled = !bubbleDetecting,
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp)
-                            ) { Text(if (bubbleDetecting) "Mendeteksi…" else "Deteksi", color = Color.White, fontSize = 12.sp) }
-                            if (bubbleDetecting) {
-                                Spacer(modifier = Modifier.width(8.dp))
-                                TextButton(onClick = { bubbleDetectJob?.cancel() }) {
-                                    Text("Batal", color = Color.Red, fontSize = 12.sp)
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Overlay", color = Color.White, fontSize = 12.sp)
-                            }
-                            Switch(
-                                checked = showBubbleOverlay,
-                                onCheckedChange = {
-                                    showBubbleOverlay = it
-                                    refreshComposite()
-                                },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Mode hapus (ketuk bubble)", color = Color.White, fontSize = 12.sp)
-                            }
-                            Switch(
-                                checked = bubbleEraseMode,
-                                onCheckedChange = { bubbleEraseMode = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { addBubbleFromSelection() },
-                                enabled = selectionEngine.hasSelection,
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("+ Dari Seleksi", color = Color.White, fontSize = 11.sp) }
-                            Button(
-                                onClick = {
-                                    activeTool = ActiveTool.SELECT_BOX
-                                    showBubbleDialog = false
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp),
-                                modifier = Modifier.weight(1f)
-                            ) { Text("Kotak Seleksi", color = Color.White, fontSize = 11.sp) }
-                            Button(
-                                onClick = {
-                                    detectedBubbles = emptyList()
-                                    refreshComposite()
-                                },
-                                enabled = detectedBubbles.isNotEmpty(),
-                                colors = ButtonDefaults.buttonColors(containerColor = PanelBg),
-                                shape = RoundedCornerShape(10.dp)
-                            ) { Text("Hapus Semua", color = Color.White, fontSize = 11.sp) }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Daftar bubble (ketuk ikon hapus untuk buang):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        if (detectedBubbles.isEmpty()) {
-                            Text("Belum ada bubble. Jalankan Deteksi atau tambah via Kotak Seleksi.", color = Color.Gray, fontSize = 11.sp)
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(180.dp)
-                            ) {
-                                itemsIndexed(detectedBubbles) { idx, b ->
-                                    val r = b.boundingBox
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text("#${idx + 1} (${r.left.toInt()},${r.top.toInt()} ${r.width().toInt()}x${r.height().toInt()})", color = Color.White, fontSize = 12.sp)
-                                        }
-                                        TextButton(onClick = {
-                                            showBubbleDialog = false
-                                            focusRect(r)
-                                        }) { Text("Fokus", color = Accent, fontSize = 11.sp) }
-                                        IconButton(
-                                            onClick = { removeBubbleAt(idx) },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Hapus bubble ${idx + 1}", tint = Color.Red, modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Ketuk bubble di mode Lasso/Kotak untuk TAMBAH ke seleksi (multi). Ketuk area terseleksi untuk menghapusnya. Drag di tool Kotak Seleksi untuk tambah area persegi.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        if (multiBubbleLines.isEmpty()) {
-                            Text(
-                                "Isi draft multi-bubble dulu untuk pakai Isi Otomatis.",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
-                        }
-                    }
+            BubbleDetectorDialog(
+                models = BubbleModel.values().toList(),
+                model = bubbleModel,
+                onModel = { bubbleModel = it },
+                detected = detectedBubbles,
+                detecting = bubbleDetecting,
+                status = bubbleDetector.lastError?.let { "Model error: $it" }
+                    ?: bubbleDetector.lastOutputDesc?.let { "Model OK - $it" },
+                showOverlay = showBubbleOverlay,
+                onOverlay = {
+                    showBubbleOverlay = it
+                    refreshComposite()
                 },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            autoFillBubbles()
-                            showBubbleDialog = false
-                        },
-                        enabled = multiBubbleLines.isNotEmpty() && detectedBubbles.isNotEmpty(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Isi Otomatis", color = Color.White) }
+                eraseMode = bubbleEraseMode,
+                onEraseMode = { bubbleEraseMode = it },
+                hasSelection = selectionEngine.hasSelection,
+                multiCount = multiBubbleLines.size,
+                onDetect = { runBubbleDetection() },
+                onCancel = { bubbleDetectJob?.cancel() },
+                onAddFromSelection = { addBubbleFromSelection() },
+                onSelectBox = {
+                    activeTool = ActiveTool.SELECT_BOX
+                    showBubbleDialog = false
                 },
-                dismissButton = {
-                    TextButton(onClick = { showBubbleDialog = false }) {
-                        Text("Tutup", color = Color.Gray)
-                    }
+                onClearAll = {
+                    detectedBubbles = emptyList()
+                    refreshComposite()
                 },
-                containerColor = PanelBg
+                onFocus = { rect ->
+                    showBubbleDialog = false
+                    focusRect(rect)
+                },
+                onRemove = { i -> removeBubbleAt(i) },
+                onAutoFill = {
+                    autoFillBubbles()
+                    showBubbleDialog = false
+                },
+                onClose = { showBubbleDialog = false }
             )
         }
 
@@ -6601,127 +6467,18 @@ fun CanvasEditorScreen(
 
         // === Style Rules: prefix script -> style + hapus awalan ===
         if (showStyleRules) {
-            val presets = stylePresets()
-            AlertDialog(
-                onDismissRequest = { showStyleRules = false },
-                title = { Text("Style Rules", color = Color.White) },
-                text = {
-                    Column {
-                        Text(
-                            "Jika baris diawali prefix, pakai style tsb dan awalan dihapus saat render. Contoh: '() : ' -> Style A, '\"\": ' -> Style B.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = newRulePrefix,
-                            onValueChange = { newRulePrefix = it },
-                            label = { Text("Awalan, cth: () : ") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (presets.isEmpty()) {
-                            Text(
-                                "Belum ada Style. Buat dulu di panel Teks > tab Style > Simpan.",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
-                        } else {
-                            Text("Pilih style:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            LazyColumn(
-                                modifier = Modifier.fillMaxWidth().height(110.dp)
-                            ) {
-                                itemsIndexed(presets) { _, p ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(vertical = 2.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (newRuleStyleId == p.id) Accent else PanelBg)
-                                            .clickable { newRuleStyleId = p.id }
-                                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(p.name, color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                                        if (p.prefix.isNotBlank()) {
-                                            Text("[${p.prefix}]", color = Color.Gray, fontSize = 10.sp)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Hapus awalan saat render", color = Color.White, fontSize = 12.sp)
-                            }
-                            Switch(
-                                checked = newRuleStrip,
-                                onCheckedChange = { newRuleStrip = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                val pre = newRulePrefix
-                                if (pre.isNotEmpty() && newRuleStyleId.isNotEmpty()) {
-                                    styleRules = styleRuleManager.save(
-                                        StyleRule(prefix = pre, styleId = newRuleStyleId, stripPrefix = newRuleStrip)
-                                    )
-                                    newRulePrefix = ""
-                                }
-                            },
-                            enabled = newRulePrefix.isNotEmpty() && newRuleStyleId.isNotEmpty(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Accent),
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("Tambah Rule", color = Color.White) }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Daftar rules (${styleRules.size}) — ketuk ikon hapus untuk buang:", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        if (styleRules.isEmpty()) {
-                            Text("Belum ada rule.", color = Color.Gray, fontSize = 11.sp)
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxWidth().height(140.dp)
-                            ) {
-                                itemsIndexed(styleRules) { _, r ->
-                                    val sName = presets.find { it.id == r.styleId }?.name ?: "(style terhapus)"
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text("'${r.prefix}' → $sName", color = Color.White, fontSize = 12.sp)
-                                            Text(
-                                                if (r.stripPrefix) "awalan dihapus" else "awalan dipertahankan",
-                                                color = Color.Gray, fontSize = 10.sp
-                                            )
-                                        }
-                                        IconButton(
-                                            onClick = { styleRules = styleRuleManager.delete(r.id) },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Hapus rule", tint = Color.Red, modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { showStyleRules = false },
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Selesai", color = Color.White) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showStyleRules = false }) {
-                        Text("Tutup", color = Color.Gray)
-                    }
-                },
-                containerColor = PanelBg
+            StyleRulesDialog(
+                presets = stylePresets(),
+                rules = styleRules,
+                prefix = newRulePrefix,
+                onPrefix = { newRulePrefix = it },
+                styleId = newRuleStyleId,
+                onStyleId = { newRuleStyleId = it },
+                stripPrefix = newRuleStrip,
+                onStripPrefix = { newRuleStrip = it },
+                onSave = { rule -> styleRules = styleRuleManager.save(rule) },
+                onDelete = { rid -> styleRules = styleRuleManager.delete(rid) },
+                onClose = { showStyleRules = false }
             )
         }
     }
