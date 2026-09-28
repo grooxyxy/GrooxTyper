@@ -217,6 +217,7 @@ assert(sfxEng.includes('LIFT_MS') && sfxEng.includes('if (gapMs > LIFT_MS)'), 'S
 assert(sfxEng.includes('val hold = max(6f, size * 1.3f)'), 'SFX: ekor ditahan supaya ujung runcing');
 assert(sfxEng.includes('fun paintUntil') && sfxEng.includes('val taper = if (taperTail) (1f - t * t)'), 'SFX: ekor diruncingkan saat stroke selesai');
 assert(sfxEng.includes('canvas.rotate(ang)'), 'SFX: stamp dirotasi searah goresan (tekstur tidak berenang)');
+assert(sfxEng.includes('private val srcRect = Rect(0, 0, STAMP_PX, STAMP_PX)') && sfxEng.includes('canvas.drawBitmap(stamp, srcRect, dst, paint)'), 'SFX: drawBitmap pakai Rect (src) + RectF (dst) yang benar');
 assert(sfxEng.includes('val step = max(1.1f, w * 0.42f)'), 'SFX: jarak antar stamp < radius (goresan tanpa celah)');
 assert(sfxEng.includes('Style.INK') && sfxEng.includes('hashF(index * 3 + 1, seed)'), 'SFX: tinta punya cipratan deterministik');
 assert(brush.includes('sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))'), 'brush: segmen SFXلعvement lewat mesin stamp');

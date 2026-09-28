@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.PorterDuffXfermode
+import android.graphics.Rect
 import android.graphics.RectF
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.abs
@@ -182,7 +183,8 @@ class SfxBrushEngine {
         private var dabCount = 0
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         private val dst = RectF()
-        private val srcRect = RectF(0f, 0f, STAMP_PX.toFloat(), STAMP_PX.toFloat())
+        // Src WAJIB android.graphics.Rect (bukan RectF) untuk drawBitmap.
+        private val srcRect = Rect(0, 0, STAMP_PX, STAMP_PX)
 
         /** Benih acak stroke ini (sama = goresan identik saat undo/redo). */
         private var seed: Int = 1
