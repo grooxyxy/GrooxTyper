@@ -25,11 +25,12 @@ const migan = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/Miga
 const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
 const perspGrid = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PerspectiveGrid.kt'));
 const overlays = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/EditorOverlays.kt'));
+const ovGest = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/OverlayGestures.kt'));
 const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
 const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
 const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
 const sfxEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
-for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays]]) {
+for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays], ['OverlayGestures', ovGest]]) {
   const o = (tx.match(/\{/g) || []).length;
   const c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
@@ -251,18 +252,19 @@ assert(textEditor.includes('box.sfx = newSpec'), 'panel teks: ubah SFX langsung 
 const gridBlock = editor.slice(editor.indexOf('if (rulerAdjustMode || (perspGridMode && selectedTextBox != null))'));
 const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
 assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
-assert(perspGrid.includes('fun cornersCanvas') && editor.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
+assert(editor.includes('.perspectiveRulerGestures(') && ovGest.includes('fun Modifier.perspectiveRulerGestures('), 'grid perspektif: gestur overlay jadi Modifier terpisah (badan editor <64KB)');
+assert(perspGrid.includes('fun cornersCanvas') && ovGest.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
 assert(overlays.includes('fun perspectiveGrid') && overlays.includes('fun textFramePreview'), 'overlay: grid perspektif + preview kotak di file terpisah (badan editor <64KB)');
 assert(overlays.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'overlay: import nativeCanvas ada (tanpa ini build gagal)');
 assert(editor.includes('EditorOverlays.perspectiveGrid(') && editor.includes('EditorOverlays.textFramePreview('), 'editor: overlay dipanggil, bukan digambar inline');
 assert(overlays.includes('fun TextToolsExtra') || overlays.includes('fun richTextPanel'), 'overlay: host panel gaya per kata + tombol toolbar');
 assert(perspGrid.includes('fun dstPoints') && overlays.includes('PerspectiveGrid.dstPoints(box') && textRenderer.includes('PerspectiveGrid.matrix(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
-assert(editor.includes('val grab = 96f / sc') && editor.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
-assert(editor.includes('1 -> { p.tlX += dx; p.tlY += dy }') && editor.includes('4 -> { p.blX += dx; p.blY += dy }'), 'grid perspektif: 4 sudut digeser bebas (arah perspektif leluasa)');
+assert(ovGest.includes('val grab = 96f / sc') && ovGest.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
+assert(ovGest.includes('1 -> { p.tlX += dx; p.tlY += dy }') && ovGest.includes('4 -> { p.blX += dx; p.blY += dy }'), 'grid perspektif: 4 sudut digeser bebas (arah perspektif leluasa)');
 assert(perspGrid.includes('setPolyToPoly'), 'grid perspektif: homografi 4 titik (bukan cuma keystone atas/bawah)');
 assert(perspPanel.includes('fun CornerSliders') && perspPanel.includes('"Jauh atas"') && perspPanel.includes('"Miring"'), 'grid perspektif: panel kontrol + preset arah');
 assert(editor.includes('showQuickSlider && !perspGridMode'), 'grid perspektif: quick slider (.clickable noop) disembunyikan saat mode grid');
-assert(editor.includes('undoRedoManager.pushTextBox(\n                                            textLayerIdOf(pbox)'), 'grid perspektif: satu langkah undo per gestur seret');
+assert(editor.includes('onPerspUndo = { pb ->') && editor.includes('onPerspDrag = { pb ->'), 'grid perspektif: satu langkah undo per gestur seret');
 assert(editor.includes('PerspectivePanel(') && editor.includes('Pilih satu teks dulu untuk atur perspektifnya'), 'grid perspektif: panel kontrol tampil saat mode aktif');
 
 // 16. Add image / watermark: sumber WAJIB utuh (tidak di-raster ke ukuran
