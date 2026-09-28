@@ -388,6 +388,8 @@ assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEnt
 assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
 assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt')), 'bulk: dialog di file sendiri (badan editor tak boleh >64KB)');
 assert(editor.includes('BulkTextDialog(') && editor.includes('fun WandSettingsBar('), 'refaktor: BulkTextDialog + WandSettingsBar terpisah (anti Method too large)');
+const holderCount = (editor.match(/by uiState::/g) || []).length;
+assert(editor.includes('private class EditorUiState') && holderCount >= 60, 'refaktor: state UI ringan di holder (anti Method too large) - ' + holderCount + ' properti');
 const localUis = ['showScriptPanelUi', 'showMLInpaintDialogUi', 'showExportDialogUi', 'showScriptEditorUi'];
 assert(localUis.every(n => editor.includes('fun ' + n + '(')), 'refaktor: dialog besar jadi fun lokal @Composable (anti Method too large)');
 assert(localUis.every(n => editor.includes(n + '()')), 'refaktor: call site dialog memanggil fun lokal');

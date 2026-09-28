@@ -442,6 +442,86 @@ private fun drawVisibleBitmap(
     }
 }
 
+/**
+ * State UI ringan yang dikumpulkan jadi satu holder.
+ *
+ * Alasan: tiap `by remember { mutableStateOf(..) }` di badan [CanvasEditorScreen]
+ * menambah potongan bytecode besar (group + cache + remember) pada method yang
+ * sama. Memindahkannya ke holder membuat badan fungsi utama bebas dari batas
+ * method JVM 64KB tanpa mengubah perilaku apa pun: property di sini tetap
+ * observable, dan variabel lokal memakai delegasi `by uiState::nama`.
+ */
+private class EditorUiState {
+    var activeTool by mutableStateOf(ActiveTool.BRUSH)
+    var refreshCanvasState by mutableIntStateOf(0)
+    var dirtyVersion by mutableIntStateOf(0)
+    var lastSavedVersion by mutableIntStateOf(-1)
+    var showExitDialog by mutableStateOf(false)
+    var isSavingExit by mutableStateOf(false)
+    var discardOnExit by mutableStateOf(false)
+    var isHealing by mutableStateOf(false)
+    var busyFrac by mutableFloatStateOf(-1f)
+    var busyTipIdx by mutableIntStateOf(0)
+    var isImportingEditor by mutableStateOf(false)
+    var isMLInpainting by mutableStateOf(false)
+    var showFlattenConfirm by mutableStateOf(false)
+    var textCreatePending by mutableStateOf(false)
+    var showColorPicker by mutableStateOf(false)
+    var showLayersPanel by mutableStateOf(false)
+    var showBrushSettings by mutableStateOf(false)
+    var showTextEditor by mutableStateOf(false)
+    var showBulkTextDialog by mutableStateOf(false)
+    var showRichTextPanel by mutableStateOf(false)
+    var textGeomTick by mutableIntStateOf(0)
+    var showRulerDialog by mutableStateOf(false)
+    var rulerAdjustMode by mutableStateOf(false)
+    var perspGridMode by mutableStateOf(false)
+    var showExportMenu by mutableStateOf(false)
+    var showExportDialog by mutableStateOf(false)
+    var exportQuality by mutableFloatStateOf(90f)
+    var isExporting by mutableStateOf(false)
+    var showLassoMenu by mutableStateOf(false)
+    var showQuickSlider by mutableStateOf(true)
+    var showMLInpaintDialog by mutableStateOf(false)
+    var makeEditableText by mutableStateOf(true)
+    var mlDetecting by mutableStateOf(false)
+    var showStyleRules by mutableStateOf(false)
+    var newRuleStrip by mutableStateOf(true)
+    var stylePresetsTick by mutableIntStateOf(0)
+    var showMultiBubbleDialog by mutableStateOf(false)
+    var multiBubbleIndex by mutableIntStateOf(0)
+    var showScriptPanel by mutableStateOf(false)
+    var showScriptEditor by mutableStateOf(false)
+    var scriptTextMode by mutableStateOf(false)
+    var detectingText by mutableStateOf(false)
+    var bubbleInpainted by mutableStateOf(false)
+    var showBubbleDialog by mutableStateOf(false)
+    var bubbleDetecting by mutableStateOf(false)
+    var showBubbleOverlay by mutableStateOf(true)
+    var showTextOverlay by mutableStateOf(false)
+    var textEraseMode by mutableStateOf(false)
+    var bubbleEraseMode by mutableStateOf(false)
+    var pendingImportOpacity by mutableFloatStateOf(1f)
+    var pendingImportLockAspect by mutableStateOf(true)
+    var showImageProps by mutableStateOf(false)
+    var showReferenceWindow by mutableStateOf(false)
+    var isLoadingReference by mutableStateOf(false)
+    var wandTolerance by mutableFloatStateOf(32f)
+    var wandBusy by mutableStateOf(false)
+    var strokeProgress by mutableStateOf(0f)
+    var strokeLength by mutableStateOf(0f)
+    var strokeIsHeal by mutableStateOf(false)
+    var strokeIsMigan by mutableStateOf(false)
+    var strokeIsAi by mutableStateOf(false)
+    var agnesKeyLoaded by mutableStateOf(false)
+    var colorPickActive by mutableStateOf(false)
+    var eyedropSampled by mutableStateOf(false)
+    var pressId by mutableIntStateOf(0)
+    var pressMoved by mutableStateOf(false)
+    var twoFingerActive by mutableStateOf(false)
+    var rotAccum by mutableFloatStateOf(0f)
+}
+
 @Composable
 fun CanvasEditorScreen(
     projectId: String,
@@ -473,7 +553,10 @@ fun CanvasEditorScreen(
     val exportManager = remember { FileExportManager(context) }
     val viewState = remember { CanvasViewState(canvasWidth, canvasHeight) }
 
-    var activeTool by remember { mutableStateOf(ActiveTool.BRUSH) }
+    // State UI ringan dikelompokkan di satu holder (lihat EditorUiState).
+    val uiState = remember { EditorUiState() }
+
+    var activeTool by uiState::activeTool
 
     var compositeBitmap by remember {
         mutableStateOf(Bitmap.createBitmap(canvasWidth, canvasHeight, Bitmap.Config.ARGB_8888))
@@ -491,25 +574,25 @@ fun CanvasEditorScreen(
         android.graphics.Paint().apply { isFilterBitmap = true }
     }
 
-    var refreshCanvasState by remember { mutableIntStateOf(0) }
+    var refreshCanvasState by uiState::refreshCanvasState
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
     // Pelacakan perubahan kanvas untuk auto-save hemat (hanya simpan jika kotor).
-    var dirtyVersion by remember { mutableIntStateOf(0) }
-    var lastSavedVersion by remember { mutableIntStateOf(-1) }
+    var dirtyVersion by uiState::dirtyVersion
+    var lastSavedVersion by uiState::lastSavedVersion
     // Dibaca agar tombol Undo/Redo ikut recompose saat history berubah.
     val historyTick = undoRedoManager.historyVersion
 
     // Flag dialog keluar (dideklarasikan awal agar auto-save/dispose bisa baca).
-    var showExitDialog by remember { mutableStateOf(false) }
-    var isSavingExit by remember { mutableStateOf(false) }
-    var discardOnExit by remember { mutableStateOf(false) }
+    var showExitDialog by uiState::showExitDialog
+    var isSavingExit by uiState::isSavingExit
+    var discardOnExit by uiState::discardOnExit
     // Status kerja berat untuk note progres di atas toolbar (wajib awal agar
     // LaunchedEffect/imagePicker di bawah bisa baca tanpa unresolved reference).
-    var isHealing by remember { mutableStateOf(false) }
+    var isHealing by uiState::isHealing
     var healError by remember { mutableStateOf<String?>(null) }
     // Fraksi progres 0..1 (-1f = tak tentu) + tips bergilir saat sibuk.
-    var busyFrac by remember { mutableFloatStateOf(-1f) }
-    var busyTipIdx by remember { mutableIntStateOf(0) }
+    var busyFrac by uiState::busyFrac
+    var busyTipIdx by uiState::busyTipIdx
     val busyTips = remember {
         listOf(
             "Tips: zoom-in 100–200% agar sapuan presisi",
@@ -519,11 +602,11 @@ fun CanvasEditorScreen(
             "Tips: deteksi bubble paling akurat di area terang"
         )
     }
-    var isImportingEditor by remember { mutableStateOf(false) }
-    var isMLInpainting by remember { mutableStateOf(false) }
+    var isImportingEditor by uiState::isImportingEditor
+    var isMLInpainting by uiState::isMLInpainting
     // Flatten bersifat destruktif (teks jadi piksel, tak bisa diedit lagi)
     // sehingga selalu lewat konfirmasi — teks tetap editable selama mungkin.
-    var showFlattenConfirm by remember { mutableStateOf(false) }
+    var showFlattenConfirm by uiState::showFlattenConfirm
 
     /**
      * "To Canvas": kembalikan view agar seluruh kanvas pas & terpusat di
@@ -809,7 +892,7 @@ fun CanvasEditorScreen(
     var textHandleMode by remember { mutableStateOf(TextHandle.NONE) }
     // Tool Teks: tahan pembuatan kotak sampai tahu user tap atau drag
     // (tap = teks titik, drag = kotak seleksi yang teksnya fit ke area).
-    var textCreatePending by remember { mutableStateOf(false) }
+    var textCreatePending by uiState::textCreatePending
     var textCreateStart by remember { mutableStateOf<Offset?>(null) }
     var textCreateNow by remember { mutableStateOf<Offset?>(null) }
     // Joystick teks: riwayat undo digabung per rentetan ketuk (<1.5 dtk).
@@ -824,31 +907,31 @@ fun CanvasEditorScreen(
     fun selectedImage(): com.grooxtyper.app.model.ImageLayer? =
         selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
 
-    var showColorPicker by remember { mutableStateOf(false) }
-    var showLayersPanel by remember { mutableStateOf(false) }
-    var showBrushSettings by remember { mutableStateOf(false) }
-    var showTextEditor by remember { mutableStateOf(false) }
+    var showColorPicker by uiState::showColorPicker
+    var showLayersPanel by uiState::showLayersPanel
+    var showBrushSettings by uiState::showBrushSettings
+    var showTextEditor by uiState::showTextEditor
     // Dialog edit massal: pilih beberapa kotak teks, terapkan ukuran /
     // warna / tebal sekaligus (satu undo per kotak).
-    var showBulkTextDialog by remember { mutableStateOf(false) }
+    var showBulkTextDialog by uiState::showBulkTextDialog
     // Panel gaya per kata (span): kata demi kata beda font/warna/epek.
-    var showRichTextPanel by remember { mutableStateOf(false) }
+    var showRichTextPanel by uiState::showRichTextPanel
     // Dinaikkan saat geometri teks diubah dari kanvas (SCALE/lebar/perspektif)
     // agar panel teks (slider ukuran) ikut menampilkan angka terbaru.
-    var textGeomTick by remember { mutableIntStateOf(0) }
-    var showRulerDialog by remember { mutableStateOf(false) }
+    var textGeomTick by uiState::textGeomTick
+    var showRulerDialog by uiState::showRulerDialog
     // Mode atur penggaris (geser/putar) — saat aktif sapuan brush diabaikan
     // supaya menata penggaris tidak ikut menggambar.
-    var rulerAdjustMode by remember { mutableStateOf(false) }
-    var perspGridMode by remember { mutableStateOf(false) }
-    var showExportMenu by remember { mutableStateOf(false) }
+    var rulerAdjustMode by uiState::rulerAdjustMode
+    var perspGridMode by uiState::perspGridMode
+    var showExportMenu by uiState::showExportMenu
     // Dialog export: pilih format + atur kualitas, ada progres & hasil.
-    var showExportDialog by remember { mutableStateOf(false) }
+    var showExportDialog by uiState::showExportDialog
     var exportFormat by remember { mutableStateOf(ExportFormat.PNG) }
-    var exportQuality by remember { mutableFloatStateOf(90f) }
-    var isExporting by remember { mutableStateOf(false) }
+    var exportQuality by uiState::exportQuality
+    var isExporting by uiState::isExporting
     var exportResult by remember { mutableStateOf<String?>(null) }
-    var showLassoMenu by remember { mutableStateOf(false) }
+    var showLassoMenu by uiState::showLassoMenu
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     // Inpaint PatchMatch brush: mask akumulasi selama stroke
     var inpaintMask by remember { mutableStateOf<Bitmap?>(null) }
@@ -945,14 +1028,14 @@ fun CanvasEditorScreen(
         inpaintDirty = null
     }
 
-    var showQuickSlider by remember { mutableStateOf(true) }
+    var showQuickSlider by uiState::showQuickSlider
 
-    var showMLInpaintDialog by remember { mutableStateOf(false) }
+    var showMLInpaintDialog by uiState::showMLInpaintDialog
     var detectedTextRegions by remember { mutableStateOf<List<DetectedTextRegion>>(emptyList()) }
     var selectedMaskType by remember { mutableStateOf(MLMaskType.MASK_KOTAK) }
-    var makeEditableText by remember { mutableStateOf(true) }
+    var makeEditableText by uiState::makeEditableText
     var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
-    var mlDetecting by remember { mutableStateOf(false) }
+    var mlDetecting by uiState::mlDetecting
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
 
     // Konfirmasi keluar: cegah ketekan Back tak sengaja langsung terlempar.
@@ -1076,11 +1159,11 @@ fun CanvasEditorScreen(
     // Terhubung langsung ke Style (TextStyleManager) dan Script (runScript).
     val styleRuleManager = remember { StyleRuleManager(context) }
     var styleRules by remember { mutableStateOf(styleRuleManager.list()) }
-    var showStyleRules by remember { mutableStateOf(false) }
+    var showStyleRules by uiState::showStyleRules
     var newRulePrefix by remember { mutableStateOf("") }
     var newRuleStyleId by remember { mutableStateOf("") }
-    var newRuleStrip by remember { mutableStateOf(true) }
-    var stylePresetsTick by remember { mutableIntStateOf(0) }
+    var newRuleStrip by uiState::newRuleStrip
+    var stylePresetsTick by uiState::stylePresetsTick
     // Dibaca ulang tiap dialog dibuka agar style yang baru disimpan ikut muncul.
     fun stylePresets(): List<com.grooxtyper.app.model.TextStylePreset> {
         stylePresetsTick.let { }
@@ -1088,18 +1171,18 @@ fun CanvasEditorScreen(
     }
 
     // Mode multi-bubble: antrean baris teks untuk ditaruh berurutan.
-    var showMultiBubbleDialog by remember { mutableStateOf(false) }
+    var showMultiBubbleDialog by uiState::showMultiBubbleDialog
     var multiBubbleDraft by remember { mutableStateOf("") }
     var multiBubbleLines by remember { mutableStateOf(listOf<String>()) }
-    var multiBubbleIndex by remember { mutableIntStateOf(0) }
+    var multiBubbleIndex by uiState::multiBubbleIndex
     var multiBubbleTemplate by remember { mutableStateOf<TextBox?>(null) }
     fun isMultiBubbleActive() = multiBubbleLines.isNotEmpty() && multiBubbleIndex < multiBubbleLines.size
 
     // === Fitur Script: kombo seleksi + bubble ===
     // User import/ketik script -> muncul kolom baris -> jalankan ke seleksi/bubble
     // urutan manga (atas->bawah, kanan->kiri), tanda sudah terpakai + bisa reset.
-    var showScriptPanel by remember { mutableStateOf(false) }
-    var showScriptEditor by remember { mutableStateOf(false) }
+    var showScriptPanel by uiState::showScriptPanel
+    var showScriptEditor by uiState::showScriptEditor
     var scriptDraft by remember { mutableStateOf("") }
     var scriptEntries by remember { mutableStateOf(listOf<ScriptEntry>()) }
     // Penempatan script (tunggal, gabungan): Style Rules menentukan
@@ -1121,11 +1204,11 @@ fun CanvasEditorScreen(
     // true = Teks (TANPA deteksi teks — cukup samakan jumlah naskah dengan
     // jumlah bubble/area seleksi, render mengikuti Style Rules + cek latar +
     // fit terbesar + center).
-    var scriptTextMode by remember { mutableStateOf(false) }
+    var scriptTextMode by uiState::scriptTextMode
     // Baris teks terdeteksi (satu bubble = satu baris): teks/box bisa diedit,
     // baris bisa dihapus atau dicoret dari render (selected).
     var detectedRows by remember { mutableStateOf(listOf<DetectedRow>()) }
-    var detectingText by remember { mutableStateOf(false) }
+    var detectingText by uiState::detectingText
     // Naskah terpasang per baris terdeteksi (diisi otomatis dari antrean
     // berdasar urutan, bisa diedit manual agar jumlahnya sesuai).
     fun pairedRowCount(): Int = detectedRows.count { it.selected && it.script.isNotBlank() }
@@ -1133,22 +1216,22 @@ fun CanvasEditorScreen(
     // Alur Bubble bertahap: deteksi → pilih → INPAINT (baris TETAP di tabel,
     // tidak dihapus) → pasangkan naskah → render. bubbleWarn = peringatan
     // naskah lebih panjang dari teks terdeteksi.
-    var bubbleInpainted by remember { mutableStateOf(false) }
+    var bubbleInpainted by uiState::bubbleInpainted
     var bubbleWarn by remember { mutableStateOf<String?>(null) }
 
     // Bubble detector: model ONNX (YOLOv11n-seg) yang bisa dipilih user.
     // Inferensi on-device via ONNX Runtime; heuristik hanya fallback.
     val bubbleDetector = remember { BubbleDetector() }
     var detectedBubbles by remember { mutableStateOf(listOf<com.grooxtyper.app.ml.DetectedBubble>()) }
-    var showBubbleDialog by remember { mutableStateOf(false) }
+    var showBubbleDialog by uiState::showBubbleDialog
     var bubbleModel by remember { mutableStateOf(BubbleModel.BUBBLE) }
-    var bubbleDetecting by remember { mutableStateOf(false) }
+    var bubbleDetecting by uiState::bubbleDetecting
     // Job deteksi aktif (bisa dibatalkan saat deteksi baru dimulai).
     var bubbleDetectJob by remember { mutableStateOf<Job?>(null) }
-    var showBubbleOverlay by remember { mutableStateOf(true) }
+    var showBubbleOverlay by uiState::showBubbleOverlay
     // Preview hasil text detector di kanvas + mode hapus per-region.
-    var showTextOverlay by remember { mutableStateOf(false) }
-    var textEraseMode by remember { mutableStateOf(false) }
+    var showTextOverlay by uiState::showTextOverlay
+    var textEraseMode by uiState::textEraseMode
 
     /** Hapus region teks terdeteksi berdasar indeks (tak ikut di-inpaint). */
     fun removeTextRegionAt(index: Int) {
@@ -1179,7 +1262,7 @@ fun CanvasEditorScreen(
             }
             .minByOrNull { it.second }?.first
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
-    var bubbleEraseMode by remember { mutableStateOf(false) }
+    var bubbleEraseMode by uiState::bubbleEraseMode
     var lassoPath by remember { mutableStateOf<Path?>(null) }
     // Drag kotak seleksi (tool SELECT_BOX): titik awal/akhir kanvas.
     var boxStart by remember { mutableStateOf<Offset?>(null) }
@@ -1995,16 +2078,16 @@ fun CanvasEditorScreen(
     var pendingImport by remember { mutableStateOf<Bitmap?>(null) }
     var pendingImportW by remember { mutableStateOf("") }
     var pendingImportH by remember { mutableStateOf("") }
-    var pendingImportOpacity by remember { mutableFloatStateOf(1f) }
+    var pendingImportOpacity by uiState::pendingImportOpacity
     /** Mode penempatan cepat: contain / cover / asli (1:1). */
     var pendingImportFit by remember { mutableStateOf("contain") }
     /** Kunci aspek saat mengetik W/H di dialog import. */
-    var pendingImportLockAspect by remember { mutableStateOf(true) }
+    var pendingImportLockAspect by uiState::pendingImportLockAspect
     /** Panel properti image dibuka terpisah dari seleksi (lihat catatan di bawah). */
-    var showImageProps by remember { mutableStateOf(false) }
+    var showImageProps by uiState::showImageProps
     // Jendela reference: aktif + gambar + status muat.
-    var showReferenceWindow by remember { mutableStateOf(false) }
-    var isLoadingReference by remember { mutableStateOf(false) }
+    var showReferenceWindow by uiState::showReferenceWindow
+    var isLoadingReference by uiState::isLoadingReference
     var referenceError by remember { mutableStateOf<String?>(null) }
     val referencePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -2162,8 +2245,8 @@ fun CanvasEditorScreen(
     // Ditaruh di sini (sebelum runWandAt) karena fungsi lokal Kotlin hanya
     // melihat deklarasi di atasnya.
     var wandMode by remember { mutableStateOf("manual") }
-    var wandTolerance by remember { mutableFloatStateOf(32f) }
-    var wandBusy by remember { mutableStateOf(false) }
+    var wandTolerance by uiState::wandTolerance
+    var wandBusy by uiState::wandBusy
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
 
     /**
@@ -2390,20 +2473,20 @@ fun CanvasEditorScreen(
     // ketuk = lepas tanpa geser; geser = pan biasa, tidak menghapus).
     var panTapStart by remember { mutableStateOf<Offset?>(null) }
     var cursorPosition by remember { mutableStateOf<Offset?>(null) }
-    var strokeProgress by remember { mutableStateOf(0f) }
-    var strokeLength by remember { mutableStateOf(0f) }
+    var strokeProgress by uiState::strokeProgress
+    var strokeLength by uiState::strokeLength
     // Layer yang dipakai selama satu stroke (disimpan agar tidak lookup per-move
     // dan tidak ganti layer di tengah goresan).
     var strokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Kunci status heal + layer saat press agar release tak terpengaruh ganti tool/layer.
-    var strokeIsHeal by remember { mutableStateOf(false) }
+    var strokeIsHeal by uiState::strokeIsHeal
     // Kunci engine hapus saat press: true = Heal MiGAN, false = Content-Aware Fill.
-    var strokeIsMigan by remember { mutableStateOf(false) }
+    var strokeIsMigan by uiState::strokeIsMigan
     // Kunci AI Inpaint (Agnes) saat press.
-    var strokeIsAi by remember { mutableStateOf(false) }
+    var strokeIsAi by uiState::strokeIsAi
     // Draf API key Agnes (disimpan ke SharedPreferences saat disimpan).
     var agnesKeyDraft by remember { mutableStateOf("") }
-    var agnesKeyLoaded by remember { mutableStateOf(false) }
+    var agnesKeyLoaded by uiState::agnesKeyLoaded
     var lockedStrokeLayer by remember { mutableStateOf<DrawingLayer?>(null) }
     // Antrean heal tunggal (conflate): sapuan saat commit jalan digabung, tak dibuang.
     var pendingHealMask by remember { mutableStateOf<Bitmap?>(null) }
@@ -2482,20 +2565,20 @@ fun CanvasEditorScreen(
         }
     }
     // Eyedropper sementara via tahan jari (tanpa meninggalkan titik cat).
-    var colorPickActive by remember { mutableStateOf(false) }
+    var colorPickActive by uiState::colorPickActive
     // Mode pipet dari color picker: konsumen warna (brush / target panel teks)
     // menunggu satu ketukan kanvas; null = tidak aktif.
     var eyedropConsumer by remember { mutableStateOf<((Int) -> Unit)?>(null) }
     // Kunci: warna sudah disampel pada tekanan ini (jangan sample ulang saat geser).
-    var eyedropSampled by remember { mutableStateOf(false) }
-    var pressId by remember { mutableIntStateOf(0) }
+    var eyedropSampled by uiState::eyedropSampled
+    var pressId by uiState::pressId
     var pressStartScreen by remember { mutableStateOf(Offset.Zero) }
-    var pressMoved by remember { mutableStateOf(false) }
+    var pressMoved by uiState::pressMoved
     // Sesi dua-jari aktif (untuk settle event pertama + menahan aksi satu jari).
-    var twoFingerActive by remember { mutableStateOf(false) }
+    var twoFingerActive by uiState::twoFingerActive
     // Akumulator rotasi untuk kunci rotasi: twist kecil (<2°) diabaikan agar
     // pinch-zoom tak ikut mutar liar; rotasi sengaja tetap jalan utuh.
-    var rotAccum by remember { mutableFloatStateOf(0f) }
+    var rotAccum by uiState::rotAccum
 
     // Tahan jari 600ms tanpa geser = eyedropper sementara.
     // Titik awal dibatalkan via undo agar kanvas tetap bersih.
