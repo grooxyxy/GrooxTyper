@@ -388,6 +388,9 @@ assert(editor.includes('fun moveScriptEntry(') && editor.includes('moveScriptEnt
 assert(editor.includes('"Pas Layar"') && editor.includes('fitCanvasToScreen()'), 'navigasi: tombol Pas Layar di top bar');
 assert(fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt')), 'bulk: dialog di file sendiri (badan editor tak boleh >64KB)');
 assert(editor.includes('BulkTextDialog(') && editor.includes('fun WandSettingsBar('), 'refaktor: BulkTextDialog + WandSettingsBar terpisah (anti Method too large)');
+const localUis = ['showScriptPanelUi', 'showMLInpaintDialogUi', 'showExportDialogUi', 'showScriptEditorUi'];
+assert(localUis.every(n => editor.includes('fun ' + n + '(')), 'refaktor: dialog besar jadi fun lokal @Composable (anti Method too large)');
+assert(localUis.every(n => editor.includes(n + '()')), 'refaktor: call site dialog memanggil fun lokal');
 assert(!/^internal val (Accent|PanelBg)/m.test(editor), 'refaktor: tanpa internal val Accent/PanelBg (bentrok antar-file UI → build gagal)');
 
 // 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,

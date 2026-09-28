@@ -2551,6 +2551,998 @@ fun CanvasEditorScreen(
             }
         }
 
+    /**
+     * showScriptEditor dipisah jadi fun lokal @Composable: bytecode-nya pindah ke
+     * method sendiri karena badan fungsi utama sudah menyentuh batas
+     * method JVM 64KB (build gagal "Method too large").
+     */
+    @Composable
+    fun showScriptEditorUi() {
+        val draftLines = scriptDraft.lines().count { it.trim().isNotEmpty() }
+        AlertDialog(
+            onDismissRequest = { showScriptEditor = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Edit, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Ketik Script", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        StatusPill("$draftLines baris", highlight = draftLines > 0)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            "Satu baris = satu bubble. Pakai ⏎ untuk jeda baris manual di dalam satu bubble.",
+                            color = Color.Gray, fontSize = 12.sp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "Baris 'Page …' dan 'Terjemahan' otomatis diabaikan.",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = scriptDraft,
+                        onValueChange = { scriptDraft = it },
+                        label = { Text("Tempel / ketik naskah di sini") },
+                        minLines = 8,
+                        maxLines = 16,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = { scriptDraft = shapeDraftText(scriptDraft) }) {
+                            Text("Bentuk komik", color = Accent, fontSize = 12.sp)
+                        }
+                        Text(
+                            "⏎ = pindah baris dalam 1 bubble (bisa diedit manual)",
+                            color = Color.Gray, fontSize = 10.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val parsed = parseScriptRaw(scriptDraft)
+                        if (parsed.isNotEmpty()) {
+                            scriptEntries = parsed
+                            showScriptEditor = false
+                            showScriptPanel = true
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                ) { Text("Simpan", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showScriptEditor = false }) {
+                    Text("Batal", color = Color.Gray)
+                }
+            },
+            containerColor = PanelBg
+        )
+    }
+    /**
+     * showScriptPanel dipisah jadi fun lokal @Composable: bytecode-nya pindah ke
+     * method sendiri karena badan fungsi utama sudah menyentuh batas
+     * method JVM 64KB (build gagal "Method too large").
+     */
+    @Composable
+    fun showScriptPanelUi() {
+        val unusedCount = scriptEntries.count { !it.used }
+        // Mode Teks: TANPA deteksi teks — Jalankan siap bila jumlah naskah
+        // sisa SESUAI jumlah target: sama persis dengan jumlah bubble
+        // terdeteksi, atau ≥1 naskah untuk 1 area seleksi (1 render per ketuk).
+        // Render mengikuti Style Rules + cek latar + fit terbesar + center.
+        // Mode Bubble: tetap butuh baris tabel terpilih yang sudah bernaskah.
+        val textTargetN = if (detectedBubbles.isNotEmpty()) detectedBubbles.size
+            else if (selectionEngine.hasSelection) 1 else 0
+        val textMatchOk = unusedCount > 0 && textTargetN > 0 &&
+            (detectedBubbles.isNotEmpty() && unusedCount == textTargetN ||
+                detectedBubbles.isEmpty() && selectionEngine.hasSelection)
+        val canRunRows = if (scriptTextMode) textMatchOk
+            else detectedRows.any { it.selected && it.script.isNotBlank() }
+        val selN = detectedRows.count { it.selected }
+        val pairN = pairedRowCount()
+        val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
+        AlertDialog(
+            onDismissRequest = { showScriptPanel = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Description, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(if (scriptTextMode) "Script → Teks" else "Script → Bubble", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                // Scrollable: konten (sumber naskah + tabel baris) panjang.
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    // Pilih mode: Bubble (detektor bubble) atau Teks (deteksi teks ML Kit).
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = { scriptTextMode = false },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (!scriptTextMode) Accent else PanelBg)
+                        ) { Text("Bubble", color = Color.White, fontSize = 12.sp) }
+                        Button(
+                            onClick = { scriptTextMode = true },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = if (scriptTextMode) Accent else PanelBg)
+                        ) { Text("Teks", color = Color.White, fontSize = 12.sp) }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Status ringkas: pil + bar progres sebaris.
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        StatusPill("${scriptEntries.size} baris")
+                        StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
+                        if (scriptTextMode) {
+                            StatusPill("$textTargetN target", highlight = textTargetN > 0)
+                        } else {
+                            StatusPill("${detectedRows.size} teks", highlight = detectedRows.isNotEmpty())
+                        }
+                        if (!scriptTextMode && bubbleInpainted) {
+                            StatusPill("inpaint ✓", highlight = true)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Progres pemakaian.
+                    if (scriptEntries.isNotEmpty()) {
+                        val done = scriptEntries.size - unusedCount
+                        val frac = done.toFloat() / scriptEntries.size.toFloat()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                                    .background(Color(0xFF38383A))
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(frac)
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(Accent)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "$done/${scriptEntries.size}",
+                                color = Color.Gray, fontSize = 11.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "$done/${scriptEntries.size} baris terpakai • urutan atas→bawah, kanan→kiri",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    } else {
+                        Text(
+                            "Belum ada script. Import file atau ketik manual — satu baris = satu bubble, ⏎ = jeda baris di dalamnya.",
+                            color = Color.LightGray, fontSize = 12.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    if (!scriptTextMode) {
+                    Text(
+                        "Penempatan",
+                        color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    // Satu kartu: info mode gabungan + baris Style Rules.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(PanelBg)
+                            .border(1.dp, Color(0xFF38383A), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Accent)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Rules + Auto", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Prefix memilih style, lalu font, wrap & posisi dihitung otomatis.",
+                                    color = Color.Gray, fontSize = 10.sp
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(Color(0xFF38383A))
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    stylePresetsTick++
+                                    newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
+                                    showStyleRules = true
+                                }
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Accent, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
+                                    else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
+                                    color = Color.Gray, fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    } // if (!scriptTextMode) penempatan
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "Sumber naskah",
+                        color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ScriptActionButton(
+                            label = "Import",
+                            icon = Icons.Default.FileUpload,
+                            modifier = Modifier.weight(1f),
+                            onClick = { scriptImportLauncher.launch(arrayOf("text/plain", "*/*")) }
+                        )
+                        ScriptActionButton(
+                            label = "Contoh",
+                            icon = Icons.Default.Description,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                // Muat contoh bawaan dari assets (offline, tanpa download).
+                                runCatching {
+                                    context.assets.open("contoh_script.txt").bufferedReader().readText()
+                                }.getOrNull()?.let { raw ->
+                                    val parsed = parseScriptRaw(raw)
+                                    if (parsed.isNotEmpty()) {
+                                        scriptEntries = parsed
+                                        scriptDraft = raw
+                                    }
+                                }
+                            }
+                        )
+                        ScriptActionButton(
+                            label = "Ketik",
+                            icon = Icons.Default.Edit,
+                            modifier = Modifier.weight(1f),
+                            onClick = {
+                                scriptDraft = scriptEntries.joinToString("\n") { it.text }
+                                showScriptEditor = true
+                            }
+                        )
+                        IconButton(
+                            onClick = { resetScriptUsage() },
+                            enabled = scriptEntries.any { it.used },
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(PanelBg)
+                                .size(48.dp)
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Reset terpakai", tint = Color.White, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    // Daftar naskah: selalu terlihat setelah import/tempel/
+                    // ketik — tiap baris bisa diedit & dihapus manual.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Daftar naskah",
+                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusPill("${scriptEntries.size} baris", highlight = scriptEntries.isNotEmpty())
+                        Spacer(modifier = Modifier.width(6.dp))
+                        TextButton(onClick = {
+                            scriptEntries = scriptEntries + ScriptEntry(text = "")
+                        }) { Text("+ Baris", color = Accent, fontSize = 12.sp) }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    if (scriptEntries.isEmpty()) {
+                        Text(
+                            "Belum ada naskah — Import file, Ketik manual, atau tambah baris di atas.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                    } else {
+                        // FIX glitch saat mengetik: JANGAN LazyColumn di
+                        // dalam dialog yang sudah verticalScroll — scroll
+                        // bersarang + recompose per ketikan membuat fokus
+                        // teks "melompat"/patah. Column biasa + key(id)
+                        // menjaga fokus tiap kolom tetap di barisnya.
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            scriptEntries.forEachIndexed { idx, entry ->
+                                key(entry.id) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (entry.used) Color(0xFF1F3D2B) else PanelBg)
+                                        .border(
+                                            1.dp,
+                                            if (entry.used) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                            RoundedCornerShape(10.dp)
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        StatusPill("#${idx + 1}", highlight = false)
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        if (entry.used) {
+                                            StatusPill("terpakai", highlight = true)
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                        }
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        IconButton(
+                                            onClick = { moveScriptEntry(idx, idx - 1) },
+                                            enabled = idx > 0,
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Naik", tint = Color.LightGray, modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(
+                                            onClick = { moveScriptEntry(idx, idx + 1) },
+                                            enabled = idx < scriptEntries.size - 1,
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Turun", tint = Color.LightGray, modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                scriptEntries = scriptEntries.filter { it.id != entry.id }
+                                            }
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Hapus naskah", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                    OutlinedTextField(
+                                        value = entry.text,
+                                        onValueChange = { v ->
+                                            scriptEntries = scriptEntries.map {
+                                                if (it.id == entry.id) it.copy(text = v) else it
+                                            }
+                                        },
+                                        placeholder = { Text("Tulis naskah baris ini…") },
+                                        maxLines = 3,
+                                        textStyle = androidx.compose.ui.text.TextStyle(
+                                            color = Color.White, fontSize = 12.sp
+                                        ),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (scriptTextMode) {
+                        // Mode Teks: TANPA deteksi teks — cukup samakan jumlah
+                        // naskah sisa dengan jumlah bubble/area seleksi.
+                        Text(
+                            "Target Render",
+                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    showBubbleDialog = true
+                                    if (detectedBubbles.isEmpty()) runBubbleDetection()
+                                },
+                                enabled = !bubbleDetecting,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                            ) {
+                                Text(
+                                    if (bubbleDetecting) "Mendeteksi…" else "Deteksi Bubble",
+                                    color = Color.White, fontSize = 12.sp
+                                )
+                            }
+                            ScriptActionButton(
+                                label = "Kotak Seleksi",
+                                icon = Icons.Default.SelectAll,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    activeTool = ActiveTool.SELECT_BOX
+                                    showScriptPanel = false
+                                }
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        // Auto-bentuk komik: pecah tiap naskah sisa jadi
+                        // baris seimbang (marker ⏎) tanpa mengubah jumlah
+                        // naskah; marker bisa diubah manual di Ketik.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            ScriptActionButton(
+                                label = "Auto-bentuk",
+                                icon = Icons.Default.AutoFixHigh,
+                                modifier = Modifier.weight(1f),
+                                onClick = {
+                                    val n = autoShapeScripts()
+                                    bubbleWarn = if (n > 0) "$n naskah dibentuk ulang — cek/ubah marker ⏎ di Ketik bila perlu."
+                                    else "Semua naskah sudah seimbang."
+                                }
+                            )
+                            Text(
+                                "⏎ = jeda baris manual",
+                                color = Color.Gray, fontSize = 10.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StatusPill("$unusedCount naskah", highlight = unusedCount > 0)
+                            StatusPill(
+                                if (detectedBubbles.isNotEmpty()) "$textTargetN bubble"
+                                else if (selectionEngine.hasSelection) "1 seleksi"
+                                else "0 target",
+                                highlight = textTargetN > 0
+                            )
+                            StatusPill(
+                                if (textMatchOk) "Sesuai ✓" else "Belum sesuai",
+                                highlight = textMatchOk
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            if (textTargetN <= 0)
+                                "Belum ada target — deteksi bubble atau buat 1 area seleksi (Kotak Seleksi), lalu samakan jumlah naskah."
+                            else if (textMatchOk)
+                                "Jumlah sesuai — ketuk Jalankan untuk render (Style Rules • cek latar • fit terbesar • tengah)."
+                            else
+                                "Jumlah belum sesuai ($unusedCount naskah / $textTargetN target) — tambah/kurangi naskah atau target agar sama.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                    } else {
+                        Text(
+                            "Teks Terdeteksi",
+                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        // Aksi mode Bubble: deteksi + isi naskah + INPAINT
+                        // (tombol Inpaint muncul setelah ada pemilihan).
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = { runBubbleScriptDetect() },
+                                enabled = !detectingText,
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                            ) {
+                                Text(
+                                    if (detectingText) "Mendeteksi…" else "Deteksi Teks",
+                                    color = Color.White, fontSize = 12.sp
+                                )
+                            }
+                            ScriptActionButton(
+                                label = "Isi Naskah",
+                                icon = Icons.Default.Refresh,
+                                modifier = Modifier.weight(1f),
+                                onClick = { fillBubbleScripts() }
+                            )
+                            // Tombol Inpaint khusus Bubble: hanya SETELAH ada baris dipilih.
+                            if (selN > 0) {
+                                ScriptActionButton(
+                                    label = if (detectingText) "Menghapus…" else "Inpaint",
+                                    icon = Icons.Default.Brush,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { inpaintBubbleRows() }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            StatusPill("$selN dipilih", highlight = selN > 0)
+                            StatusPill("$pairN bernaskah", highlight = pairN > 0)
+                            StatusPill(
+                                if (matchOk) "Sesuai ✓" else "Belum sesuai",
+                                highlight = matchOk
+                            )
+                        }
+                        // Peringatan pasangan: naskah lebih panjang dari teks terdeteksi.
+                        if (bubbleWarn != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                bubbleWarn ?: "",
+                                color = Color(0xFFFFB74D), fontSize = 11.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        if (detectedRows.isEmpty()) {
+                            Text(
+                                if (scriptTextMode)
+                                    "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai. Tanpa deteksi pun bisa: bila sudah ada bubble/seleksi, langsung ketuk Jalankan untuk render (Style Rules • fit • tengah • cek latar)."
+                                else
+                                    "Ketuk Deteksi Teks — teks berdekatan (atas/bawah/kiri/kanan) jadi satu baris. Centang baris → Inpaint untuk menghapus teks lamanya, lalu Isi Naskah dari berkas di atas.",
+                                color = Color.Gray, fontSize = 11.sp
+                            )
+                        } else {
+                            // FIX glitch yang sama seperti daftar naskah:
+                            // Column + key, bukan LazyColumn bersarang.
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                detectedRows.forEachIndexed { idx, row ->
+                                    key(row.id) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(if (row.selected) Color(0xFF1F3D2B) else PanelBg)
+                                            .border(
+                                                1.dp,
+                                                if (row.selected) Color(0xFF2E7D32) else Color(0xFF38383A),
+                                                RoundedCornerShape(10.dp)
+                                            )
+                                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        // Kolom terdeteksi (kiri): bisa diedit & dicoret.
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Checkbox(
+                                                checked = row.selected,
+                                                onCheckedChange = {
+                                                    detectedRows = detectedRows.map {
+                                                        if (it.id == row.id) it.copy(selected = !it.selected) else it
+                                                    }
+                                                },
+                                                colors = CheckboxDefaults.colors(checkedColor = Accent)
+                                            )
+                                            OutlinedTextField(
+                                                value = row.text,
+                                                onValueChange = { v ->
+                                                    detectedRows = detectedRows.map {
+                                                        if (it.id == row.id) it.copy(text = v) else it
+                                                    }
+                                                },
+                                                label = { Text("Terdeteksi #${idx + 1} • ≈${row.fontSize.toInt()}px") },
+                                                singleLine = true,
+                                                textStyle = androidx.compose.ui.text.TextStyle(
+                                                    color = if (row.selected) Color.White else Color.Gray,
+                                                    fontSize = 12.sp
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            IconButton(
+                                                onClick = {
+                                                    detectedRows = detectedRows.filter { it.id != row.id }
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Hapus kolom", tint = Color.Red, modifier = Modifier.size(18.dp))
+                                            }
+                                        }
+                                        // Kolom naskah pasangan (kanan, bersandingan).
+                                        OutlinedTextField(
+                                            value = row.script,
+                                            onValueChange = { v ->
+                                                detectedRows = detectedRows.map {
+                                                    if (it.id == row.id) it.copy(script = v) else it
+                                                }
+                                            },
+                                            placeholder = { Text("Naskah kolom ini…") },
+                                            maxLines = 2,
+                                            textStyle = androidx.compose.ui.text.TextStyle(
+                                                color = Color.White, fontSize = 12.sp
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { if (scriptTextMode) runTextScript() else runBubbleScriptRender() },
+                    enabled = canRunRows,
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Jalankan", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showScriptPanel = false }) {
+                    Text("Tutup", color = Color.Gray)
+                }
+            },
+            containerColor = PanelBg
+        )
+    }
+    /**
+     * showMLInpaintDialog dipisah jadi fun lokal @Composable: bytecode-nya pindah ke
+     * method sendiri karena badan fungsi utama sudah menyentuh batas
+     * method JVM 64KB (build gagal "Method too large").
+     */
+    @Composable
+    fun showMLInpaintDialogUi() {
+        AlertDialog(
+            onDismissRequest = { if (!isMLInpainting && !mlDetecting) showMLInpaintDialog = false },
+            title = { Text("Deteksi Teks", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        if (mlDetecting) "Mendeteksi teks…" else "Detected ${detectedTextRegions.size} text blocks.",
+                        color = Color.LightGray, fontSize = 13.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Preview di kanvas", color = Color.White, fontSize = 12.sp)
+                        }
+                        Switch(
+                            checked = showTextOverlay,
+                            onCheckedChange = {
+                                showTextOverlay = it
+                                refreshComposite()
+                            },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Mode hapus (ketuk teks di kanvas)", color = Color.White, fontSize = 12.sp)
+                            Text("Ketuk tanpa geser di tool Pan / Kotak Seleksi", color = Color.Gray, fontSize = 10.sp)
+                        }
+                        Switch(
+                            checked = textEraseMode,
+                            onCheckedChange = { textEraseMode = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                        )
+                    }
+                    if (detectedTextRegions.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Daftar teks (buang yang tak ingin di-inpaint):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { clearTextRegions() }) {
+                                Text("Hapus semua", color = Color.Red, fontSize = 12.sp)
+                            }
+                        }
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 150.dp)
+                        ) {
+                            itemsIndexed(detectedTextRegions) { idx, r ->
+                                val b = r.boundingBox
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text("#${idx + 1} ${r.text.take(24).ifBlank { "(kosong)" }}", color = Color.White, fontSize = 12.sp)
+                                        Text("(${b.left},${b.top} ${b.width()}x${b.height()})", color = Color.Gray, fontSize = 10.sp)
+                                    }
+                                    IconButton(
+                                        onClick = { removeTextRegionAt(idx) },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Hapus teks ${idx + 1}", tint = Color.Red, modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Mesin deteksi: ML Kit v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        "ML Kit bawaan (on-device, multi-pass + upscale untuk teks kecil), tanpa file tambahan.",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    if (mlDetectError != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(mlDetectError!!, color = Color(0xFFFFCC00), fontSize = 11.sp)
+                        Text("Logcat: adb logcat -s MLTextDetector,RunML", color = Color.Gray, fontSize = 10.sp)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        MLScript.values().forEach { script ->
+                            val on = script in mlScripts
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (on) Accent else PanelBg)
+                                    .clickable {
+                                        mlScripts = if (on) mlScripts - script else mlScripts + script
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(script.displayName, color = Color.White, fontSize = 11.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                            }
+                        }
+                    }
+                    TextButton(onClick = { runMLDetection() }) {
+                        Text("Deteksi ulang", color = Accent, fontSize = 12.sp)
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Jadikan teks editable", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text("Buat TextBox per baris terdeteksi", color = Color.Gray, fontSize = 11.sp)
+                        }
+                        Switch(
+                            checked = makeEditableText,
+                            onCheckedChange = { makeEditableText = it },
+                            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Variasi Mask (2 pilihan):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        "Mask Kotak = persegi solid. Mask Bentuk Teks = mengikuti huruf.",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        Button(
+                            onClick = { selectedMaskType = MLMaskType.MASK_KOTAK },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.MASK_KOTAK) Accent else PanelBg)
+                        ) {
+                            Text(MLMaskType.MASK_KOTAK.displayName, color = Color.White, fontSize = 11.sp)
+                        }
+                        Button(
+                            onClick = { selectedMaskType = MLMaskType.MASK_BENTUK_TEKS },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.MASK_BENTUK_TEKS) Accent else PanelBg)
+                        ) {
+                            Text(MLMaskType.MASK_BENTUK_TEKS.displayName, color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("Mode Inpaint:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(
+                        "Putih = timpa area teks dengan putih polos (cepat, untuk bubble/kertas putih). Telea = halus cepat.",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        Button(
+                            onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.FILL_WHITE },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.FILL_WHITE) Accent else PanelBg)
+                        ) {
+                            Text("Putih", color = Color.White, fontSize = 11.sp)
+                        }
+                        Button(
+                            onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.TELEA },
+                            colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.TELEA) Accent else PanelBg)
+                        ) {
+                            Text("Telea", color = Color.White, fontSize = 11.sp)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (isMLInpainting) return@Button
+                        scope.launch {
+                            val active = layerManager.getActiveLayer()
+                            if (active != null && detectedTextRegions.isNotEmpty()) {
+                                isMLInpainting = true
+                                try {
+                                // Estimasi warna teks ASLI dulu (sebelum di-inpaint).
+                                val wantsEditable = makeEditableText
+                                val estimates = if (wantsEditable) {
+                                    detectedTextRegions.take(40).map { region ->
+                                        val b = region.boundingBox
+                                        val cx = (b.left + b.right) / 2f
+                                        val cy = (b.top + b.bottom) / 2f
+                                        val h = (b.bottom - b.top).toFloat()
+                                        Triple(
+                                            region,
+                                            Offset(cx, cy),
+                                            mlTextDetector.estimateRegionTextColor(
+                                                active.getBitmap(), b, brushEngine.color
+                                            )
+                                        )
+                                    }
+                                } else emptyList()
+                                undoRedoManager.saveSnapshot(active)
+                                val mask = mlTextDetector.generateMaskBitmap(canvasWidth, canvasHeight, detectedTextRegions, active.getBitmap(), selectedMaskType)
+                                withContext(Dispatchers.Default) { inpaintingManager.inpaintLayerArea(active, mask) }
+                                // Ganti tiap baris terdeteksi jadi TextBox editable.
+                                var firstBox: TextBox? = null
+                                for ((region, center, textColor) in estimates) {
+                                    val h = (region.boundingBox.bottom - region.boundingBox.top).toFloat()
+                                    val box = TextBox(
+                                        text = region.text.ifBlank { "Teks" },
+                                        position = center,
+                                        fontSize = (h * 0.75f).coerceIn(1f, 220f),
+                                        color = textColor,
+                                        bold = true
+                                    )
+                                    applyAllStylesTo(box)
+                                    val created = layerManager.addTextLayer(box)
+                                    undoRedoManager.pushLayerAdd(created.id)
+                                    if (firstBox == null) firstBox = box
+                                }
+                                firstBox?.let {
+                                    selectedTextBox = it
+                                    activeTool = ActiveTool.TEXT
+                                    showTextEditor = true
+                                }
+                                refreshComposite()
+                                } finally {
+                                    isMLInpainting = false
+                                }
+                            }
+                            showMLInpaintDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                ) { Text("Jalankan Inpaint", color = Color.White) }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!isMLInpainting) showMLInpaintDialog = false }) { Text("Cancel", color = Color.Gray) }
+            },
+            containerColor = PanelBg
+        )
+    }
+    /**
+     * showExportDialog dipisah jadi fun lokal @Composable: bytecode-nya pindah ke
+     * method sendiri karena badan fungsi utama sudah menyentuh batas
+     * method JVM 64KB (build gagal "Method too large").
+     */
+    @Composable
+    fun showExportDialogUi() {
+        AlertDialog(
+            onDismissRequest = { if (!isExporting) showExportDialog = false },
+            title = { Text("Export Artwork", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "${canvasWidth} x ${canvasHeight} px • teks & layer ikut ter-render",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    Text(
+                        "Nama file: ${com.grooxtyper.app.model.FileExportManager.sanitizeFileName(projectTitle)}${exportFormat.extension}",
+                        color = Color.Gray, fontSize = 11.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Format", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ExportFormat.values().forEach { fmt ->
+                            val sel = exportFormat == fmt
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (sel) Accent else PanelBg)
+                                    .clickable(enabled = !isExporting) { exportFormat = fmt }
+                                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    fmt.name, color = Color.White, fontSize = 12.sp,
+                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        if (exportFormat.supportsQuality) "Kualitas ${exportQuality.toInt()}%"
+                        else "Kualitas: lossless (PNG mengabaikan slider)",
+                        color = Color.Gray, fontSize = 12.sp
+                    )
+                    Slider(
+                        value = exportQuality,
+                        onValueChange = { exportQuality = it },
+                        enabled = !isExporting && exportFormat.supportsQuality,
+                        valueRange = 10f..100f,
+                        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+                    )
+                    if (isExporting) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("Mengekspor… jangan tutup aplikasi.", color = Accent, fontSize = 12.sp)
+                    }
+                    exportResult?.let { msg ->
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(msg, color = Color.LightGray, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (isExporting) return@Button
+                        isExporting = true
+                        exportResult = null
+                        val fmt = exportFormat
+                        val q = exportQuality.toInt()
+                        scope.launch {
+                            val msg = withContext(Dispatchers.Default) {
+                                val file = exportManager.exportArtwork(layerManager, fmt, filename = projectTitle, quality = q)
+                                if (file == null) {
+                                    "Gagal export (memori habis?). Coba tutup aplikasi lain / kualitas lebih rendah."
+                                } else {
+                                    val shown = withContext(Dispatchers.IO) {
+                                        exportManager.publishToGallery(file, fmt.mime)
+                                    } ?: file.absolutePath
+                                    "Tersimpan: $shown"
+                                }
+                            }
+                            exportResult = msg
+                            isExporting = false
+                        }
+                    },
+                    enabled = !isExporting,
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                ) {
+                    Text(if (isExporting) "Mengekspor…" else "Export", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!isExporting) showExportDialog = false }) {
+                    Text("Tutup", color = Color.Gray)
+                }
+            },
+            containerColor = PanelBg
+        )
+    }
         // Canvas with gestures
         // NOTE: kunci pointerInput disengaja minimal agar pinch-zoom tidak
         // me-restart gesture di tengah jalan (viewState.scale/offset/rotation
@@ -4588,100 +5580,7 @@ fun CanvasEditorScreen(
 
         // Dialog export: format + kualitas + progres + hasil (tak lagi gagal diam-diam).
         if (showExportDialog) {
-            AlertDialog(
-                onDismissRequest = { if (!isExporting) showExportDialog = false },
-                title = { Text("Export Artwork", color = Color.White, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column {
-                        Text(
-                            "${canvasWidth} x ${canvasHeight} px • teks & layer ikut ter-render",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Text(
-                            "Nama file: ${com.grooxtyper.app.model.FileExportManager.sanitizeFileName(projectTitle)}${exportFormat.extension}",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Format", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ExportFormat.values().forEach { fmt ->
-                                val sel = exportFormat == fmt
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (sel) Accent else PanelBg)
-                                        .clickable(enabled = !isExporting) { exportFormat = fmt }
-                                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        fmt.name, color = Color.White, fontSize = 12.sp,
-                                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            if (exportFormat.supportsQuality) "Kualitas ${exportQuality.toInt()}%"
-                            else "Kualitas: lossless (PNG mengabaikan slider)",
-                            color = Color.Gray, fontSize = 12.sp
-                        )
-                        Slider(
-                            value = exportQuality,
-                            onValueChange = { exportQuality = it },
-                            enabled = !isExporting && exportFormat.supportsQuality,
-                            valueRange = 10f..100f,
-                            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-                        )
-                        if (isExporting) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("Mengekspor… jangan tutup aplikasi.", color = Accent, fontSize = 12.sp)
-                        }
-                        exportResult?.let { msg ->
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(msg, color = Color.LightGray, fontSize = 12.sp)
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            if (isExporting) return@Button
-                            isExporting = true
-                            exportResult = null
-                            val fmt = exportFormat
-                            val q = exportQuality.toInt()
-                            scope.launch {
-                                val msg = withContext(Dispatchers.Default) {
-                                    val file = exportManager.exportArtwork(layerManager, fmt, filename = projectTitle, quality = q)
-                                    if (file == null) {
-                                        "Gagal export (memori habis?). Coba tutup aplikasi lain / kualitas lebih rendah."
-                                    } else {
-                                        val shown = withContext(Dispatchers.IO) {
-                                            exportManager.publishToGallery(file, fmt.mime)
-                                        } ?: file.absolutePath
-                                        "Tersimpan: $shown"
-                                    }
-                                }
-                                exportResult = msg
-                                isExporting = false
-                            }
-                        },
-                        enabled = !isExporting,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) {
-                        Text(if (isExporting) "Mengekspor…" else "Export", color = Color.White)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { if (!isExporting) showExportDialog = false }) {
-                        Text("Tutup", color = Color.Gray)
-                    }
-                },
-                containerColor = PanelBg
-            )
+            showExportDialogUi()
         }
 
         // Floating text toolbar
@@ -5479,242 +6378,7 @@ fun CanvasEditorScreen(
         }
 
         if (showMLInpaintDialog) {
-            AlertDialog(
-                onDismissRequest = { if (!isMLInpainting && !mlDetecting) showMLInpaintDialog = false },
-                title = { Text("Deteksi Teks", color = Color.White, fontWeight = FontWeight.Bold) },
-                text = {
-                    Column {
-                        Text(
-                            if (mlDetecting) "Mendeteksi teks…" else "Detected ${detectedTextRegions.size} text blocks.",
-                            color = Color.LightGray, fontSize = 13.sp
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Preview di kanvas", color = Color.White, fontSize = 12.sp)
-                            }
-                            Switch(
-                                checked = showTextOverlay,
-                                onCheckedChange = {
-                                    showTextOverlay = it
-                                    refreshComposite()
-                                },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Mode hapus (ketuk teks di kanvas)", color = Color.White, fontSize = 12.sp)
-                                Text("Ketuk tanpa geser di tool Pan / Kotak Seleksi", color = Color.Gray, fontSize = 10.sp)
-                            }
-                            Switch(
-                                checked = textEraseMode,
-                                onCheckedChange = { textEraseMode = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        if (detectedTextRegions.isNotEmpty()) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Daftar teks (buang yang tak ingin di-inpaint):", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                                TextButton(onClick = { clearTextRegions() }) {
-                                    Text("Hapus semua", color = Color.Red, fontSize = 12.sp)
-                                }
-                            }
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 150.dp)
-                            ) {
-                                itemsIndexed(detectedTextRegions) { idx, r ->
-                                    val b = r.boundingBox
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text("#${idx + 1} ${r.text.take(24).ifBlank { "(kosong)" }}", color = Color.White, fontSize = 12.sp)
-                                            Text("(${b.left},${b.top} ${b.width()}x${b.height()})", color = Color.Gray, fontSize = 10.sp)
-                                        }
-                                        IconButton(
-                                            onClick = { removeTextRegionAt(idx) },
-                                            modifier = Modifier.size(28.dp)
-                                        ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Hapus teks ${idx + 1}", tint = Color.Red, modifier = Modifier.size(16.dp))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Mesin deteksi: ML Kit v2", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text(
-                            "ML Kit bawaan (on-device, multi-pass + upscale untuk teks kecil), tanpa file tambahan.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        if (mlDetectError != null) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(mlDetectError!!, color = Color(0xFFFFCC00), fontSize = 11.sp)
-                            Text("Logcat: adb logcat -s MLTextDetector,RunML", color = Color.Gray, fontSize = 10.sp)
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Bahasa deteksi:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            MLScript.values().forEach { script ->
-                                val on = script in mlScripts
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(if (on) Accent else PanelBg)
-                                        .clickable {
-                                            mlScripts = if (on) mlScripts - script else mlScripts + script
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(script.displayName, color = Color.White, fontSize = 11.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
-                                }
-                            }
-                        }
-                        TextButton(onClick = { runMLDetection() }) {
-                            Text("Deteksi ulang", color = Accent, fontSize = 12.sp)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Jadikan teks editable", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Buat TextBox per baris terdeteksi", color = Color.Gray, fontSize = 11.sp)
-                            }
-                            Switch(
-                                checked = makeEditableText,
-                                onCheckedChange = { makeEditableText = it },
-                                colors = SwitchDefaults.colors(checkedThumbColor = Accent)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Variasi Mask (2 pilihan):", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text(
-                            "Mask Kotak = persegi solid. Mask Bentuk Teks = mengikuti huruf.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceAround
-                        ) {
-                            Button(
-                                onClick = { selectedMaskType = MLMaskType.MASK_KOTAK },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.MASK_KOTAK) Accent else PanelBg)
-                            ) {
-                                Text(MLMaskType.MASK_KOTAK.displayName, color = Color.White, fontSize = 11.sp)
-                            }
-                            Button(
-                                onClick = { selectedMaskType = MLMaskType.MASK_BENTUK_TEKS },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (selectedMaskType == MLMaskType.MASK_BENTUK_TEKS) Accent else PanelBg)
-                            ) {
-                                Text(MLMaskType.MASK_BENTUK_TEKS.displayName, color = Color.White, fontSize = 11.sp)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Mode Inpaint:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        Text(
-                            "Putih = timpa area teks dengan putih polos (cepat, untuk bubble/kertas putih). Telea = halus cepat.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceAround
-                        ) {
-                            Button(
-                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.FILL_WHITE },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.FILL_WHITE) Accent else PanelBg)
-                            ) {
-                                Text("Putih", color = Color.White, fontSize = 11.sp)
-                            }
-                            Button(
-                                onClick = { inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.TELEA },
-                                colors = ButtonDefaults.buttonColors(containerColor = if (inpaintingManager.mode == com.grooxtyper.app.model.InpaintMode.TELEA) Accent else PanelBg)
-                            ) {
-                                Text("Telea", color = Color.White, fontSize = 11.sp)
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            if (isMLInpainting) return@Button
-                            scope.launch {
-                                val active = layerManager.getActiveLayer()
-                                if (active != null && detectedTextRegions.isNotEmpty()) {
-                                    isMLInpainting = true
-                                    try {
-                                    // Estimasi warna teks ASLI dulu (sebelum di-inpaint).
-                                    val wantsEditable = makeEditableText
-                                    val estimates = if (wantsEditable) {
-                                        detectedTextRegions.take(40).map { region ->
-                                            val b = region.boundingBox
-                                            val cx = (b.left + b.right) / 2f
-                                            val cy = (b.top + b.bottom) / 2f
-                                            val h = (b.bottom - b.top).toFloat()
-                                            Triple(
-                                                region,
-                                                Offset(cx, cy),
-                                                mlTextDetector.estimateRegionTextColor(
-                                                    active.getBitmap(), b, brushEngine.color
-                                                )
-                                            )
-                                        }
-                                    } else emptyList()
-                                    undoRedoManager.saveSnapshot(active)
-                                    val mask = mlTextDetector.generateMaskBitmap(canvasWidth, canvasHeight, detectedTextRegions, active.getBitmap(), selectedMaskType)
-                                    withContext(Dispatchers.Default) { inpaintingManager.inpaintLayerArea(active, mask) }
-                                    // Ganti tiap baris terdeteksi jadi TextBox editable.
-                                    var firstBox: TextBox? = null
-                                    for ((region, center, textColor) in estimates) {
-                                        val h = (region.boundingBox.bottom - region.boundingBox.top).toFloat()
-                                        val box = TextBox(
-                                            text = region.text.ifBlank { "Teks" },
-                                            position = center,
-                                            fontSize = (h * 0.75f).coerceIn(1f, 220f),
-                                            color = textColor,
-                                            bold = true
-                                        )
-                                        applyAllStylesTo(box)
-                                        val created = layerManager.addTextLayer(box)
-                                        undoRedoManager.pushLayerAdd(created.id)
-                                        if (firstBox == null) firstBox = box
-                                    }
-                                    firstBox?.let {
-                                        selectedTextBox = it
-                                        activeTool = ActiveTool.TEXT
-                                        showTextEditor = true
-                                    }
-                                    refreshComposite()
-                                    } finally {
-                                        isMLInpainting = false
-                                    }
-                                }
-                                showMLInpaintDialog = false
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Jalankan Inpaint", color = Color.White) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { if (!isMLInpainting) showMLInpaintDialog = false }) { Text("Cancel", color = Color.Gray) }
-                },
-                containerColor = PanelBg
-            )
+            showMLInpaintDialogUi()
         }
 
         if (showLayersPanel) {
@@ -5829,640 +6493,12 @@ fun CanvasEditorScreen(
 
         // === Panel Script: kolom baris + jalankan ke seleksi/bubble ===
         if (showScriptPanel) {
-            val unusedCount = scriptEntries.count { !it.used }
-            // Mode Teks: TANPA deteksi teks — Jalankan siap bila jumlah naskah
-            // sisa SESUAI jumlah target: sama persis dengan jumlah bubble
-            // terdeteksi, atau ≥1 naskah untuk 1 area seleksi (1 render per ketuk).
-            // Render mengikuti Style Rules + cek latar + fit terbesar + center.
-            // Mode Bubble: tetap butuh baris tabel terpilih yang sudah bernaskah.
-            val textTargetN = if (detectedBubbles.isNotEmpty()) detectedBubbles.size
-                else if (selectionEngine.hasSelection) 1 else 0
-            val textMatchOk = unusedCount > 0 && textTargetN > 0 &&
-                (detectedBubbles.isNotEmpty() && unusedCount == textTargetN ||
-                    detectedBubbles.isEmpty() && selectionEngine.hasSelection)
-            val canRunRows = if (scriptTextMode) textMatchOk
-                else detectedRows.any { it.selected && it.script.isNotBlank() }
-            val selN = detectedRows.count { it.selected }
-            val pairN = pairedRowCount()
-            val matchOk = selN > 0 && detectedRows.filter { it.selected }.all { it.script.isNotBlank() }
-            AlertDialog(
-                onDismissRequest = { showScriptPanel = false },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Description, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (scriptTextMode) "Script → Teks" else "Script → Bubble", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                },
-                text = {
-                    // Scrollable: konten (sumber naskah + tabel baris) panjang.
-                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                        // Pilih mode: Bubble (detektor bubble) atau Teks (deteksi teks ML Kit).
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { scriptTextMode = false },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (!scriptTextMode) Accent else PanelBg)
-                            ) { Text("Bubble", color = Color.White, fontSize = 12.sp) }
-                            Button(
-                                onClick = { scriptTextMode = true },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = if (scriptTextMode) Accent else PanelBg)
-                            ) { Text("Teks", color = Color.White, fontSize = 12.sp) }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        // Status ringkas: pil + bar progres sebaris.
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            StatusPill("${scriptEntries.size} baris")
-                            StatusPill("$unusedCount sisa", highlight = unusedCount > 0)
-                            if (scriptTextMode) {
-                                StatusPill("$textTargetN target", highlight = textTargetN > 0)
-                            } else {
-                                StatusPill("${detectedRows.size} teks", highlight = detectedRows.isNotEmpty())
-                            }
-                            if (!scriptTextMode && bubbleInpainted) {
-                                StatusPill("inpaint ✓", highlight = true)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        // Progres pemakaian.
-                        if (scriptEntries.isNotEmpty()) {
-                            val done = scriptEntries.size - unusedCount
-                            val frac = done.toFloat() / scriptEntries.size.toFloat()
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(3.dp))
-                                        .background(Color(0xFF38383A))
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth(frac)
-                                            .height(6.dp)
-                                            .clip(RoundedCornerShape(3.dp))
-                                            .background(Accent)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    "$done/${scriptEntries.size}",
-                                    color = Color.Gray, fontSize = 11.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                "$done/${scriptEntries.size} baris terpakai • urutan atas→bawah, kanan→kiri",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                        } else {
-                            Text(
-                                "Belum ada script. Import file atau ketik manual — satu baris = satu bubble, ⏎ = jeda baris di dalamnya.",
-                                color = Color.LightGray, fontSize = 12.sp
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                        if (!scriptTextMode) {
-                        Text(
-                            "Penempatan",
-                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        // Satu kartu: info mode gabungan + baris Style Rules.
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(PanelBg)
-                                .border(1.dp, Color(0xFF38383A), RoundedCornerShape(10.dp))
-                                .padding(horizontal = 12.dp, vertical = 4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(vertical = 6.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(Accent)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("Rules + Auto", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        "Prefix memilih style, lalu font, wrap & posisi dihitung otomatis.",
-                                        color = Color.Gray, fontSize = 10.sp
-                                    )
-                                }
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(1.dp)
-                                    .background(Color(0xFF38383A))
-                            )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        stylePresetsTick++
-                                        newRuleStyleId = stylePresets().firstOrNull()?.id ?: ""
-                                        showStyleRules = true
-                                    }
-                                    .padding(vertical = 8.dp)
-                            ) {
-                                Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Accent, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("Style Rules", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        if (styleRules.isEmpty()) "Nonaktif — ketuk untuk atur"
-                                        else "${styleRules.size} aturan: ${styleRules.take(2).joinToString { "'${it.prefix}'" }}${if (styleRules.size > 2) "…" else ""}",
-                                        color = Color.Gray, fontSize = 11.sp
-                                    )
-                                }
-                            }
-                        }
-                        } // if (!scriptTextMode) penempatan
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            "Sumber naskah",
-                            color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ScriptActionButton(
-                                label = "Import",
-                                icon = Icons.Default.FileUpload,
-                                modifier = Modifier.weight(1f),
-                                onClick = { scriptImportLauncher.launch(arrayOf("text/plain", "*/*")) }
-                            )
-                            ScriptActionButton(
-                                label = "Contoh",
-                                icon = Icons.Default.Description,
-                                modifier = Modifier.weight(1f),
-                                onClick = {
-                                    // Muat contoh bawaan dari assets (offline, tanpa download).
-                                    runCatching {
-                                        context.assets.open("contoh_script.txt").bufferedReader().readText()
-                                    }.getOrNull()?.let { raw ->
-                                        val parsed = parseScriptRaw(raw)
-                                        if (parsed.isNotEmpty()) {
-                                            scriptEntries = parsed
-                                            scriptDraft = raw
-                                        }
-                                    }
-                                }
-                            )
-                            ScriptActionButton(
-                                label = "Ketik",
-                                icon = Icons.Default.Edit,
-                                modifier = Modifier.weight(1f),
-                                onClick = {
-                                    scriptDraft = scriptEntries.joinToString("\n") { it.text }
-                                    showScriptEditor = true
-                                }
-                            )
-                            IconButton(
-                                onClick = { resetScriptUsage() },
-                                enabled = scriptEntries.any { it.used },
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(PanelBg)
-                                    .size(48.dp)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Reset terpakai", tint = Color.White, modifier = Modifier.size(18.dp))
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        // Daftar naskah: selalu terlihat setelah import/tempel/
-                        // ketik — tiap baris bisa diedit & dihapus manual.
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Daftar naskah",
-                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            StatusPill("${scriptEntries.size} baris", highlight = scriptEntries.isNotEmpty())
-                            Spacer(modifier = Modifier.width(6.dp))
-                            TextButton(onClick = {
-                                scriptEntries = scriptEntries + ScriptEntry(text = "")
-                            }) { Text("+ Baris", color = Accent, fontSize = 12.sp) }
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        if (scriptEntries.isEmpty()) {
-                            Text(
-                                "Belum ada naskah — Import file, Ketik manual, atau tambah baris di atas.",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
-                        } else {
-                            // FIX glitch saat mengetik: JANGAN LazyColumn di
-                            // dalam dialog yang sudah verticalScroll — scroll
-                            // bersarang + recompose per ketikan membuat fokus
-                            // teks "melompat"/patah. Column biasa + key(id)
-                            // menjaga fokus tiap kolom tetap di barisnya.
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                scriptEntries.forEachIndexed { idx, entry ->
-                                    key(entry.id) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(if (entry.used) Color(0xFF1F3D2B) else PanelBg)
-                                            .border(
-                                                1.dp,
-                                                if (entry.used) Color(0xFF2E7D32) else Color(0xFF38383A),
-                                                RoundedCornerShape(10.dp)
-                                            )
-                                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            StatusPill("#${idx + 1}", highlight = false)
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            if (entry.used) {
-                                                StatusPill("terpakai", highlight = true)
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                            }
-                                            Spacer(modifier = Modifier.weight(1f))
-                                            IconButton(
-                                                onClick = { moveScriptEntry(idx, idx - 1) },
-                                                enabled = idx > 0,
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Naik", tint = Color.LightGray, modifier = Modifier.size(18.dp))
-                                            }
-                                            IconButton(
-                                                onClick = { moveScriptEntry(idx, idx + 1) },
-                                                enabled = idx < scriptEntries.size - 1,
-                                                modifier = Modifier.size(28.dp)
-                                            ) {
-                                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Turun", tint = Color.LightGray, modifier = Modifier.size(18.dp))
-                                            }
-                                            IconButton(
-                                                onClick = {
-                                                    scriptEntries = scriptEntries.filter { it.id != entry.id }
-                                                }
-                                            ) {
-                                                Icon(Icons.Default.Delete, contentDescription = "Hapus naskah", tint = Color.Red, modifier = Modifier.size(18.dp))
-                                            }
-                                        }
-                                        OutlinedTextField(
-                                            value = entry.text,
-                                            onValueChange = { v ->
-                                                scriptEntries = scriptEntries.map {
-                                                    if (it.id == entry.id) it.copy(text = v) else it
-                                                }
-                                            },
-                                            placeholder = { Text("Tulis naskah baris ini…") },
-                                            maxLines = 3,
-                                            textStyle = androidx.compose.ui.text.TextStyle(
-                                                color = Color.White, fontSize = 12.sp
-                                            ),
-                                            modifier = Modifier.fillMaxWidth()
-                                        )
-                                    }
-                                    }
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        if (scriptTextMode) {
-                            // Mode Teks: TANPA deteksi teks — cukup samakan jumlah
-                            // naskah sisa dengan jumlah bubble/area seleksi.
-                            Text(
-                                "Target Render",
-                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        showBubbleDialog = true
-                                        if (detectedBubbles.isEmpty()) runBubbleDetection()
-                                    },
-                                    enabled = !bubbleDetecting,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                                ) {
-                                    Text(
-                                        if (bubbleDetecting) "Mendeteksi…" else "Deteksi Bubble",
-                                        color = Color.White, fontSize = 12.sp
-                                    )
-                                }
-                                ScriptActionButton(
-                                    label = "Kotak Seleksi",
-                                    icon = Icons.Default.SelectAll,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = {
-                                        activeTool = ActiveTool.SELECT_BOX
-                                        showScriptPanel = false
-                                    }
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            // Auto-bentuk komik: pecah tiap naskah sisa jadi
-                            // baris seimbang (marker ⏎) tanpa mengubah jumlah
-                            // naskah; marker bisa diubah manual di Ketik.
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                ScriptActionButton(
-                                    label = "Auto-bentuk",
-                                    icon = Icons.Default.AutoFixHigh,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = {
-                                        val n = autoShapeScripts()
-                                        bubbleWarn = if (n > 0) "$n naskah dibentuk ulang — cek/ubah marker ⏎ di Ketik bila perlu."
-                                        else "Semua naskah sudah seimbang."
-                                    }
-                                )
-                                Text(
-                                    "⏎ = jeda baris manual",
-                                    color = Color.Gray, fontSize = 10.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                StatusPill("$unusedCount naskah", highlight = unusedCount > 0)
-                                StatusPill(
-                                    if (detectedBubbles.isNotEmpty()) "$textTargetN bubble"
-                                    else if (selectionEngine.hasSelection) "1 seleksi"
-                                    else "0 target",
-                                    highlight = textTargetN > 0
-                                )
-                                StatusPill(
-                                    if (textMatchOk) "Sesuai ✓" else "Belum sesuai",
-                                    highlight = textMatchOk
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                if (textTargetN <= 0)
-                                    "Belum ada target — deteksi bubble atau buat 1 area seleksi (Kotak Seleksi), lalu samakan jumlah naskah."
-                                else if (textMatchOk)
-                                    "Jumlah sesuai — ketuk Jalankan untuk render (Style Rules • cek latar • fit terbesar • tengah)."
-                                else
-                                    "Jumlah belum sesuai ($unusedCount naskah / $textTargetN target) — tambah/kurangi naskah atau target agar sama.",
-                                color = Color.Gray, fontSize = 11.sp
-                            )
-                        } else {
-                            Text(
-                                "Teks Terdeteksi",
-                                color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            // Aksi mode Bubble: deteksi + isi naskah + INPAINT
-                            // (tombol Inpaint muncul setelah ada pemilihan).
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = { runBubbleScriptDetect() },
-                                    enabled = !detectingText,
-                                    modifier = Modifier.weight(1f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                                ) {
-                                    Text(
-                                        if (detectingText) "Mendeteksi…" else "Deteksi Teks",
-                                        color = Color.White, fontSize = 12.sp
-                                    )
-                                }
-                                ScriptActionButton(
-                                    label = "Isi Naskah",
-                                    icon = Icons.Default.Refresh,
-                                    modifier = Modifier.weight(1f),
-                                    onClick = { fillBubbleScripts() }
-                                )
-                                // Tombol Inpaint khusus Bubble: hanya SETELAH ada baris dipilih.
-                                if (selN > 0) {
-                                    ScriptActionButton(
-                                        label = if (detectingText) "Menghapus…" else "Inpaint",
-                                        icon = Icons.Default.Brush,
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { inpaintBubbleRows() }
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                StatusPill("$selN dipilih", highlight = selN > 0)
-                                StatusPill("$pairN bernaskah", highlight = pairN > 0)
-                                StatusPill(
-                                    if (matchOk) "Sesuai ✓" else "Belum sesuai",
-                                    highlight = matchOk
-                                )
-                            }
-                            // Peringatan pasangan: naskah lebih panjang dari teks terdeteksi.
-                            if (bubbleWarn != null) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    bubbleWarn ?: "",
-                                    color = Color(0xFFFFB74D), fontSize = 11.sp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            if (detectedRows.isEmpty()) {
-                                Text(
-                                    if (scriptTextMode)
-                                        "Ketuk Deteksi Teks — teks berdekatan digabung jadi satu bubble. Lalu isi naskah per kolom agar jumlahnya sesuai. Tanpa deteksi pun bisa: bila sudah ada bubble/seleksi, langsung ketuk Jalankan untuk render (Style Rules • fit • tengah • cek latar)."
-                                    else
-                                        "Ketuk Deteksi Teks — teks berdekatan (atas/bawah/kiri/kanan) jadi satu baris. Centang baris → Inpaint untuk menghapus teks lamanya, lalu Isi Naskah dari berkas di atas.",
-                                    color = Color.Gray, fontSize = 11.sp
-                                )
-                            } else {
-                                // FIX glitch yang sama seperti daftar naskah:
-                                // Column + key, bukan LazyColumn bersarang.
-                                Column(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    detectedRows.forEachIndexed { idx, row ->
-                                        key(row.id) {
-                                        Column(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(if (row.selected) Color(0xFF1F3D2B) else PanelBg)
-                                                .border(
-                                                    1.dp,
-                                                    if (row.selected) Color(0xFF2E7D32) else Color(0xFF38383A),
-                                                    RoundedCornerShape(10.dp)
-                                                )
-                                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                                        ) {
-                                            // Kolom terdeteksi (kiri): bisa diedit & dicoret.
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Checkbox(
-                                                    checked = row.selected,
-                                                    onCheckedChange = {
-                                                        detectedRows = detectedRows.map {
-                                                            if (it.id == row.id) it.copy(selected = !it.selected) else it
-                                                        }
-                                                    },
-                                                    colors = CheckboxDefaults.colors(checkedColor = Accent)
-                                                )
-                                                OutlinedTextField(
-                                                    value = row.text,
-                                                    onValueChange = { v ->
-                                                        detectedRows = detectedRows.map {
-                                                            if (it.id == row.id) it.copy(text = v) else it
-                                                        }
-                                                    },
-                                                    label = { Text("Terdeteksi #${idx + 1} • ≈${row.fontSize.toInt()}px") },
-                                                    singleLine = true,
-                                                    textStyle = androidx.compose.ui.text.TextStyle(
-                                                        color = if (row.selected) Color.White else Color.Gray,
-                                                        fontSize = 12.sp
-                                                    ),
-                                                    modifier = Modifier.weight(1f)
-                                                )
-                                                IconButton(
-                                                    onClick = {
-                                                        detectedRows = detectedRows.filter { it.id != row.id }
-                                                    }
-                                                ) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "Hapus kolom", tint = Color.Red, modifier = Modifier.size(18.dp))
-                                                }
-                                            }
-                                            // Kolom naskah pasangan (kanan, bersandingan).
-                                            OutlinedTextField(
-                                                value = row.script,
-                                                onValueChange = { v ->
-                                                    detectedRows = detectedRows.map {
-                                                        if (it.id == row.id) it.copy(script = v) else it
-                                                    }
-                                                },
-                                                placeholder = { Text("Naskah kolom ini…") },
-                                                maxLines = 2,
-                                                textStyle = androidx.compose.ui.text.TextStyle(
-                                                    color = Color.White, fontSize = 12.sp
-                                                ),
-                                                modifier = Modifier.fillMaxWidth()
-                                            )
-                                        }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = { if (scriptTextMode) runTextScript() else runBubbleScriptRender() },
-                        enabled = canRunRows,
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Jalankan", color = Color.White)
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showScriptPanel = false }) {
-                        Text("Tutup", color = Color.Gray)
-                    }
-                },
-                containerColor = PanelBg
-            )
+            showScriptPanelUi()
         }
 
         // === Editor Script: ketik / tempel manual ===
         if (showScriptEditor) {
-            val draftLines = scriptDraft.lines().count { it.trim().isNotEmpty() }
-            AlertDialog(
-                onDismissRequest = { showScriptEditor = false },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Edit, contentDescription = null, tint = Accent, modifier = Modifier.size(22.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Ketik Script", color = Color.White, fontWeight = FontWeight.Bold)
-                    }
-                },
-                text = {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            StatusPill("$draftLines baris", highlight = draftLines > 0)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                "Satu baris = satu bubble. Pakai ⏎ untuk jeda baris manual di dalam satu bubble.",
-                                color = Color.Gray, fontSize = 12.sp
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Baris 'Page …' dan 'Terjemahan' otomatis diabaikan.",
-                            color = Color.Gray, fontSize = 11.sp
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = scriptDraft,
-                            onValueChange = { scriptDraft = it },
-                            label = { Text("Tempel / ketik naskah di sini") },
-                            minLines = 8,
-                            maxLines = 16,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            TextButton(onClick = { scriptDraft = shapeDraftText(scriptDraft) }) {
-                                Text("Bentuk komik", color = Accent, fontSize = 12.sp)
-                            }
-                            Text(
-                                "⏎ = pindah baris dalam 1 bubble (bisa diedit manual)",
-                                color = Color.Gray, fontSize = 10.sp,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            val parsed = parseScriptRaw(scriptDraft)
-                            if (parsed.isNotEmpty()) {
-                                scriptEntries = parsed
-                                showScriptEditor = false
-                                showScriptPanel = true
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
-                    ) { Text("Simpan", color = Color.White) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showScriptEditor = false }) {
-                        Text("Batal", color = Color.Gray)
-                    }
-                },
-                containerColor = PanelBg
-            )
+            showScriptEditorUi()
         }
 
         // === Style Rules: prefix script -> style + hapus awalan ===
