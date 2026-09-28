@@ -51,6 +51,8 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.FormatColorText
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -807,6 +809,11 @@ fun CanvasEditorScreen(
 
     var selectedTextBox by remember { mutableStateOf<TextBox?>(null) }
     var textHandleMode by remember { mutableStateOf(TextHandle.NONE) }
+    // Tool Teks: tahan pembuatan kotak sampai tahu user tap atau drag
+    // (tap = teks titik, drag = kotak seleksi yang teksnya fit ke area).
+    var textCreatePending by remember { mutableStateOf(false) }
+    var textCreateStart by remember { mutableStateOf<Offset?>(null) }
+    var textCreateNow by remember { mutableStateOf<Offset?>(null) }
     // Joystick teks: riwayat undo digabung per rentetan ketuk (<1.5 dtk).
     var dpadBaselineBoxId by remember { mutableStateOf<String?>(null) }
     var dpadLastMs by remember { mutableStateOf(0L) }
@@ -826,6 +833,8 @@ fun CanvasEditorScreen(
     // Dialog edit massal: pilih beberapa kotak teks, terapkan ukuran /
     // warna / tebal sekaligus (satu undo per kotak).
     var showBulkTextDialog by remember { mutableStateOf(false) }
+    // Panel gaya per kata (span): kata demi kata beda font/warna/epek.
+    var showRichTextPanel by remember { mutableStateOf(false) }
     // Dinaikkan saat geometri teks diubah dari kanvas (SCALE/lebar/perspektif)
     // agar panel teks (slider ukuran) ikut menampilkan angka terbaru.
     var textGeomTick by remember { mutableIntStateOf(0) }
@@ -1345,8 +1354,8 @@ fun CanvasEditorScreen(
         val tf = fontList.find { it.first == preset.fontName }?.second
         preset.applyTo(box, tf)
         if (rule.stripPrefix) {
-            box.text = trimmed.removePrefix(rule.prefix).trimStart()
-            if (box.text.isEmpty()) box.text = trimmed
+            val stripped = trimmed.removePrefix(rule.prefix).trimStart()
+            if (stripped.isNotEmpty()) box.setTextKeepingSpans(stripped) else box.text = trimmed
         }
         lastAutoPrefix = box.id to preset.id
         return true
@@ -2251,10 +2260,14 @@ fun CanvasEditorScreen(
             }
         }
         // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
+        // PENTING: kanvas 720x16000 = 11.5 juta piksel (46MB) — membanjiri
+        // semua itu bikin wand berat. Wand cukup presisi di 480px sisi
+        // terpanjang, jadi snapshot diturunkan sekali di sini (rata-rata),
+        // dan Path hasilnya dikembalikan ke koordinat kanvas penuh.
         val w = compositeBitmap.width
         val h = compositeBitmap.height
         if (w <= 0 || h <= 0) return
-        val px = try {
+        val raw = try {
             IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -2265,17 +2278,30 @@ fun CanvasEditorScreen(
             healError = "Wand OOM — coba area lebih kecil"
             return
         }
+        val sample = try {
+            with(SelectionEngine) { downsampleForWand(raw, w, h) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            SelectionEngine.WandSample(raw, w, h, 1f)
+        }
+        val spx = sample.px
+        val sw = sample.w
+        val sh = sample.h
+        val seedX = (cx / sample.scale).toInt().coerceIn(0, sw - 1)
+        val seedY = (cy / sample.scale).toInt().coerceIn(0, sh - 1)
         wandBusy = true
         scope.launch(Dispatchers.Default) {
             var added = false
             var err: String? = null
             try {
                 val tol = if (wandMode == "auto") {
-                    selectionEngine.autoTolerance(px, w, h, cx, cy)
+                    selectionEngine.autoTolerance(spx, sw, sh, seedX, seedY)
                 } else {
                     (wandTolerance * 2.2f).coerceIn(0f, 220f)
                 }
-                added = selectionEngine.selectWand(px, w, h, cx, cy, tol)
+                added = selectionEngine.selectWand(
+                    spx, sw, sh, seedX, seedY, tol, 1f / sample.scale
+                )
                 if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
@@ -2532,60 +2558,26 @@ fun CanvasEditorScreen(
                             val cp = screenToCanvasCoordinates(pos.x, pos.y)
                             val rg = brushEngine.rulerGuide
                             if (perspGridMode) {
-                                // FIX: kunci handle yang disentuh SEKALI di awal drag.
-                                // Versi lama mengecek jarak ke sudut SETIAP frame, jadi
-                                // begitu jari menjauh dari sudut kondisinya gagal → grid
-                                // terasa "tidak bisa dipakai / tidak bisa diseret".
+                                // Handle perspektif dikunci SEKALI saat drag mulai.
+                                // Handle = 4 SUDUT trapesium (bukan tepi tengah),
+                                // sehingga arah perspektif bisa digeser leluasa.
                                 perspHandle = 0
                                 val pbox = selectedTextBox
                                 if (pbox != null) {
                                     val sc = viewState.scale.coerceAtLeast(0.05f)
-                                    val pb = pbox.getBounds(); val pad = 24f
-                                    val l = pb.left - pad; val t = pb.top - pad
-                                    val rr = pb.right + pad; val bt = pb.bottom + pad
-                                    val hw = ((rr - l) / 2f).coerceAtLeast(1f)
-                                    val hh = ((bt - t) / 2f).coerceAtLeast(1f)
-                                    val cx = (l + rr) / 2f; val cy = (t + bt) / 2f
-                                    // FIX: titik sentuh WAJIB sama dengan titik yang
-                                    // digambar overlay. Dulu dipakai sudut kotak lurus
-                                    // (l,t)/(rr,t)/... sementara overlay menggambar
-                                    // keystone → begitu perspX/perspY ≠ 0, titik biru
-                                    // yang terlihat bergeser dari area sentuhnya dan
-                                    // grid "tidak bisa disentuh".
-                                    val dxT = pbox.perspX.coerceIn(-1f, 1f) * hw
-                                    val dyL = pbox.perspY.coerceIn(-1f, 1f) * hh
-                                    fun hd(x: Float, y: Float) = kotlin.math.hypot(cp.x - x, cp.y - y)
-                                    val dTop = minOf(
-                                        hd(cx - hw + dxT, cy - hh + dyL),
-                                        hd(cx + hw - dxT, cy - hh - dyL)
-                                    )
-                                    val dBot = minOf(
-                                        hd(cx + hw + dxT, cy + hh + dyL),
-                                        hd(cx - hw - dxT, cy + hh - dyL)
-                                    )
-                                    val dL = hd(cx - hw, cy); val dR = hd(cx + hw, cy)
-                                    val best = minOf(dTop, dBot, dL, dR)
-                                    // Radius genggam lebih lega (84px layar) + fallback:
-                                    // sentuh di dalam area grid tetap memakai handle
-                                    // terdekat, jadi responsif di mana pun dalam grid.
-                                    val grab = 84f / sc
-                                    val inside = cp.x >= l - grab && cp.x <= rr + grab &&
-                                        cp.y >= t - grab && cp.y <= bt + grab
-                                    // Perbandingan memakai toleransi, bukan == : pada
-                                    // zoom kecil jarak antar titik bisa identik sampai
-                                    // dibulatkan float, sehingga ==/−0.0 bisa salah pilih.
-                                    fun near(d: Float, ref: Float) = abs(d - ref) < 0.01f
-                                    perspHandle = when {
-                                        best <= grab && near(best, dTop) -> 1
-                                        best <= grab && near(best, dBot) -> 2
-                                        best <= grab && near(best, dL) -> 3
-                                        best <= grab -> 4
-                                        inside && near(best, dTop) -> 1
-                                        inside && near(best, dBot) -> 2
-                                        inside && near(best, dL) -> 3
-                                        inside -> 4
-                                        else -> 0
+                                    val corners = com.grooxtyper.app.model.PerspectiveGrid.cornersCanvas(pbox)
+                                    val grab = 96f / sc
+                                    var bestD = Float.MAX_VALUE
+                                    for (ci in 0..3) {
+                                        val d = kotlin.math.hypot(
+                                            cp.x - corners[ci].x, cp.y - corners[ci].y
+                                        )
+                                        if (d < bestD) {
+                                            bestD = d
+                                            perspHandle = ci + 1
+                                        }
                                     }
+                                    if (bestD > grab) perspHandle = 0
                                     if (perspHandle != 0) {
                                         // Satu langkah undo untuk seluruh gestur perspektif.
                                         undoRedoManager.pushTextBox(
@@ -2626,23 +2618,25 @@ fun CanvasEditorScreen(
                             if (perspGridMode) {
                                 val box = selectedTextBox ?: return@detectDragGestures
                                 if (perspHandle == 0) return@detectDragGestures
-                                val b = box.getBounds(); val pad = 24f
-                                val l = b.left - pad; val t = b.top - pad
-                                val rr = b.right + pad; val bt = b.bottom + pad
-                                val hh = ((bt - t) / 2f).coerceAtLeast(1f)
-                                val hw = ((rr - l) / 2f).coerceAtLeast(1f)
                                 val sc = viewState.scale.coerceAtLeast(0.05f)
-                                // Delta-based: keystone mengikuti GERAKAN jari, bukan
-                                // posisi absolut → halus, tanpa lompatan, dan tetap
-                                // responsif sejauh apa pun jari diseret.
-                                val dcy = drag.y / sc
-                                val dcx = drag.x / sc
+                                val area = com.grooxtyper.app.model.PerspectiveGrid.contentRect(box)
+                                val hw = (area.width() / 2f).coerceAtLeast(1f)
+                                val hh = (area.height() / 2f).coerceAtLeast(1f)
+                                // Delta-based: sudut mengikuti GERAKAN jari (bukan
+                                // posisi absolut) → halus, tanpa lompatan, responsif
+                                // sejauh apa pun jari diseret.
+                                val dx = drag.x / sc / hw
+                                val dy = drag.y / sc / hh
+                                val p = box.persp ?: com.grooxtyper.app.model.PerspSpec
+                                    .fromKeystone(box.perspX, box.perspY)
                                 when (perspHandle) {
-                                    1 -> box.perspY = (box.perspY - dcy / hh).coerceIn(-1f, 1f)
-                                    2 -> box.perspY = (box.perspY + dcy / hh).coerceIn(-1f, 1f)
-                                    3 -> box.perspX = (box.perspX - dcx / hw).coerceIn(-1f, 1f)
-                                    4 -> box.perspX = (box.perspX + dcx / hw).coerceIn(-1f, 1f)
+                                    1 -> { p.tlX += dx; p.tlY += dy }
+                                    2 -> { p.trX += dx; p.trY += dy }
+                                    3 -> { p.brX += dx; p.brY += dy }
+                                    4 -> { p.blX += dx; p.blY += dy }
                                 }
+                                p.clampAll()
+                                box.persp = p
                                 refreshCompositeCoalesced()
                                 textGeomTick++
                                 change.consume()
@@ -2726,6 +2720,9 @@ fun CanvasEditorScreen(
                                             twoFingerActive = true
                                             rotAccum = 0f
                                             textHandleMode = TextHandle.NONE
+                                            textCreatePending = false
+                                            textCreateStart = null
+                                            textCreateNow = null
                                             imageHandleMode = ImageHandleMode.NONE
                                             lastScreenPoint = null
                                             viewState.pivotFracX = 0.5f
@@ -2876,6 +2873,7 @@ fun CanvasEditorScreen(
                                         val grip = 28f / viewState.scale
                                         if (lastCanvasPoint == null) {
                                             // Tekan baru: handle dulu, lalu badan box, lalu kanvas kosong.
+                                            textCreateNow = touchCanvasPos
                                             val current = selectedTextBox
                                             val handle = current?.hitHandle(touchCanvasPos, grip)
                                                 ?: TextHandle.NONE
@@ -2896,26 +2894,65 @@ fun CanvasEditorScreen(
                                                     if (isMultiBubbleActive()) {
                                                         placeNextBubble(touchCanvasPos)
                                                     } else {
-                                                        val box = TextBox(
-                                                            text = "Teks baru",
-                                                            position = touchCanvasPos,
-                                                            color = brushEngine.color
-                                                        )
-                                                        val created = layerManager.addTextLayer(box)
-                                                        undoRedoManager.pushLayerAdd(created.id)
-                                                        selectedTextBox = box
-                                                        textHandleMode = TextHandle.BODY
-                                                        showTextEditor = true
-                                                        refreshComposite()
+                                                        // Tahan pembuatan kotak sampai tahu
+                                                        // user TAP atau DRAG: drag = kotak
+                                                        // seleksi (fit teks), tap = teks titik.
+                                                        textCreatePending = true
+                                                        textCreateStart = touchCanvasPos
                                                     }
                                                 }
                                             }
                                         } else {
-                                            selectedTextBox?.let { box ->
+                                            // Seret di kanvas kosong + tool Teks:
+                                            // buat KOTAK SELEKSI teks (fit ke area).
+                                            if (textCreatePending) {
+                                                val st = textCreateStart
+                                                textCreateNow = touchCanvasPos
+                                                if (st != null) {
+                                                    val thresh = 10f / viewState.scale
+                                                    if ((touchCanvasPos - st).getDistance() > thresh) {
+                                                        val r = RectF(
+                                                            minOf(st.x, touchCanvasPos.x),
+                                                            minOf(st.y, touchCanvasPos.y),
+                                                            maxOf(st.x, touchCanvasPos.x),
+                                                            maxOf(st.y, touchCanvasPos.y)
+                                                        )
+                                                        val nb = TextBox(
+                                                            text = "Teks baru",
+                                                            position = Offset(r.centerX(), r.centerY()),
+                                                            color = brushEngine.color
+                                                        )
+                                                        nb.setFrame(
+                                                            Offset(r.centerX(), r.centerY()),
+                                                            r.width().coerceAtLeast(40f),
+                                                            r.height().coerceAtLeast(24f)
+                                                        )
+                                                        val nl = layerManager.addTextLayer(nb)
+                                                        undoRedoManager.pushLayerAdd(nl.id)
+                                                        selectedTextBox = nb
+                                                        textHandleMode = TextHandle.FRAME
+                                                        textCreatePending = false
+                                                        textCreateStart = null
+                                                        textCreateNow = null
+                                                        showTextEditor = true
+                                                        refreshComposite()
+                                                    }
+                                                }
+                                            } else {
+                                                selectedTextBox?.let { box ->
                                                 when (textHandleMode) {
                                                     TextHandle.BODY -> {
                                                         val delta = touchCanvasPos - lastCanvasPoint!!
                                                         box.position = box.position + delta
+                                                    }
+                                                    TextHandle.FRAME -> {
+                                                        // Ubah lebar + tinggi kotak seleksi
+                                                        // mengikuti gerakan jari.
+                                                        val sc = viewState.scale.coerceAtLeast(0.05f)
+                                                        box.dragFrameHandle(
+                                                            (touchCanvasPos.x - lastCanvasPoint!!.x) / sc,
+                                                            (touchCanvasPos.y - lastCanvasPoint!!.y) / sc
+                                                        )
                                                     }
                                                     TextHandle.SCALE -> {
                                                         val oldDist = (lastCanvasPoint!! - box.position).getDistance()
@@ -2948,9 +2985,10 @@ fun CanvasEditorScreen(
                                                     TextHandle.NONE -> Unit
                                                 }
                                                 refreshComposite()
-                                                // Geometri box berubah → sinkronkan
+                                                // Geometri box berubah -> sinkronkan
                                                 // panel teks (ukuran/lebar/persp).
                                                 textGeomTick++
+                                                }
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.IMAGE) {
@@ -3419,6 +3457,27 @@ fun CanvasEditorScreen(
                                     // inkremental (menjamin konsisten bila ada teks/layer).
                                     // Heal brush menunggu commit async (recycle mask) agar
                                     // tidak render sebelum hasil PatchMatch kembali.
+                                    // Teks ala Photoshop: TAp = teks titik di
+                                    // titik itu; DRAG = kotak seleksi teks yang
+                                    // teksnya otomatis muat (fit ke area).
+                                    if (textCreatePending) {
+                                        textCreatePending = false
+                                        val st = textCreateStart
+                                        textCreateStart = null
+                                        textCreateNow = null
+                                        if (st != null) {
+                                            val nb = TextBox(
+                                                text = "Teks baru",
+                                                position = st,
+                                                color = brushEngine.color
+                                            )
+                                            val nl = layerManager.addTextLayer(nb)
+                                            undoRedoManager.pushLayerAdd(nl.id)
+                                            selectedTextBox = nb
+                                            showTextEditor = true
+                                            refreshComposite()
+                                        }
+                                    }
                                     if (hadStroke && wasBrush && !wasHealBrush) refreshComposite()
                                     textHandleMode = TextHandle.NONE
                                     imageHandleMode = ImageHandleMode.NONE
@@ -3761,26 +3820,46 @@ fun CanvasEditorScreen(
                 }
             }
 
-            // Tombol Selesai mode grid perspektif + petunjuk cara pakai.
+            // Panel kontrol perspektif + tombol selesai mode grid.
             if (perspGridMode) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 60.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+                val pbox = selectedTextBox
+                if (pbox != null) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.BottomCenter
                     ) {
-                        Text(
-                            "Seret titik biru untuk ubah sudut",
-                            color = Color(0xFF00E5FF), fontSize = 11.sp,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xCC1C1C1E))
-                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        // Undo cukup SATU langkah: snapshot diambil saat mode
+                        // dibuka (bukan tiap slider digeser) supaya undo tak
+                        // dibanjiri riwayat.
+                        PerspectivePanel(
+                            box = pbox,
+                            onChange = {
+                                refreshCompositeCoalesced()
+                                textGeomTick++
+                            },
+                            onClose = { perspGridMode = false }
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Button(
-                            onClick = { perspGridMode = false },
-                            modifier = Modifier.padding(top = 2.dp)
-                        ) { Text("Selesai Perspektif", fontSize = 12.sp) }
+                    }
+                } else {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Column(
+                            modifier = Modifier.align(Alignment.TopCenter).padding(top = 60.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                "Pilih satu teks dulu untuk atur perspektifnya",
+                                color = Color(0xFF00E5FF), fontSize = 11.sp,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xCC1C1C1E))
+                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Button(
+                                onClick = { perspGridMode = false },
+                                modifier = Modifier.padding(top = 2.dp)
+                            ) { Text("Tutup", fontSize = 12.sp) }
+                        }
                     }
                 }
             }
@@ -3855,63 +3934,72 @@ fun CanvasEditorScreen(
                 }
             }
 
-            // Perspective grid overlay (mode aktif): grid pada bounds teks + 4 handle sudut
+            // Preview kotak seleksi teks (tool Teks sedang diseret).
+            val dragFrame = textCreateStart?.let { st ->
+                textCreateNow?.let { now ->
+                    RectF(
+                        minOf(st.x, now.x), minOf(st.y, now.y),
+                        maxOf(st.x, now.x), maxOf(st.y, now.y)
+                    )
+                }
+            }
+            if (dragFrame != null && dragFrame.width() > 4f) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val a = canvasToScreenPos(Offset(dragFrame.left, dragFrame.top))
+                    val b = canvasToScreenPos(Offset(dragFrame.right, dragFrame.bottom))
+                    val dp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 2f
+                        color = 0xFF00E5FF.toInt()
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 6f), 0f)
+                    }
+                    drawContext.canvas.nativeCanvas.drawRect(a.x, a.y, b.x, b.y, dp)
+                }
+            }
+            // Overlay perspektif: grid ringan (2 garis) + 4 handle sudut yang
+            // bisa diseret bebas (arah perspektif leluasa, bukan cuma tepi).
             if (perspGridMode && selectedTextBox != null) {
                 val box = selectedTextBox!!
+                val area = com.grooxtyper.app.model.PerspectiveGrid.contentRect(box)
+                val dst = com.grooxtyper.app.model.PerspectiveGrid.dstPoints(box, area.width(), area.height())
+                val corners = com.grooxtyper.app.model.PerspectiveGrid.cornersCanvas(box)
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val cs = viewState.scale
-                    val ox = viewState.offsetX; val oy = viewState.offsetY
-                    fun toScreen(o: Offset) = canvasToScreenPos(o)
-                    val b = box.getBounds()
-                    val pad = 24f
-                    val l = b.left - pad; val t = b.top - pad
-                    val rr = b.right + pad; val bt = b.bottom + pad
-                    val hw = ((rr - l) / 2f).coerceAtLeast(1f)
-                    val hh = ((bt - t) / 2f).coerceAtLeast(1f)
-                    val cx = (l + rr) / 2f; val cy = (t + bt) / 2f
-                    // Trapesium keystone yang SAMA dengan TextRenderer, jadi grid ini
-                    // benar-benar mempratinjau hasil akhir (bukan kotak lurus).
-                    val dxT = box.perspX.coerceIn(-1f, 1f) * hw
-                    val dyL = box.perspY.coerceIn(-1f, 1f) * hh
-                    val corners = listOf(
-                        Offset(cx - hw + dxT, cy - hh + dyL),
-                        Offset(cx + hw - dxT, cy - hh - dyL),
-                        Offset(cx + hw + dxT, cy + hh + dyL),
-                        Offset(cx - hw - dxT, cy + hh - dyL)
-                    )
-                    fun bilerp(u: Float, v: Float): Offset {
-                        val top = Offset(
-                            corners[0].x + (corners[1].x - corners[0].x) * u,
-                            corners[0].y + (corners[1].y - corners[0].y) * u
-                        )
-                        val bot = Offset(
-                            corners[3].x + (corners[2].x - corners[3].x) * u,
-                            corners[3].y + (corners[2].y - corners[3].y) * u
-                        )
-                        return Offset(top.x + (bot.x - top.x) * v, top.y + (bot.y - top.y) * v)
+                    // Titik lokal (u,v) -> kanvas (pusat + rotasi teks).
+                    fun toCanvas(u: Float, v: Float): Offset {
+                        val p = com.grooxtyper.app.model.PerspectiveGrid.bilerp(dst, u, v)
+                        val rad = Math.toRadians(box.rotation.toDouble())
+                        val c = kotlin.math.cos(rad).toFloat()
+                        val s = kotlin.math.sin(rad).toFloat()
+                        return Offset(area.centerX() + p.x * c - p.y * s, area.centerY() + p.x * s + p.y * c)
                     }
-                    val gp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 1.5f; color = 0x88FFFFFF.toInt() }
-                    val n = 8
-                    for (i in 1 until n) {
-                        val f = i / n.toFloat()
-                        val va = toScreen(bilerp(f, 0f)); val vb = toScreen(bilerp(f, 1f))
-                        drawContext.canvas.nativeCanvas.drawLine(va.x, va.y, vb.x, vb.y, gp)
-                        val ha = toScreen(bilerp(0f, f)); val hb = toScreen(bilerp(1f, f))
-                        drawContext.canvas.nativeCanvas.drawLine(ha.x, ha.y, hb.x, hb.y, gp)
+                    fun scr(u: Float, v: Float): Offset = canvasToScreenPos(toCanvas(u, v))
+                    val gp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 1.2f
+                        color = 0x88FFFFFF.toInt()
                     }
-                    val bp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 2.5f; color = 0xFF00E5FF.toInt() }
-                    val sc2 = corners.map { toScreen(it) }
+                    val va = scr(0.5f, 0f)
+                    val vb = scr(0.5f, 1f)
+                    drawContext.canvas.nativeCanvas.drawLine(va.x, va.y, vb.x, vb.y, gp)
+                    val ha = scr(0f, 0.5f)
+                    val hb = scr(1f, 0.5f)
+                    drawContext.canvas.nativeCanvas.drawLine(ha.x, ha.y, hb.x, hb.y, gp)
+                    val bp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 2.5f
+                        color = 0xFF00E5FF.toInt()
+                    }
+                    val sc2 = corners.map { canvasToScreenPos(it) }
                     for (i in 0..3) {
-                        val a = sc2[i]; val c = sc2[(i + 1) % 4]
+                        val a = sc2[i]
+                        val c = sc2[(i + 1) % 4]
                         drawContext.canvas.nativeCanvas.drawLine(a.x, a.y, c.x, c.y, bp)
                     }
-                    val hp = android.graphics.Paint().apply { style = android.graphics.Paint.Style.FILL; color = 0xFF00E5FF.toInt() }
-                    sc2.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x, it.y, 14f, hp) }
-                    // Handle tepi kiri/kanan (untuk perspX) supaya jelas terlihat
-                    // bisa diseret, selaras dengan hit-test di gesture handler.
-                    val lm = toScreen(Offset(cx - hw, cy)); val rm = toScreen(Offset(cx + hw, cy))
-                    drawContext.canvas.nativeCanvas.drawCircle(lm.x, lm.y, 12f, hp)
-                    drawContext.canvas.nativeCanvas.drawCircle(rm.x, rm.y, 12f, hp)
+                    val hp = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.FILL
+                        color = 0xFF00E5FF.toInt()
+                    }
+                    sc2.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x, it.y, 15f, hp) }
                 }
             }
 
@@ -4946,6 +5034,36 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
             }
 
+            // Edit teks massal (pindah dari panel teks ke toolbar utama:
+            // di sanaozon kerja utama, panel teks jadi terlalu padat).
+            IconButton(onClick = { showBulkTextDialog = true }) {
+                Icon(
+                    Icons.Default.FormatSize,
+                    contentDescription = "Edit Teks Massal",
+                    tint = if (showBulkTextDialog) Accent else Color.White
+                )
+            }
+
+            // Gaya per kata (span): pilih kata lalu atur font/warna/shadow/outline.
+            IconButton(
+                onClick = {
+                    if (selectedTextBox != null) {
+                        undoRedoManager.pushTextBox(
+                            textLayerIdOf(selectedTextBox!!), selectedTextBox!!.copy()
+                        )
+                        showRichTextPanel = true
+                    } else {
+                        healError = "Pilih satu teks dulu untuk edit per kata"
+                    }
+                }
+            ) {
+                Icon(
+                    Icons.Default.FormatColorText,
+                    contentDescription = "Gaya Per Kata",
+                    tint = if (showRichTextPanel) Accent else Color.White
+                )
+            }
+
             // Brush / Eraser toggle pill
             Row(
                 modifier = Modifier
@@ -5367,6 +5485,10 @@ fun CanvasEditorScreen(
                             showMultiBubbleDialog = true
                         },
                         onOpenPerspectiveGrid = {
+                            // Satu langkah undo untuk seluruh sesi perspektif.
+                            selectedTextBox?.let { pb ->
+                                undoRedoManager.pushTextBox(textLayerIdOf(pb), pb.copy())
+                            }
                             perspGridMode = true
                             // Grid perspektif & mode atur penggaris tidak dipakai bersamaan.
                             rulerAdjustMode = false
@@ -5378,11 +5500,30 @@ fun CanvasEditorScreen(
                         },
                         onFlatten = { showFlattenConfirm = true },
                         onDelete = { deleteSelectedText() },
-                        onOpenBulkEdit = { showBulkTextDialog = true },
                         onClose = { showTextEditor = false }
                     )
                 }
             } ?: run { showTextEditor = false }
+        }
+
+        // === Gaya per kata: satu kalimat, tiap kata beda font/warna/epek ===
+        if (showRichTextPanel && selectedTextBox != null) {
+            val rbox = selectedTextBox!!
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                RichTextPanel(
+                    box = rbox,
+                    fonts = fontList,
+                    defaultColor = brushEngine.color,
+                    onApply = {
+                        undoRedoManager.pushTextBox(textLayerIdOf(rbox), rbox.copy())
+                        refreshComposite()
+                    },
+                    onClose = { showRichTextPanel = false }
+                )
+            }
         }
 
         // === Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /

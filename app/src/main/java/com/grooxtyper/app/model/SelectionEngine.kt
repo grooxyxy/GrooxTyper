@@ -151,6 +151,83 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
+     * Sampel piksel turunan untuk wand: kanvas 720x16000 = 11.5 juta piksel
+     * (46MB) yang membuat wand berat & lambat. Wand cukup presisi di
+     * [maxDim] piksel sisi terpanjang, jadi snapshot dikecilkan sekali di
+     * sini; hasil path dikembalikan dalam koordinat KANVAS penuh lewat
+     * [WandSample.scale].
+     */
+    class WandSample(
+        val px: IntArray,
+        val w: Int,
+        val h: Int,
+        /** Faktor penskalaan: koordinat kanvas = koordinat sampel * [scale]. */
+        val scale: Float
+    ) {
+        fun mapX(x: Int): Int = (x * scale).toInt()
+        fun mapY(y: Int): Int = (y * scale).toInt()
+        fun toCanvasX(x: Float): Float = x * scale
+        fun toCanvasY(y: Float): Float = y * scale
+    }
+
+    companion object {
+        /** Batas sisi terpanjang snapshot wand (480 = ~230k piksel, cepat). */
+        const val WAND_MAX_DIM = 480
+
+        /** Turunkan piksel kanvas ke [maxDim] sisi terpanjang (rata-rata 2x2). */
+        fun downsampleForWand(
+            px: IntArray,
+            w: Int,
+            h: Int,
+            maxDim: Int = WAND_MAX_DIM
+        ): WandSample {
+            val longSide = maxOf(w, h)
+            if (longSide <= maxDim || px.size < w * h) return WandSample(px, w, h, 1f)
+            val s = maxDim.toFloat() / longSide
+            val dw = maxOf(8, (w * s).toInt())
+            val dh = maxOf(8, (h * s).toInt())
+            val out = downsampleGrayStatic(px, w, h, dw, dh)
+            return WandSample(out, dw, dh, 1f / s)
+        }
+
+        private fun downsampleGrayStatic(
+            src: IntArray,
+            sw: Int,
+            sh: Int,
+            dw: Int,
+            dh: Int
+        ): IntArray {
+            val out = IntArray(dw * dh)
+            for (y in 0 until dh) {
+                val sy0 = (y * sh) / dh
+                val sy1 = minOf(maxOf(((y + 1) * sh) / dh, sy0 + 1), sh)
+                for (x in 0 until dw) {
+                    val sx0 = (x * sw) / dw
+                    val sx1 = minOf(maxOf(((x + 1) * sw) / dw, sx0 + 1), sw)
+                    var r = 0
+                    var g = 0
+                    var b = 0
+                    var n = 0
+                    for (yy in sy0 until sy1) {
+                        val base = yy * sw
+                        for (xx in sx0 until sx1) {
+                            val p = src[base + xx]
+                            r += (p shr 16) and 0xFF
+                            g += (p shr 8) and 0xFF
+                            b += p and 0xFF
+                            n++
+                        }
+                    }
+                    val k = maxOf(1, n)
+                    out[y * dw + x] = -16777216 or
+                        ((r / k) shl 16) or ((g / k) shl 8) or (b / k)
+                }
+            }
+            return out
+        }
+    }
+
+    /**
      * Magic Wand: banjir (flood fill) warna mirip dari titik seed, lalu
      * batasnya ditelusur jadi Path (marching squares) dan ditambah sebagai
      * SATU area baru. Konektivitas 4-arah (lebih ketat, tidak bocor lewat
@@ -158,6 +235,8 @@ class SelectionEngine(val width: Int, val height: Int) {
      *
      * @param px piksel ARGB baris-mayor selebar [w].
      * @param maxDist jarak Euclidean RGB maksimum dari warna seed.
+     * @param outScale pengali koordinat hasil (1f = Resolution asli; pakai
+     *   1/factor bila [px] berasal dari [downsampleForWand]).
      * @return true bila satu area berhasil ditambah.
      */
     fun selectWand(
@@ -166,7 +245,8 @@ class SelectionEngine(val width: Int, val height: Int) {
         h: Int,
         sx: Int,
         sy: Int,
-        maxDist: Float
+        maxDist: Float,
+        outScale: Float = 1f
     ): Boolean {
         if (sx !in 0 until w || sy !in 0 until h) return false
         if (px.size < w * h) return false
@@ -226,7 +306,7 @@ class SelectionEngine(val width: Int, val height: Int) {
             }
         }
         if (count < 4) return false
-        val path = traceContour(mask, w, h) ?: return false
+        val path = traceContour(mask, w, h, outScale) ?: return false
         addRegion(path)
         return true
     }
@@ -277,18 +357,23 @@ class SelectionEngine(val width: Int, val height: Int) {
         offX: Int,
         offY: Int
     ): List<RectF>? {
-        // Downsample area raksasa (batas 1.5MP) agar erosi+BFS tetap cepat.
-        var scale = 1f
+        // 1) Downsample area raksasa (batas 1.2MP) agar transformasi jarak +
+        //    labeling + BFS tetap cepat di kanvas 720x16000.
+        val scale: Float
+        var w: Int
+        var h: Int
         var dat = src
-        var w = bw
-        var h = bh
-        if (bw.toLong() * bh > 1_500_000L) {
+        if (bw.toLong() * bh > 1_200_000L) {
             scale = 0.5f
             w = maxOf(16, (bw * scale).toInt())
             h = maxOf(16, (bh * scale).toInt())
             dat = downsampleGray(src, bw, bh, w, h)
+        } else {
+            scale = 1f
+            w = bw
+            h = bh
         }
-        // Mask interior kertas (teks & garis outline = gelap, dikecualikan).
+        // 2) Mask interior kertas (teks & garis outline = gelap, dikecualikan).
         val mask = BooleanArray(w * h)
         var maskCount = 0
         for (i in 0 until w * h) {
@@ -298,66 +383,54 @@ class SelectionEngine(val width: Int, val height: Int) {
                 (p shr 8) and 0xFF,
                 p and 0xFF
             )
-            if (m > 200) {
+            if (m > 195) {
                 mask[i] = true
                 maskCount++
             }
         }
-        if (maskCount < 200) return null
-        // 1) KONTRAKSI: erosi 8-neighborhood sampai mask terpisah ≥2.
-        var cur = mask
-        var labels: IntArray? = null
-        var numLabels = 0
-        // Iterasi dibatasi: leher tipis pecah dalam puluhan iterasi;
-        // lebih dari itu berarti satu blob (berhenti, jangan habiskan CPU).
-        val maxIter = minOf(200, minOf(w, h) / 2)
-        var iter = 0
-        var split = false
-        while (iter < maxIter) {
-            val next = BooleanArray(w * h)
-            var any = false
-            for (y in 0 until h) {
-                for (x in 0 until w) {
-                    val i = y * w + x
-                    if (!cur[i]) continue
-                    var all = true
-                    outer@ for (dy in -1..1) {
-                        for (dx in -1..1) {
-                            val nx = x + dx
-                            val ny = y + dy
-                            if (nx !in 0 until w || ny !in 0 until h || !cur[ny * w + nx]) {
-                                all = false
-                                break@outer
-                            }
-                        }
-                    }
-                    if (all) {
-                        next[i] = true
-                        any = true
-                    }
-                }
+        if (maskCount < 120) return null
+        // 3) KONTRAKSI lewat TRANSFORMASI JARAK (chamfer) + pencarian biner.
+        //    Versi lama mengikis 1 piksel per iterasi (ratusan iterasi) dan
+        //    langsung diterima begitu muncul 2 komponen — termasuk noise kecil,
+        //    sehingga seed noise ikut tumbuh dan hasil belah kacau.
+        //    Sekarang: erosi radius r = { jarak > r }, cari r TERKECIL yang
+        //    menyisakan >=2 komponen besar (masing-masing >=4% isi) → maksimal
+        //    pemisahan, hanya ~7 labeling.
+        val dist = distanceTransform(mask, w, h)
+        var maxD = 0
+        for (d in dist) if (d > maxD) maxD = d
+        var seedLabels: IntArray? = null
+        var seedA = 0
+        var seedB = 0
+        var lo = 0
+        var hi = maxD
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            val er = erodeByDistance(dist, mid)
+            val (lab, cnt) = labelComponents(er, w, h)
+            val top = topLabels(lab, cnt, 2, 4)
+            if (top.size == 2) {
+                seedLabels = lab
+                seedA = top[0]
+                seedB = top[1]
+                hi = mid - 1
+            } else {
+                lo = mid + 1
             }
-            if (!any) return null // habis sebelum terpisah = satu blob utuh
-            val (lab, cnt) = labelComponents(next, w, h)
-            if (cnt >= 2) {
-                labels = lab
-                numLabels = cnt
-                split = true
-                break
-            }
-            cur = next
-            iter++
         }
-        val seedLabels = labels ?: return null
-        if (!split || numLabels < 2) return null
-        // 2) WATERSHED: tumbuhkan semua seed serentak di dalam mask asli.
-        // Tiap piksel diklaim seed yang pertama sampai (BFS lapis); garis
-        // tempat dua front bertemu = titik terakhir bubble bersentuhan.
+        val seeds = seedLabels ?: return null
+        // 4) WATERSHED: tumbuhkan HANYA 2 seed terpilih di dalam mask asli.
+        //    Tiap piksel diklaim front yang lebih dulu sampai; garis tempat
+        //    dua front bertemu = titik terakhir kedua bubble bersentuhan.
         val final = IntArray(w * h)
         val queue = ArrayDeque<Int>()
         for (i in 0 until w * h) {
-            if (seedLabels[i] > 0 && mask[i]) {
-                final[i] = seedLabels[i]
+            val l = seeds[i]
+            if (l == seedA) {
+                final[i] = 1
+                queue.addLast(i)
+            } else if (l == seedB) {
+                final[i] = 2
                 queue.addLast(i)
             }
         }
@@ -366,42 +439,30 @@ class SelectionEngine(val width: Int, val height: Int) {
             val x = i % w
             val y = i / w
             val lab = final[i]
-            for (dy in -1..1) {
-                for (dx in -1..1) {
-                    if (dx == 0 && dy == 0) continue
-                    val nx = x + dx
-                    val ny = y + dy
-                    if (nx !in 0 until w || ny !in 0 until h) continue
-                    val j = ny * w + nx
-                    if (mask[j] && final[j] == 0) {
-                        final[j] = lab
-                        queue.addLast(j)
-                    }
-                }
-            }
+            // 4-arah: mencegah front bocor diagonal lewat celah 1px.
+            if (x > 0) growIfFree(final, mask, queue, i - 1, lab)
+            if (x < w - 1) growIfFree(final, mask, queue, i + 1, lab)
+            if (y > 0) growIfFree(final, mask, queue, i - w, lab)
+            if (y < h - 1) growIfFree(final, mask, queue, i + w, lab)
         }
-        // Ambil 2 label terbesar; tiap-tiapnya wajib >5% isi (bukan noise).
-        val counts = IntArray(numLabels + 1)
-        for (v in final) if (v in 1..numLabels) counts[v]++
-        val top = (1..numLabels).sortedByDescending { counts[it] }.take(2)
-        if (top.size < 2 || counts[top[1]] * 20 < maskCount) return null
-        // Bbox tiap label + pad, kembali ke koordinat kanvas penuh.
+        // 5) Bbox tiap wilayah, kembali ke koordinat kanvas penuh.
+        val pad = 4
         fun labelBox(id: Int): RectF? {
             var l = w
             var t = h
             var r = -1
             var b = -1
             for (y in 0 until h) {
+                val rowBase = y * w
                 for (x in 0 until w) {
-                    if (final[y * w + x] != id) continue
+                    if (final[rowBase + x] != id) continue
                     if (x < l) l = x
                     if (x > r) r = x
                     if (y < t) t = y
                     if (y > b) b = y
                 }
             }
-            if (r < 0 || r - l < 8 || b - t < 8) return null
-            val pad = 4
+            if (r < 0 || r - l < 6 || b - t < 6) return null
             return RectF(
                 (offX + (l - pad) / scale).toFloat(),
                 (offY + (t - pad) / scale).toFloat(),
@@ -409,10 +470,104 @@ class SelectionEngine(val width: Int, val height: Int) {
                 (offY + (b + pad) / scale).toFloat()
             )
         }
-        val a = labelBox(top[0])
-        val c = labelBox(top[1])
+        val a = labelBox(1)
+        val c = labelBox(2)
         if (a == null || c == null) return null
         return listOf(a, c)
+    }
+
+    /** Klaim satu piksel untuk front [lab] bila masih kosong dan di dalam mask. */
+    private fun growIfFree(
+        final: IntArray,
+        mask: BooleanArray,
+        queue: ArrayDeque<Int>,
+        j: Int,
+        lab: Int
+    ) {
+        if (mask[j] && final[j] == 0) {
+            final[j] = lab
+            queue.addLast(j)
+        }
+    }
+
+    /**
+     * Jarak piksel ke tepi mask (di dalam = besar). Chamfer 3-4 dua arah:
+     * cukup untuk erosi & "{jarak > r}" tanpa filter mahal.
+     */
+    private fun distanceTransform(mask: BooleanArray, w: Int, h: Int): IntArray {
+        val big = w + h + 8
+        val d = IntArray(w * h) { i -> if (mask[i]) big else 0 }
+        // maju
+        for (y in 0 until h) {
+            val rowBase = y * w
+            for (x in 0 until w) {
+                val i = rowBase + x
+                if (d[i] == 0) continue
+                var m = d[i]
+                if (x > 0) m = minOf(m, d[i - 1] + 3)
+                if (y > 0) {
+                    m = minOf(m, d[i - w] + 3)
+                    if (x > 0) m = minOf(m, d[i - w - 1] + 4)
+                    if (x < w - 1) m = minOf(m, d[i - w + 1] + 4)
+                }
+                d[i] = m
+            }
+        }
+        // mundur
+        for (y in h - 1 downTo 0) {
+            val rowBase = y * w
+            for (x in w - 1 downTo 0) {
+                val i = rowBase + x
+                if (d[i] == 0) continue
+                var m = d[i]
+                if (x < w - 1) m = minOf(m, d[i + 1] + 3)
+                if (y < h - 1) {
+                    m = minOf(m, d[i + w] + 3)
+                    if (x < w - 1) m = minOf(m, d[i + w + 1] + 4)
+                    if (x > 0) m = minOf(m, d[i + w - 1] + 4)
+                }
+                d[i] = m
+            }
+        }
+        return d
+    }
+
+    /** Mask hasil erosi: hanya piksel yang jaraknya lebih besar dari [radius]. */
+    private fun erodeByDistance(dist: IntArray, radius: Int): BooleanArray {
+        val out = BooleanArray(dist.size)
+        for (i in dist.indices) out[i] = dist[i] > radius
+        return out
+    }
+
+    /**
+     * [k] label terbesar pada peta label, tiap-tiapnya minimal [minPct] persen
+     * dari total piksel berlabel. Menyaring noise kecil yang tak layak jadi
+     * seed bubble.
+     */
+    private fun topLabels(
+        labels: IntArray,
+        count: Int,
+        k: Int,
+        minPct: Int
+    ): IntArray {
+        if (count < k) return IntArray(0)
+        val sizes = IntArray(count + 1)
+        var total = 0
+        for (v in labels) {
+            if (v in 1..count) {
+                sizes[v]++
+                total++
+            }
+        }
+        if (total <= 0) return IntArray(0)
+        val need = total * minPct / 100
+        val order = (1..count).sortedByDescending { sizes[it] }
+        val out = ArrayList<Int>(k)
+        for (id in order) {
+            if (out.size >= k) break
+            if (sizes[id] >= need) out.add(id) else break
+        }
+        return out.toIntArray()
     }
 
     /** Downsample rata-rata (pertahankan kecerahan) untuk area raksasa. */
@@ -523,12 +678,17 @@ class SelectionEngine(val width: Int, val height: Int) {
      * tiap segmen jadi sub-path sendiri — cukup untuk overlay marching-ants,
      * union, dan uji Region). Koordinat = tepi piksel persis.
      */
-    private fun traceContour(mask: BooleanArray, w: Int, h: Int): Path? {
+    private fun traceContour(
+        mask: BooleanArray,
+        w: Int,
+        h: Int,
+        scale: Float = 1f
+    ): Path? {
         val path = Path()
         var segs = 0
         fun seg(x1: Float, y1: Float, x2: Float, y2: Float) {
-            path.moveTo(x1, y1)
-            path.lineTo(x2, y2)
+            path.moveTo(x1 * scale, y1 * scale)
+            path.lineTo(x2 * scale, y2 * scale)
             segs++
         }
         for (y in 0 until h - 1) {

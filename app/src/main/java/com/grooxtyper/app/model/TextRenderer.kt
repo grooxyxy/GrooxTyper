@@ -26,6 +26,11 @@ object TextRenderer {
 
     fun render(canvas: Canvas, box: TextBox) {
         if (box.text.isEmpty()) return
+        // Gaya per kata (span) atau kotak seleksi auto-fit: jalur kaya.
+        if (box.hasSpans() || box.isFrame()) {
+            renderRich(canvas, box)
+            return
+        }
         canvas.save()
         canvas.translate(box.position.x, box.position.y)
         if (box.rotation != 0f) canvas.rotate(box.rotation)
@@ -65,27 +70,9 @@ object TextRenderer {
         }
         val contentH = lineH * lines.size
 
-        // Perspektif (keystone ala free-transform): petakan 4 sudut konten ke
-        // trapesium. perspX menyempitkan tepi atas/bawah, perspY tepi kiri/kanan.
-        if (box.perspX != 0f || box.perspY != 0f) {
-            val hw = contentW / 2f
-            val hh = contentH / 2f
-            if (hw > 0.5f && hh > 0.5f) {
-                val dxT = box.perspX.coerceIn(-1f, 1f) * hw
-                val dyL = box.perspY.coerceIn(-1f, 1f) * hh
-                val src = floatArrayOf(-hw, -hh, hw, -hh, hw, hh, -hw, hh)
-                val dst = floatArrayOf(
-                    -hw + dxT, -hh + dyL,
-                    hw - dxT, -hh - dyL,
-                    hw + dxT, hh + dyL,
-                    -hw - dxT, hh - dyL
-                )
-                val persp = android.graphics.Matrix()
-                if (persp.setPolyToPoly(src, 0, dst, 0, 4)) {
-                    canvas.concat(persp)
-                }
-            }
-        }
+        // Perspektif: petakan 4 sudut konten ke trapesium/homografi bebas
+        // (sumber tunggal: PerspectiveGrid — sama dengan overlay grid).
+        PerspectiveGrid.matrix(box, contentW, contentH)?.let { canvas.concat(it) }
 
         val layouts = lines.mapIndexed { i, line ->
             val baseline = -contentH / 2f - fm.ascent + i * lineH
@@ -160,6 +147,166 @@ object TextRenderer {
             drawDecorations(canvas, layouts, widths, box, fill, fm)
         }
         canvas.restore()
+    }
+
+    /**
+     * Jalur kaya: gaya per kata (span) dan/atau kotak seleksi auto-fit.
+     * Laying out memakai [RichTextLayout] sehingga baris tetap rapi meski
+     * tiap kata punya font, warna, shadow, dan outline berbeda; teks di
+     * dalam frame otomatis diperkecil sampai muat.
+     */
+    private fun renderRich(canvas: Canvas, box: TextBox) {
+        val lay = RichTextLayout.layout(box)
+        if (lay.lines.isEmpty()) return
+        canvas.save()
+        canvas.translate(box.position.x, box.position.y)
+        if (box.rotation != 0f) canvas.rotate(box.rotation)
+        val fr = box.frameRectPx()
+        val areaW = fr?.width() ?: lay.contentW
+        val areaH = fr?.height() ?: lay.contentH
+        PerspectiveGrid.matrix(box, areaW, areaH)?.let { canvas.concat(it) }
+        val wordExtra = box.wordSpacing * box.scale
+        val shader = if (box.fillType == TextFillType.GRADIENT) {
+            gradientShader(box, areaW, areaH)
+        } else null
+        var y = -lay.contentH / 2f
+        for (line in lay.lines) {
+            val lh = (line.descent - line.ascent) + box.lineSpacing * box.scale
+            val baseline = y - line.ascent
+            val x0 = when (box.align) {
+                TextAlignMode.LEFT -> -areaW / 2f
+                TextAlignMode.CENTER -> -line.width / 2f
+                TextAlignMode.RIGHT -> areaW / 2f - line.width
+            }
+            if (line.runs.isNotEmpty()) {
+                // Outer glow dulu (cahaya di belakang glif).
+                box.glow?.let { g ->
+                    val gp = richGlowPaint(box, g, shader)
+                    drawRichLine(canvas, box, line, x0, baseline, gp, wordExtra)
+                }
+                when (box.strokePosition) {
+                    StrokePosition.OUTSIDE -> {
+                        richOutlinePaint(box, line, shader)?.let { op ->
+                            drawRichLine(canvas, box, line, x0, baseline, op, wordExtra)
+                        }
+                        drawRichLine(canvas, box, line, x0, baseline, richFillPaint(box, line, shader, true), wordExtra)
+                    }
+                    else -> {
+                        drawRichLine(canvas, box, line, x0, baseline, richFillPaint(box, line, shader, true), wordExtra)
+                        if (box.strokePosition == StrokePosition.CENTER) {
+                            richOutlinePaint(box, line, shader)?.let { op ->
+                                drawRichLine(canvas, box, line, x0, baseline, op, wordExtra)
+                            }
+                        }
+                    }
+                }
+            }
+            y += lh
+        }
+        canvas.restore()
+    }
+
+    /** Kursor x run demi run dalam satu baris, lalu gambar. */
+    private fun drawRichLine(
+        canvas: Canvas,
+        box: TextBox,
+        line: RichTextLayout.Line,
+        x0: Float,
+        baseline: Float,
+        paintFor: (RichTextLayout.Run) -> Paint,
+        wordExtra: Float
+    ) {
+        var x = x0
+        val last = line.runs.size - 1
+        for (i in line.runs.indices) {
+            val r = line.runs[i]
+            if (r.text.isNotEmpty()) {
+                canvas.drawText(r.text, x, baseline, paintFor(r))
+            }
+            x += r.width
+            if (r.wordEnd && i < last) x += wordExtra
+        }
+    }
+
+    /** Paint isi per run: warna/outline/shadow mengikuti span bila ada. */
+    private fun richFillPaint(
+        box: TextBox,
+        line: RichTextLayout.Line,
+        shader: Shader?,
+        withShadow: Boolean
+    ): (RichTextLayout.Run) -> Paint = { r ->
+        val p = Paint(r.paint)
+        p.style = Paint.Style.FILL
+        val col = r.style?.color
+        p.color = when {
+            col != null -> withAlpha(col, 1f)
+            shader != null -> Color.WHITE
+            else -> withAlpha(box.color, 1f)
+        }
+        p.shader = if (col == null) shader else null
+        p.alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+        if (withShadow) applyRichShadow(box, r, p) else p.clearShadowLayer()
+        p
+    }
+
+    /** Paint outline per run (null bila seluruh baris tanpa outline). */
+    private fun richOutlinePaint(
+        box: TextBox,
+        line: RichTextLayout.Line,
+        shader: Shader?
+    ): ((RichTextLayout.Run) -> Paint)? {
+        val any = line.runs.any {
+            val w = it.style?.outlineWidth ?: box.outlineWidth
+            w > 0f
+        }
+        if (!any) return null
+        return { r ->
+            val w = (r.style?.outlineWidth ?: box.outlineWidth) * box.scale
+            val oc = r.style?.outlineColor ?: box.outlineColor
+            Paint(r.paint).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = maxOf(0.5f, w)
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+                shader = null
+                color = withAlpha(oc, box.strokeOpacity)
+                alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                clearShadowLayer()
+            }
+        }
+    }
+
+    private fun richGlowPaint(
+        box: TextBox,
+        g: TextGlowSpec,
+        shader: Shader?
+    ): (RichTextLayout.Run) -> Paint = { r ->
+        Paint(r.paint).apply {
+            style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
+            strokeWidth = g.spread * box.scale
+            strokeJoin = Paint.Join.ROUND
+            shader = null
+            color = Color.WHITE
+            alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+            setShadowLayer(
+                maxOf(1f, g.blur * box.scale), 0f, 0f,
+                withAlpha(g.color, g.opacity)
+            )
+        }
+    }
+
+    /** Bayangan per run: span boleh override warna/offset/blur. */
+    private fun applyRichShadow(box: TextBox, r: RichTextLayout.Run, p: Paint) {
+        val s = box.shadow
+        val color = r.style?.shadowColor ?: s?.color
+        if (color == null || s == null) {
+            p.clearShadowLayer()
+            return
+        }
+        val dx = (r.style?.shadowDx ?: s.dx) * box.scale
+        val dy = (r.style?.shadowDy ?: s.dy) * box.scale
+        val blur = (r.style?.shadowBlur ?: s.blur) * box.scale
+        p.setShadowLayer(blur, dx, dy, withAlpha(color, s.opacity))
     }
 
     /**
@@ -269,22 +416,39 @@ object TextRenderer {
         val shadowDy = box.shadow?.let { it.dy * box.scale } ?: 0f
 
         val baseline = -fm.ascent - fs * 0.15f
-        for (g in glyphs) {
+        for (gi in glyphs.indices) {
+            val g = glyphs[gi]
             if (g.ch == " ") continue
+            // Gaya per kata juga berlaku di mode SFX (warna + pengali
+            // ukuran), jadi "SFX + serif merah" tetap mungkin.
+            val sp = box.spanAt(gi)
+            val mul = sp?.fontSizeMul ?: 1f
+            val off = -g.w / (2f * g.sizeMul * mul)
+            val glyphFill = if (sp?.color != null) {
+                Paint(fill).apply { color = withAlpha(sp.color, 1f) }
+            } else fill
+            val glyphOutline = if (sp?.outlineWidth != null || sp?.outlineColor != null) {
+                outline?.let {
+                    Paint(it).apply {
+                        strokeWidth = (sp.outlineWidth ?: box.outlineWidth) * box.scale
+                        color = withAlpha(sp.outlineColor ?: box.outlineColor, box.strokeOpacity)
+                    }
+                }
+            } else outline
             canvas.save()
             canvas.translate(g.cx, baseline + g.dy)
             if (g.rot != 0f) canvas.rotate(g.rot)
-            canvas.scale(g.sizeMul, g.sizeMul)
-            glowPaint?.let { canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, it) }
+            canvas.scale(g.sizeMul * mul, g.sizeMul * mul)
+            glowPaint?.let { canvas.drawText(g.ch, off, 0f, it) }
             if (shadowColor != null) {
-                val sh = Paint(fill).apply {
+                val sh = Paint(glyphFill).apply {
                     shader = null
                     setShadowLayer(shadowBlur, shadowDx, shadowDy, shadowColor)
                 }
-                canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, sh)
+                canvas.drawText(g.ch, off, 0f, sh)
             }
-            outline?.let { canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, it) }
-            canvas.drawText(g.ch, -g.w / (2f * g.sizeMul), 0f, fill)
+            glyphOutline?.let { canvas.drawText(g.ch, off, 0f, it) }
+            canvas.drawText(g.ch, off, 0f, glyphFill)
             canvas.restore()
         }
     }

@@ -108,7 +108,6 @@ fun TextEditorPanel(
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
     onOpenPerspectiveGrid: () -> Unit = {},
-    onOpenBulkEdit: () -> Unit = {},
     // Mode pipet: screen mendaftarkan konsumer warna (dipanggil saat user
     // mengetuk kanvas) untuk target warna yang sedang dipilih di panel ini.
     onStartEyedrop: ((Int) -> Unit) -> Unit = {},
@@ -318,14 +317,6 @@ fun TextEditorPanel(
                         Icon(Icons.Default.Delete, contentDescription = "Hapus", tint = Color(0xFFEF5350))
                     }
                     Button(
-                        onClick = onOpenBulkEdit,
-                        colors = ButtonDefaults.buttonColors(containerColor = PanelLight),
-                        shape = RoundedCornerShape(10.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Text("Massal", color = Color.White, fontSize = 12.sp)
-                    }
-                    Button(
                         onClick = onClose,
                         colors = ButtonDefaults.buttonColors(containerColor = Accent),
                         shape = RoundedCornerShape(10.dp)
@@ -383,7 +374,9 @@ fun TextEditorPanel(
                     0 -> WriteTab(
                         text = text,
                         onText = {
-                            text = it; box.text = it.ifEmpty { " " }; push()
+                            // setTextKeepingSpans: span per kata ikut terpeta
+                            // ulang saat teks diketik (gaya kata tak hilang).
+                            text = it; box.setTextKeepingSpans(it.ifEmpty { " " }); push()
                             // Prefix ala TypeR: "[SFX]..." langsung pakai stylenya.
                             if (onCheckPrefix(box)) { styleVersion++; fontTick++ }
                         },

@@ -15,7 +15,112 @@ import kotlin.math.sin
 
 enum class TextAlignMode { LEFT, CENTER, RIGHT }
 
-enum class TextHandle { NONE, BODY, SCALE, ROTATE, WIDTH_LEFT, WIDTH_RIGHT }
+enum class TextHandle { NONE, BODY, SCALE, ROTATE, WIDTH_LEFT, WIDTH_RIGHT, FRAME }
+
+/**
+ * Perspektif bebas: tiap sudut konten digeser sendiri (satuan dinormalisasi
+ * terhadap setengah lebar/tinggi). 0 = kotak lurus, 0.4 = geser 40% dari
+ * setengah sisi. Nilai di luar -1..1 tetap diizinkan (bisa 1.6) untuk efek
+ * dramatis. Hasilnya homografi 4 titik, jadi ARAH perspektif bisa diatur
+ * leluasa - bukan lagi hanya menyempitkan tepi atas/bawah seperti versi lama.
+ */
+data class PerspSpec(
+    var tlX: Float = 0f,
+    var tlY: Float = 0f,
+    var trX: Float = 0f,
+    var trY: Float = 0f,
+    var brX: Float = 0f,
+    var brY: Float = 0f,
+    var blX: Float = 0f,
+    var blY: Float = 0f
+) {
+    fun clampAll() {
+        tlX = tlX.coerceIn(-1.6f, 1.6f); tlY = tlY.coerceIn(-1.6f, 1.6f)
+        trX = trX.coerceIn(-1.6f, 1.6f); trY = trY.coerceIn(-1.6f, 1.6f)
+        brX = brX.coerceIn(-1.6f, 1.6f); brY = brY.coerceIn(-1.6f, 1.6f)
+        blX = blX.coerceIn(-1.6f, 1.6f); blY = blY.coerceIn(-1.6f, 1.6f)
+    }
+
+    fun isFlat(): Boolean = tlX == 0f && tlY == 0f && trX == 0f && trY == 0f &&
+        brX == 0f && brY == 0f && blX == 0f && blY == 0f
+
+    fun copyFrom(o: PerspSpec) {
+        tlX = o.tlX; tlY = o.tlY; trX = o.trX; trY = o.trY
+        brX = o.brX; brY = o.brY; blX = o.blX; blY = o.blY
+    }
+
+    companion object {
+        /** Dari keystone lama (perspX = tepi atas/bawah, perspY = kiri/kanan). */
+        fun fromKeystone(perspX: Float, perspY: Float): PerspSpec {
+            val x = perspX.coerceIn(-1f, 1f)
+            val y = perspY.coerceIn(-1f, 1f)
+            return PerspSpec(
+                tlX = x, tlY = y,
+                trX = -x, trY = -y,
+                brX = x, brY = y,
+                blX = -x, blY = -y
+            )
+        }
+    }
+}
+
+/**
+ * Gaya khusus satu rentang karakter di dalam teks (kata demi kata).
+ * Semua field nullable: null = pakai gaya kotak (bawaan). Inilah yang
+ * membuat "Ayo main sama om" bisa punya kata berbeda-beda: Ayo dan main
+ * serif merah bold + shadow putih, sedangkan sama dan om script putih
+ * italic + outline hitam.
+ */
+data class SpanStyle(
+    var fontName: String? = null,
+    var typeface: Typeface? = null,
+    /** Pengali ukuran font (1.2 = 20 persen lebih besar). */
+    var fontSizeMul: Float = 1f,
+    var color: Int? = null,
+    var bold: Boolean? = null,
+    var italic: Boolean? = null,
+    var outlineWidth: Float? = null,
+    var outlineColor: Int? = null,
+    var shadowColor: Int? = null,
+    var shadowDx: Float? = null,
+    var shadowDy: Float? = null,
+    var shadowBlur: Float? = null,
+    var uppercase: Boolean? = null,
+    var underline: Boolean? = null,
+    var strikethrough: Boolean? = null
+) {
+    /** True bila tak ada satu pun override (span tak berpengaruh). */
+    fun isBlank(): Boolean = fontName == null && typeface == null &&
+        fontSizeMul == 1f && color == null && bold == null && italic == null &&
+        outlineWidth == null && outlineColor == null && shadowColor == null &&
+        shadowDx == null && shadowDy == null && shadowBlur == null &&
+        uppercase == null && underline == null && strikethrough == null
+
+    /** Gabung override di atas [base] (field yang terisi menang). */
+    fun over(base: SpanStyle): SpanStyle {
+        val a = this
+        return SpanStyle(
+            fontName = a.fontName ?: base.fontName,
+            typeface = a.typeface ?: base.typeface,
+            fontSizeMul = if (a.fontSizeMul != 1f) a.fontSizeMul else base.fontSizeMul,
+            color = a.color ?: base.color,
+            bold = a.bold ?: base.bold,
+            italic = a.italic ?: base.italic,
+            outlineWidth = a.outlineWidth ?: base.outlineWidth,
+            outlineColor = a.outlineColor ?: base.outlineColor,
+            shadowColor = a.shadowColor ?: base.shadowColor,
+            shadowDx = a.shadowDx ?: base.shadowDx,
+            shadowDy = a.shadowDy ?: base.shadowDy,
+            shadowBlur = a.shadowBlur ?: base.shadowBlur,
+            uppercase = a.uppercase ?: base.uppercase,
+            underline = a.underline ?: base.underline,
+            strikethrough = a.strikethrough ?: base.strikethrough
+        )
+    }
+}
+
+/** Rentang [start, end) pada [TextBox.text] yang punya [style] sendiri. */
+data class TextSpan(val start: Int, val end: Int, val style: SpanStyle)
 
 enum class TextFillType { SOLID, GRADIENT }
 
@@ -129,10 +234,145 @@ class TextBox(
      * paragraph mempersempit box + wrap (keduanya bisa aktif bersamaan).
      */
     var boxWidth: Float? = null,
+    // Tinggi kotak paragraph (px kanvas pada scale=1). Ada bersama
+    // [boxWidth] = KOTAK SELEKSI ala Photoshop: teks di-wrap ke lebar
+    // dan (bila [autoFit]) ukuran font dikecilkan sampai muat di tinggi.
+    var boxHeight: Float? = null,
+    // Auto-fit: font mengecil sampai seluruh teks muat di dalam kotak.
+    var autoFit: Boolean = false,
+    // Perspektif bebas 4 sudut (null = pakai keystone perspX/perspY).
+    var persp: PerspSpec? = null,
+    // Gaya per rentang kata (lihat SpanStyle/TextSpan). null/empty = teks
+    // satu gaya seperti biasa.
+    var spans: List<TextSpan>? = null,
     // Mode SFX (lihat SfxSpec): null = teks baris biasa.
     var sfx: SfxSpec? = null
 ) {
     fun isParagraph(): Boolean = boxWidth != null
+
+    /** Kotak seleksi Photoshop (lebar + tinggi + auto-fit)? */
+    fun isFrame(): Boolean = boxWidth != null && boxHeight != null && autoFit
+
+    /** True bila ada gaya per kata yang perlu renderer kaya. */
+    fun hasSpans(): Boolean = !spans.isNullOrEmpty()
+
+    /** Perspektif aktif: eksplisit bila ada, kalau tidak dari keystone lama. */
+    fun activePersp(): PerspSpec =
+        persp ?: PerspSpec.fromKeystone(perspX, perspY)
+
+    /** Sinkronkan persp eksplisit dengan keystone lama (dipakai slider cepat). */
+    fun setPerspFromKeystone(x: Float, y: Float) {
+        perspX = x.coerceIn(-1f, 1f)
+        perspY = y.coerceIn(-1f, 1f)
+        persp = PerspSpec.fromKeystone(perspX, perspY)
+    }
+
+    /** Ubah ke kotak seleksi (lebar x tinggi) di pusat [center]. */
+    fun setFrame(center: Offset, wCanvas: Float, hCanvas: Float) {
+        val safeScale = scale.coerceAtLeast(0.05f)
+        position = center
+        boxWidth = (wCanvas / safeScale).coerceIn(24f, 8000f)
+        boxHeight = (hCanvas / safeScale).coerceIn(12f, 8000f)
+        autoFit = true
+    }
+
+    /** Persegi kotak seleksi dalam koordinat kanvas (null bila bukan frame). */
+    fun frameRectPx(): RectF? {
+        val bw = boxWidth
+        val bh = boxHeight
+        if (bw == null || bh == null) return null
+        val w = bw * scale
+        val h = bh * scale
+        return RectF(position.x - w / 2f, position.y - h / 2f, position.x + w / 2f, position.y + h / 2f)
+    }
+
+    /** Ubah teks dengan memetakan ulang span lewat diff prefix/suffix. */
+    fun setTextKeepingSpans(newText: String) {
+        if (newText == text) return
+        val old = text
+        if (spans.isNullOrEmpty()) {
+            text = newText
+            return
+        }
+        var pre = 0
+        val maxPre = minOf(old.length, newText.length)
+        while (pre < maxPre && old[pre] == newText[pre]) pre++
+        var suf = 0
+        while (suf < maxPre - pre &&
+            old[old.length - 1 - suf] == newText[newText.length - 1 - suf]
+        ) suf++
+        val delta = newText.length - old.length
+        val mapped = ArrayList<TextSpan>(spans!!.size)
+        for (sp in spans!!) {
+            val s = if (sp.start >= old.length - suf) sp.start + delta else sp.start
+            val e = if (sp.end >= old.length - suf) sp.end + delta else sp.end
+            val ns = s.coerceIn(0, newText.length)
+            val ne = e.coerceIn(ns, newText.length)
+            if (ne > ns) mapped.add(TextSpan(ns, ne, sp.style))
+        }
+        spans = mapped
+        text = newText
+    }
+
+    /** Style pada posisi karakter [i] (null = pakai gaya kotak). */
+    fun spanAt(i: Int): SpanStyle? {
+        val list = spans ?: return null
+        for (sp in list) if (i >= sp.start && i < sp.end) return sp.style
+        return null
+    }
+
+    /**
+     * Terapkan [style] ke rentang [start]..[endExclusive] (kata terpilih),
+     * memotong span yang ada. Gaya kotak jadi dasar, jadi "hapus format
+     * kata" cukup mengosongkan override.
+     */
+    fun applySpanStyle(start: Int, endExclusive: Int, style: SpanStyle) {
+        val s = start.coerceIn(0, text.length)
+        val e = endExclusive.coerceIn(s, text.length)
+        if (e <= s) return
+        val kept = ArrayList<TextSpan>()
+        for (sp in spans ?: emptyList()) {
+            // Potong bagian di luar [s, e).
+            if (sp.end <= s || sp.start >= e) {
+                kept.add(sp)
+                continue
+            }
+            if (sp.start < s) kept.add(TextSpan(sp.start, s, sp.style))
+            if (sp.end > e) kept.add(TextSpan(e, sp.end, sp.style))
+        }
+        if (!style.isBlank()) {
+            kept.add(TextSpan(s, e, style))
+        }
+        kept.sortBy { it.start }
+        spans = if (kept.isEmpty()) null else kept
+    }
+
+    /** Buang seluruh gaya per kata (kembali satu gaya). */
+    fun clearSpans() {
+        spans = null
+    }
+
+    /** Daftar kata (rentang karakter) dari teks aktif. */
+    fun wordRanges(): List<IntRange> {
+        val out = ArrayList<IntRange>()
+        val n = text.length
+        var i = 0
+        while (i < n) {
+            val c = text[i]
+            if (c == ' ' || c == '　' || c == '\n' || c == '\t') {
+                i++
+                continue
+            }
+            val st = i
+            while (i < n) {
+                val d = text[i]
+                if (d == ' ' || d == '　' || d == '\n' || d == '\t') break
+                i++
+            }
+            out.add(st until i)
+        }
+        return out
+    }
 
     /** Ubah ke paragraph dengan lebar awal yang aman (tidak mengubah tampilan). */
     fun enableParagraph(fallbackWidth: Float = 600f) {
@@ -385,6 +625,16 @@ class TextBox(
 
     /** Ukuran konten (tanpa padding outline/shadow), dalam px kanvas. */
     fun contentSize(): Pair<Float, Float> {
+        // Kotak seleksi: ukuran visual = kotak itu sendiri (seperti PS),
+        // bukan isi teks — jadi handle & hit-test stabil walau font mengecil.
+        if (isFrame()) {
+            val fw = frameRectPx()
+            if (fw != null) return fw.width() to fw.height()
+        }
+        if (hasSpans()) {
+            val l = com.grooxtyper.app.model.RichTextLayout.layout(this)
+            return l.contentW to l.contentH
+        }
         val bw = boxWidth
         if (bw != null && bw.isFinite() && bw > 0f) {
             val w = bw * scale
@@ -516,8 +766,35 @@ class TextBox(
         if ((p - scaleHandlePosition()).getDistance() <= radiusPx) return TextHandle.SCALE
         if ((p - widthHandleRight()).getDistance() <= radiusPx * 1.15f) return TextHandle.WIDTH_RIGHT
         if ((p - widthHandleLeft()).getDistance() <= radiusPx * 1.15f) return TextHandle.WIDTH_LEFT
+        if (isFrame()) {
+            // Tepi kotak seleksi = gagang ubah ukuran (ala Photoshop);
+            // di dalam kotak = geser teks.
+            val fr = frameRectPx()
+            if (fr != null) {
+                val edge = minOf(
+                    kotlin.math.abs(p.x - fr.left),
+                    kotlin.math.abs(p.x - fr.right),
+                    kotlin.math.abs(p.y - fr.top),
+                    kotlin.math.abs(p.y - fr.bottom)
+                )
+                if (edge <= radiusPx * 1.3f) return TextHandle.FRAME
+            }
+        }
         if (hitTest(p)) return TextHandle.BODY
         return TextHandle.NONE
+    }
+
+    /**
+     * Seret tepi kotak seleksi (FRAME): ubah lebar DAN tinggi sekaligus
+     * mengikuti gerakan jari (bukan hanya satu sumbu).
+     */
+    fun dragFrameHandle(dxCanvas: Float, dyCanvas: Float) {
+        if (boxWidth == null) return
+        val safeScale = scale.coerceAtLeast(0.05f)
+        val nw = ((boxWidth ?: 0f) * safeScale + dxCanvas).coerceAtLeast(24f)
+        val nh = ((boxHeight ?: 0f) * safeScale + dyCanvas).coerceAtLeast(12f)
+        boxWidth = (nw / safeScale).coerceIn(24f, 8000f)
+        boxHeight = (nh / safeScale).coerceIn(12f, 8000f)
     }
 
     /**
@@ -589,6 +866,10 @@ class TextBox(
         fontName = fontName,
         typeface = typeface,
         boxWidth = boxWidth,
+        boxHeight = boxHeight,
+        autoFit = autoFit,
+        persp = persp?.copy(),
+        spans = spans?.map { TextSpan(it.start, it.end, it.style.copy()) },
         sfx = sfx?.copy()
     )
 
@@ -625,6 +906,10 @@ class TextBox(
         fontName = o.fontName
         typeface = o.typeface
         boxWidth = o.boxWidth
+        boxHeight = o.boxHeight
+        autoFit = o.autoFit
+        persp = o.persp?.let { p -> PerspSpec().also { it.copyFrom(p) } }
+        spans = o.spans?.map { TextSpan(it.start, it.end, it.style.copy()) }
         sfx = o.sfx?.copy()
     }
 
@@ -660,10 +945,59 @@ class TextBox(
             perspY == o.perspY &&
             fontName == o.fontName &&
             boxWidth == o.boxWidth &&
+            boxHeight == o.boxHeight &&
+            autoFit == o.autoFit &&
+            persp == o.persp &&
+            spans == o.spans &&
             sfx == o.sfx
     }
 
     companion object {
+        /**
+         * Baca daftar span dari JSON project (gaya per kata). Typeface
+         * di-resolve lewat [typefaceFor] karena font kustom hanya hidup
+         * sebagai nama file - tanpa ini font kata akan jatuh ke default
+         * setelah project ditutup lalu dibuka lagi.
+         */
+        private fun parseSpans(
+            arr: org.json.JSONArray?,
+            typefaceFor: (String) -> Typeface
+        ): List<TextSpan>? {
+            if (arr == null || arr.length() == 0) return null
+            val out = ArrayList<TextSpan>(arr.length())
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val st = o.optJSONObject("st") ?: continue
+                val fname = if (st.has("font")) st.optString("font") else null
+                out.add(
+                    TextSpan(
+                        o.optInt("s", 0),
+                        o.optInt("e", 0),
+                        SpanStyle(
+                            fontName = fname,
+                            typeface = fname?.let { name ->
+                                runCatching { typefaceFor(name) }.getOrNull()
+                            },
+                            fontSizeMul = st.optDouble("mul", 1.0).toFloat(),
+                            color = if (st.has("color")) st.optInt("color") else null,
+                            bold = if (st.has("bold")) st.optBoolean("bold") else null,
+                            italic = if (st.has("italic")) st.optBoolean("italic") else null,
+                            outlineWidth = if (st.has("ow")) st.optDouble("ow").toFloat() else null,
+                            outlineColor = if (st.has("oc")) st.optInt("oc") else null,
+                            shadowColor = if (st.has("sc")) st.optInt("sc") else null,
+                            shadowDx = if (st.has("sx")) st.optDouble("sx").toFloat() else null,
+                            shadowDy = if (st.has("sy")) st.optDouble("sy").toFloat() else null,
+                            shadowBlur = if (st.has("sb")) st.optDouble("sb").toFloat() else null,
+                            uppercase = if (st.has("up")) st.optBoolean("up") else null,
+                            underline = if (st.has("ul")) st.optBoolean("ul") else null,
+                            strikethrough = if (st.has("stk")) st.optBoolean("stk") else null
+                        )
+                    )
+                )
+            }
+            return if (out.isEmpty()) null else out
+        }
+
         fun spacedWidth(paint: Paint, line: String, extraPerChar: Float, wordExtra: Float = 0f): Float {
             if (line.isEmpty()) return 0f
             if (extraPerChar == 0f && wordExtra == 0f) return paint.measureText(line)
@@ -737,6 +1071,42 @@ class TextBox(
         put("perspY", perspY.toDouble())
         put("fontName", fontName)
             boxWidth?.let { put("boxWidth", it.toDouble()) }
+            boxHeight?.let { put("boxHeight", it.toDouble()) }
+            put("autoFit", autoFit)
+            persp?.let { p ->
+                put("persp", org.json.JSONObject().apply {
+                    put("tlX", p.tlX.toDouble()); put("tlY", p.tlY.toDouble())
+                    put("trX", p.trX.toDouble()); put("trY", p.trY.toDouble())
+                    put("brX", p.brX.toDouble()); put("brY", p.brY.toDouble())
+                    put("blX", p.blX.toDouble()); put("blY", p.blY.toDouble())
+                })
+            }
+            spans?.takeIf { it.isNotEmpty() }?.let { list ->
+                put("spans", org.json.JSONArray().apply {
+                    for (sp in list) {
+                        put(org.json.JSONObject().apply {
+                            put("s", sp.start); put("e", sp.end)
+                            put("st", org.json.JSONObject().apply {
+                                val st = sp.style
+                                st.fontName?.let { put("font", it) }
+                                st.fontSizeMul.let { if (it != 1f) put("mul", it.toDouble()) }
+                                st.color?.let { put("color", it) }
+                                st.bold?.let { put("bold", it) }
+                                st.italic?.let { put("italic", it) }
+                                st.outlineWidth?.let { put("ow", it.toDouble()) }
+                                st.outlineColor?.let { put("oc", it) }
+                                st.shadowColor?.let { put("sc", it) }
+                                st.shadowDx?.let { put("sx", it.toDouble()) }
+                                st.shadowDy?.let { put("sy", it.toDouble()) }
+                                st.shadowBlur?.let { put("sb", it.toDouble()) }
+                                st.uppercase?.let { put("up", it) }
+                                st.underline?.let { put("ul", it) }
+                                st.strikethrough?.let { put("stk", it) }
+                            })
+                        })
+                    }
+                })
+            }
             sfx?.let { sp ->
                 put("sfx", org.json.JSONObject().apply {
                     put("arc", sp.arc.toDouble())
@@ -825,6 +1195,17 @@ class TextBox(
                 fontName = fontName,
                 typeface = runCatching { typefaceFor(fontName) }.getOrDefault(Typeface.DEFAULT_BOLD),
                 boxWidth = if (o.has("boxWidth")) o.optDouble("boxWidth").toFloat() else null,
+                boxHeight = if (o.has("boxHeight")) o.optDouble("boxHeight").toFloat() else null,
+                autoFit = o.optBoolean("autoFit", false),
+                persp = o.optJSONObject("persp")?.let { p ->
+                    PerspSpec(
+                        p.optDouble("tlX", 0.0).toFloat(), p.optDouble("tlY", 0.0).toFloat(),
+                        p.optDouble("trX", 0.0).toFloat(), p.optDouble("trY", 0.0).toFloat(),
+                        p.optDouble("brX", 0.0).toFloat(), p.optDouble("brY", 0.0).toFloat(),
+                        p.optDouble("blX", 0.0).toFloat(), p.optDouble("blY", 0.0).toFloat()
+                    )
+                },
+                spans = parseSpans(o.optJSONArray("spans"), typefaceFor),
                 sfx = o.optJSONObject("sfx")?.let { sp ->
                     SfxSpec(
                         arc = sp.optDouble("arc", 0.55).toFloat(),

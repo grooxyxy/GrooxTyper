@@ -23,6 +23,16 @@ const imageImport = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/m
 const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/ProjectManager.kt'));
 const migan = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt'));
 const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
+const perspGrid = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PerspectiveGrid.kt'));
+const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
+const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
+const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
+const sfxEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
+for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout]]) {
+  const o = (tx.match(/\{/g) || []).length;
+  const c = (tx.match(/\}/g) || []).length;
+  assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
+}
 const colorPicker = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ColorPicker.kt'));
 
 for (const [name, text] of [['BrushEngine', brush], ['PatchMatch', patch], ['SeamlessBlender', seamless], ['InpaintingManager', inpaint], ['CanvasEditorScreen', editor], ['ImageImport', imageImport], ['ProjectManager', projectManager], ['MiganInpainter', migan], ['TextEditorPanel', textEditor], ['ColorPicker', colorPicker]]) {
@@ -127,7 +137,7 @@ assert(brush.includes('placeInRect'), 'ruler: bisa ditaruh di area yang terlihat
 assert(brush.includes('rulerAdjustMode'), 'ruler: mode atur (geser) tanpa menggambar');
 assert(editor.includes('canvasToScreenPos'), 'overlay penggaris/grid pivot-aware (preview tampil saat zoom)');
 assert((textEditor.match(/onOpenPerspectiveGrid = onOpenPerspectiveGrid/g) || []).length >= 2, 'tombol grid perspektif terhubung di tab Efek (dulu no-op)');
-assert(editor.includes('fun bilerp'), 'grid perspektif menggambar trapesium keystone yang sebenarnya');
+assert(perspGrid.includes('fun bilerp') && editor.includes('PerspectiveGrid.bilerp(dst, u, v)'), 'grid perspektif menggambar trapesium hasil distorti yang sebenarnya');
 assert(editor.includes('refreshCompositeCoalesced()') && editor.includes('perspGridMode = true'), 'grid perspektif aktif dari panel teks + preview live');
 
 // 7. MiGAN (heal brush): tensor CHW planar + sanityOk longgarkan di tepi lubang.
@@ -186,25 +196,33 @@ for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxS
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
 }
-assert(brush.includes('SFX_LETTER') && brush.includes('SFX_TAPER') && brush.includes('SFX_OUTLINE'), 'brush SFX: 3 kuas (Lettering utama + Taper + Outline)');
-assert(brush.includes('SFX_FILL') && brush.includes('SFX_NEON') && brush.includes('SFX_SHADOW') && brush.includes('SFX_GRAD'), 'brush SFX: +4 kuas lettering (Fill + Neon + Shadow + Gradasi)');
-// Rombakan sesuai video: kuas keras, lebar per-dab (taper awal, kecepatan,
-// kontras arah turun/atas, lift), outline yang mengikuti lebar, dan ujung
-// runcing di akhir stroke lewat buffer ekor.
-assert(brush.includes('fun sfxDabWidth'), 'SFX: lebar dihitung per-dab (sfxDabWidth)');
-assert(brush.includes('val contrast = 0.72f'), 'SFX: kontras arah — turun tebal, atas tipis ala kaligrafi video');
-assert(brush.includes('val dir = 0.5f + 0.5f * (dy / len)'), 'SFX: arah goresan (dy) menentukan tebal/tipis');
-assert(brush.includes('fun sfxLiftFactor'), 'SFX: jeda = kuas diangkat (sfxLiftFactor)');
-assert(brush.includes('BrushType.SFX_LETTER -> Color.WHITE'), 'SFX Lettering: outline PUTIH seperti layer di-duplicate di video');
-assert(brush.includes('private val sfxPending = ArrayList<Offset>'), 'SFX: buffer ekor untuk runcing akhir stroke');
-assert(brush.includes('fun flushSfxTail'), 'SFX: ekor diruncingkan saat stroke selesai (flushSfxTail)');
+// SFX: mesin stamp terpisah (SfxBrushEngine) - sapuan kuas bukannya garis.
+const sfxEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
+{
+  const o = (sfxEng.match(/{/g) || []).length;
+  const c = (sfxEng.match(/}/g) || []).length;
+  assert(o === c, 'SfxBrushEngine braces balanced (' + o + '/' + c + ')');
+}
+const sfxBrushes = ['SFX_PEN', 'SFX_BRUSH', 'SFX_MARKER', 'SFX_AIR', 'SFX_CRAYON', 'SFX_INK', 'SFX_NEON'];
+assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
+assert(sfxBrushes.every(b => sfxEng.includes(b)), 'SfxBrushEngine: semua 7 kuas SFX terpetakan ke gaya mesin');
+assert(sfxEng.includes('fun styleOf') && brush.includes('SfxBrushEngine.styleOf(brushType)'), 'SFX: peta BrushType ke gaya mesin');
+assert(sfxEng.includes('fun stampFor') && sfxEng.includes('BitmapShader') === false, 'SFX: stamp radial bertekstur (bukan shader garis)');
+assert(sfxEng.includes('val streak = 0.5f + 0.5f * noise1(y * 0.42f, seed)'), 'SFX: sabut kuas (streak) korelasi lintas goresan');
+assert(sfxEng.includes('if (style.isTextured)') && sfxEng.includes('a *= 0.12f'), 'SFX: celah kering pada kuas bertekstur (tidak seperti garis penuh)');
+assert(sfxEng.includes('private fun widthAt') && sfxEng.includes('val entry = 0.10f + 0.90f'), 'SFX: taper masuk runcing per-dab');
+assert(sfxEng.includes('val pulse = 1f + 0.16f * noise1(dist * 0.035f, seed)'), 'SFX: denyut lebar organik (gaya tangan)');
+assert(sfxEng.includes('val dirMul = 1f - 0.30f'), 'SFX: kontras arah (turun tebal, naik tipis)');
+assert(sfxEng.includes('LIFT_MS') && sfxEng.includes('if (gapMs > LIFT_MS)'), 'SFX: jeda = kuas diangkat (lift)');
+assert(sfxEng.includes('val hold = max(6f, size * 1.3f)'), 'SFX: ekor ditahan supaya ujung runcing');
+assert(sfxEng.includes('fun paintUntil') && sfxEng.includes('val taper = if (taperTail) (1f - t * t)'), 'SFX: ekor diruncingkan saat stroke selesai');
+assert(sfxEng.includes('canvas.rotate(ang)'), 'SFX: stamp dirotasi searah goresan (tekstur tidak berenang)');
+assert(sfxEng.includes('val step = max(1.1f, w * 0.42f)'), 'SFX: jarak antar stamp < radius (goresan tanpa celah)');
+assert(sfxEng.includes('Style.INK') && sfxEng.includes('hashF(index * 3 + 1, seed)'), 'SFX: tinta punya cipratan deterministik');
+assert(brush.includes('sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))'), 'brush: segmen SFXلعvement lewat mesin stamp');
+assert(brush.includes('fun discardSfxTail') && brush.includes('sfxStroke.discard()'), 'SFX: buang ekor saat stroke di-undo');
 assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: ekor masuk cache tile walau syncTiles dipanggil sebelum endStroke');
-assert(brush.includes('fun discardSfxTail'), 'SFX: buang ekor saat stroke di-undo (tidak menggambar ulang di atas undo)');
-assert(brush.includes('fun buildSfxPasses') && brush.includes('fun setSfxPassWidths') && brush.includes('class SfxPass'), 'SFX: lapisan multi-pass (outline/neon/shadow/gradasi) mengikuti lebar goresan');
-assert(brush.includes('fun sfxMixWhite') && brush.includes('fun sfxDarken'), 'SFX: helper terang/gelap untuk inti neon & bayangan');
 assert(brush.includes('brushType == BrushType.MARKER || brushType == BrushType.FLAT'), 'gapless: Marker/Flat digambar satu path kontinu (tanpa takik sambungan)');
-assert(brush.includes('base * 0.10f'), 'SFX: lantai lebar 10% (goresan tak terbaca putus)');
-assert(brush.includes('it.strokeWidth = paint.strokeWidth + sfxOutlineWidth') || brush.includes('w += sfxOutlineWidth(w)'), 'SFX: outline mengikuti lebar goresan (bukan lebar tetap)');
 assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
 assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
 assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');
@@ -230,12 +248,15 @@ assert(textEditor.includes('box.sfx = newSpec'), 'panel teks: ubah SFX langsung 
 const gridBlock = editor.slice(editor.indexOf('if (rulerAdjustMode || (perspGridMode && selectedTextBox != null))'));
 const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
 assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
-assert(editor.includes('val dxT = pbox.perspX.coerceIn(-1f, 1f) * hw') && editor.includes('val dyL = pbox.perspY.coerceIn(-1f, 1f) * hh'), 'grid perspektif: hit-test handle memakai titik keystone yang sama dengan overlay');
-assert(editor.includes('val grab = 84f / sc') && editor.includes('inside && near(best, dTop) -> 1'), 'grid perspektif: radius genggam lega + fallback handle terdekat di dalam grid');
-assert(editor.includes('fun near(d: Float, ref: Float) = abs(d - ref) < 0.01f'), 'grid perspektif: pilih handle pakai toleransi (bukan == float yang bisa salah pilih)');
+assert(perspGrid.includes('fun cornersCanvas') && editor.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
+assert(perspGrid.includes('fun dstPoints') && editor.includes('PerspectiveGrid.dstPoints(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
+assert(editor.includes('val grab = 96f / sc') && editor.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
+assert(editor.includes('1 -> { p.tlX += dx; p.tlY += dy }') && editor.includes('4 -> { p.blX += dx; p.blY += dy }'), 'grid perspektif: 4 sudut digeser bebas (arah perspektif leluasa)');
+assert(perspGrid.includes('setPolyToPoly'), 'grid perspektif: homografi 4 titik (bukan cuma keystone atas/bawah)');
+assert(perspPanel.includes('fun CornerSliders') && perspPanel.includes('"Jauh atas"') && perspPanel.includes('"Miring"'), 'grid perspektif: panel kontrol + preset arah');
 assert(editor.includes('showQuickSlider && !perspGridMode'), 'grid perspektif: quick slider (.clickable noop) disembunyikan saat mode grid');
 assert(editor.includes('undoRedoManager.pushTextBox(\n                                            textLayerIdOf(pbox)'), 'grid perspektif: satu langkah undo per gestur seret');
-assert(editor.includes('Seret titik biru untuk ubah sudut'), 'grid perspektif: petunjuk cara pakai saat mode aktif');
+assert(editor.includes('PerspectivePanel(') && editor.includes('Pilih satu teks dulu untuk atur perspektifnya'), 'grid perspektif: panel kontrol tampil saat mode aktif');
 
 // 16. Add image / watermark: sumber WAJIB utuh (tidak di-raster ke ukuran
 //     dialog), panel properti terpisah dari seleksi (kalau tidak, dialog
@@ -310,9 +331,9 @@ assert(inpaintMgr.includes('var mode: InpaintMode = InpaintMode.FILL_WHITE'), 't
 assert(editor.includes('inpaintingManager.mode = com.grooxtyper.app.model.InpaintMode.FILL_WHITE') && editor.includes('Text("Putih", color = Color.White, fontSize = 11.sp)'), 'text-detection: tombol Putih menggantikan PatchMatch di dialog');
 assert(!editor.includes('Text("PatchMatch"'), 'text-detection: tidak ada lagi opsi PatchMatch di dialog');
 assert(bubbleDet.includes('fun decodeRtDetr(') && bubbleDet.includes('1f / (1f + kotlin.math.exp(-l[c]))'), 'bubble: decoder RT-DETR (sigmoid focal, tanpa NMS)');
-assert(bubbleDet.includes('ogkalu RT-DETR v2 v4-small int8') && bubbleDet.includes('ogkalu/comic-text-and-bubble-detector'), 'bubble: model ogkalu RT-DETR v4-small int8 (~11MB)');
+assert(bubbleDet.includes('Model balon KZKT') || bubbleDet.includes('detektor balon dari aplikasi KZKT'), 'bubble: model aktif = detektor balon KZKT (Ultralytics, 2 kelas)');
 assert(!bubbleDet.includes('Model aktif: Kiuyha') && !bubbleDet.includes('Kiuyha/Manga-Bubble-YOLO'), 'bubble: Kiuyha bukan lagi model aktif (hanya disebut sebagai legacy-compat)');
-assert(ciYml.includes('ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: unduh detector-v4-s_int8.onnx langsung (tanpa export ultralytics)');
+assert(ciYml.includes('kouzen-neo/kzkt/releases/download') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: model bubble diambil dari APK rilis kouzen-neo/kzkt (bukan Kiuyha/ogkalu)');
 assert(editor.indexOf('contentDescription = "Text"') < editor.indexOf('contentDescription = "Brush"'), 'toolbar: Text tepat di sebelah Pan (sebelum Brush)');
 assert(editor.includes('Berlaku di SEMUA tool termasuk TEXT'), 'text: cubit dua jari = geser+zoom kanvas di semua tool termasuk TEXT');
 assert(editor.includes('const val SCRIPT_LINE_BREAK = "⏎"') && editor.includes('fun comicShapeLines('), 'script: marker jeda manual ⏎ + auto-bentuk baris seimbang (tanpa penggal kata)');
@@ -357,7 +378,13 @@ assert(!/^internal val (Accent|PanelBg)/m.test(editor), 'refaktor: tanpa interna
 
 // 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,
 //     kuas SFX lettering + gapless, bulk text edit.
-assert(!bubbleDet.includes('padX') && bubbleDet.includes('scaleX'), 'bubble: preprocessing resize murni sesuai training (tanpa letterbox/pad)');
+assert(bubbleDet.includes('val padX = (INPUT_SIZE - nw) / 2f') && bubbleDet.includes('114f / 255f'), 'bubble: preprocessing letterbox 640 + isi abu 114 (standar training YOLO)');
+assert(bubbleDet.includes('fun decodeYolo6') && bubbleDet.includes('val pixelXyxy = maxCoord > 2.5f'), 'bubble: decoder 6 kanal (xyxy-piksel vs cxcywh ternormalisasi)');
+assert(bubbleDet.includes('if (get(4, ai) < conf) continue') && bubbleDet.includes('tak ada anchor > conf'), 'bubble: format koordinat dibaca dari anchor yang lolos conf');
+assert(bubbleDet.includes('(get(0, ai) - padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
+const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
+assert(wf.includes('XOR satu byte 0x5A') && wf.includes('quantize_dynamic') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range), di-dekode XOR, dikuantisasi int8');
+assert(wf.includes('::warning::model bubble') && wf.includes('test -s app/src/main/assets/models/bd.onnx'), 'CI: model selalu terpasang (gate <50MB jadi peringatan, bukan gagal build)');
 assert(bubbleDet.includes('isLogitsName') && bubbleDet.includes('ByteArray'), 'bubble: peran output dari nama + konversi dtype generik (tahan varian int8)');
 assert(bubbleDet.includes('n < 10 || n > 5000') && bubbleDet.includes('lg[0].size !in 2..8'), 'bubble: jumlah query & kelas fleksibel (bukan hardcode 300/3)');
 assert(bubbleDet.includes('fun isTileBlank(') && bubbleDet.includes('maxTiles'), 'bubble: lewati tile kosong + batas tile (anti-delay/OOM)');
@@ -365,7 +392,28 @@ assert(bubbleDet.includes('fun checkNotCancelled()') && bubbleDet.includes('Canc
 assert(bubbleDet.includes('import kotlinx.coroutines.Job') && bubbleDet.includes('currentCoroutineContext'), 'bubble: helper cancel pakai API yang pasti ada (tanpa ini build gagal)');
 assert(editor.includes('bubbleDetectJob') && editor.includes('px > 8_000_000L'), 'bubble: cancel deteksi lama + snapshot downscale di kanvas raksasa');
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('KONTRAKSI') && selectEng.includes('WATERSHED: tumbuhkan'), 'wand: pecah bubble via watershed (erosi kontraksi → seed → tumbuh serentak)');
-assert(textEditor.includes('onOpenBulkEdit') && editor.includes('showBulkTextDialog'), 'bulk: tombol Massal di panel teks + dialog');
+// 23. Fitur baru: SFX engine, wand ringan + watershed jarak, kotak seleksi
+//     teks (fit), gaya per kata (span), perspektif 4 sudut bebas.
+assert(selectEng.includes('fun downsampleForWand') && selectEng.includes('WAND_MAX_DIM = 480'), 'wand: snapshot diturunkan ke 480px (tak berat di kanvas 720x16000)');
+assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('1f / sample.scale'), 'wand: koordinat seed + Path dikembalikan ke kanvas penuh');
+assert(selectEng.includes('fun distanceTransform') && selectEng.includes('fun erodeByDistance'), 'wand: kontraksi pakai transformasi jarak (bukan erosi 1px per iterasi)');
+assert(selectEng.includes('fun topLabels') && selectEng.includes('total * minPct / 100'), 'wand: seed = 2 komponen terbesar, noise dibuang');
+assert(selectEng.includes('fun growIfFree'), 'wand: watershed tumbuh 4-arah (tak bocor diagonal)');
+assert(textBoxSrc.includes('fun setFrame') && textBoxSrc.includes('fun isFrame()'), 'teks: kotak seleksi ala Photoshop (lebar + tinggi)');
+assert(textBoxSrc.includes('var autoFit: Boolean') && richLayout.includes('fun fitOf'), 'teks: auto-fit mengecilkan font sampai muat di kotak');
+assert(textBoxSrc.includes('WIDTH_RIGHT, FRAME') && textBoxSrc.includes('fun dragFrameHandle('), 'teks: handle FRAME untuk menggeser tepi kotak');
+assert(editor.includes('textCreatePending') && editor.includes('nb.setFrame('), 'teks: drag di kanvas kosong buat kotak seleksi, tap buat teks titik');
+assert(textBoxSrc.includes('data class SpanStyle') && textBoxSrc.includes('data class TextSpan'), 'teks: SpanStyle/TextSpan untuk gaya per kata');
+assert(textBoxSrc.includes('fun wordRanges()') && textBoxSrc.includes('fun applySpanStyle('), 'teks: daftar kata + terapkan gaya ke rentang kata');
+assert(textBoxSrc.includes('fun setTextKeepingSpans('), 'teks: span ikut terpeta saat teks diketik');
+assert(richLayout.includes('fun build') && richLayout.includes('class Run('), 'teks: layout kaya mengukur per run (gaya per kata tetap rapi)');
+assert(textRenderer.includes('fun renderRich') && textRenderer.includes('fun richFillPaint'), 'renderer: jalur kaya (warna/shadow/outline per kata)');
+assert(richPanel.includes('Gaya per kata') && richPanel.includes('Terapkan'), 'panel: gaya per kata (daftar kata + font/warna/tebal/miring/shadow/outline)');
+assert(editor.includes('showRichTextPanel') && editor.includes('RichTextPanel('), 'editor: panel gaya per kata terhubung dari toolbar');
+assert(textBoxSrc.includes('parseSpans(') && textBoxSrc.includes('typefaceFor'), 'teks: font kata tetap berlaku setelah project dibuka lagi');
+assert(textBoxSrc.includes('put("spans"') && textBoxSrc.includes('put("persp"'), 'teks: span + perspektif tersimpan di project JSON');
+assert(!textEditor.includes('onOpenBulkEdit') && editor.includes('"Edit Teks Massal"'), 'bulk: dialog tetap ada');
+assert(editor.includes('Icons.Default.FormatSize') && editor.includes('contentDescription = "Edit Teks Massal"'), 'bulk: tombol Edit Teks Massal pindah ke toolbar utama');
 const bulkDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt'));
 {
   const o = (bulkDlg.match(/{/g) || []).length;

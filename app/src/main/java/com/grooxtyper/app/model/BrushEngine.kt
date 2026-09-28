@@ -62,15 +62,15 @@ enum class BrushType(val displayName: String, val category: String) {
     HEAL_MIGAN("Heal MiGAN", "Hapus"),
     // AI inpaint (Agnes AI via jaringan, key di pengaturan)
     AI_INPAINT("AI Inpaint", "Hapus"),
-    // SFX komik (gaya kuas keras di video "NOOB vs PRO"): CORETAN, bukan font.
-    // SFX_LETTER = kuas utama ala video (kontras arah + outline putih).
-    SFX_LETTER("SFX Lettering", "SFX"),
-    SFX_TAPER("SFX Taper", "SFX"),
-    SFX_OUTLINE("SFX Outline", "SFX"),
-    SFX_FILL("SFX Fill", "SFX"),
-    SFX_NEON("SFX Neon", "SFX"),
-    SFX_SHADOW("SFX Shadow", "SFX"),
-    SFX_GRAD("SFX Gradasi", "SFX")
+    // SFX komik: sapuan kuas sungguhan (lihat SfxBrushEngine). Tujuh gaya,
+    // semua pakai mesin stamp bertekstur — bukan garis tebal.
+    SFX_PEN("SFX Pen", "SFX"),
+    SFX_BRUSH("SFX Brush", "SFX"),
+    SFX_MARKER("SFX Marker", "SFX"),
+    SFX_AIR("SFX Airbrush", "SFX"),
+    SFX_CRAYON("SFX Crayon", "SFX"),
+    SFX_INK("SFX Ink", "SFX"),
+    SFX_NEON("SFX Neon", "SFX")
 }
 
 enum class RulerType {
@@ -208,16 +208,16 @@ class BrushEngine {
     // Kecepatan lowpass ala MyPaint (fac=exp(-dt/T)) untuk dynamics halus.
     private var velocityEma = 0f
 
-    // ── State kuas SFX (lettering komik ala video "NOOB vs PRO") ────────────
-    // Lebar SFX dihitung PER-DAB dari 4 faktor (lihat sfxDabWidth): taper
-    // awal runcing, kecepatan, kontras arah (turun tebal / atas tipis ala
-    // kaligrafi), dan jeda = angkat kuas. Ekor stroke ditahan di buffer
-    // supaya ujung AKHIR bisa diruncingkan waktu stroke selesai — tanpa ini
-    // goresan selalu berakhir bulat seperti font yang diketik, bukan sapuan tangan.
-    private var sfxStrokeLen = 0f
-    private var sfxLastMoveMs = 0L
-    private val sfxPending = ArrayList<Offset>(128)
-    private var sfxPendingLen = 0f
+    // ── State kuas SFX (lettering komik) ──────────────────────────────────
+    // Lebar SFX dihitung PER-DAB di SfxBrushEngine: taper awal runcing,
+    // denyut organik, kontras arah (turun tebal / atas tipis ala kaligrafi),
+    // kecepatan, dan jeda = angkat kuas. Tekstur sabut kuas ikut berputar
+    // mengikuti arah goresan. Ekor stroke ditahan supaya ujung AKHIR bisa
+    // diruncingkan waktu stroke selesai — tanpa ini goresan selalu berakhir
+    // bulat seperti font yang diketik, bukan sapuan tangan.
+    private val sfxEngine = SfxBrushEngine()
+    private val sfxStroke = sfxEngine.newStroke()
+    /** Layer tempat goresan SFX berjalan (untuk flush ekor saat selesai). */
     private var sfxLastLayer: DrawingLayer? = null
     // One-Euro filter per sumbu (studi stroke-stabilizer): lambat = halus,
     // cepat = responsif. Reset tiap stroke agar tak ada lompatan awal.
@@ -301,11 +301,7 @@ class BrushEngine {
         lastSmoothedPoint = null
         prevCurvePoint = null
         velocityEma = 0f
-        sfxStrokeLen = 0f
-        sfxLastMoveMs = SystemClock.elapsedRealtime()
-        sfxPending.clear()
-        sfxPendingLen = 0f
-        sfxLastLayer = null
+        sfxStroke.discard()
         euroX = 0f
         euroY = 0f
         euroDx = 0f
@@ -323,24 +319,21 @@ class BrushEngine {
     }
 
     fun endStroke() {
-        // SFX: gambar ekor yang tertahan dengan lebar meruncing → ujung
-        // belakang yang tajam, persis goresan kuas di video. Harus SEBELUM
-        // state direset karena sfxDabWidth membaca sfxStrokeLen.
+        // SFX: tutup goresan (ekor yang ditahan digambar dengan lebar
+        // meruncing → ujung belakang tajam). Harus SEBELUM state direset.
         // Tile disinkronkan di sini (bukan mengandalkan urutan pemanggil):
         // beberapa call-site melakukan syncTiles() sebelum endStroke(), dan
         // tanpa sinkron ulang ekor runcing tidak akan masuk cache tile →
         // ujung goresan hilang sampai render penuh berikutnya.
         var tailLayer: DrawingLayer? = null
-        if (sfxPending.size > 1) {
+        if (sfxStroke.hasTail()) {
             val layer = sfxLastLayer
             if (layer != null) {
-                flushSfxTail(layer)
+                sfxStroke.finish(getCanvasFor(layer.getPersistentBitmap()))
                 tailLayer = layer
             }
         }
-        sfxPending.clear()
-        sfxPendingLen = 0f
-        sfxStrokeLen = 0f
+        sfxStroke.discard()
         sfxLastLayer = null
         tailLayer?.let { syncTiles(it) }
         lastSmoothedPoint = null
@@ -592,36 +585,9 @@ class BrushEngine {
                 paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
                 paint.alpha = 0
             }
-            BrushType.SFX_LETTER -> {
-                // Kuas keras ala video: cap/join membulat supayaruncingnya
+            else -> {
+                // SFX & kuas lain: cap/join membulat supaya ujung runcing
                 // goresan tetap clean, bukan bergerigi.
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_TAPER -> {
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_OUTLINE -> {
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_FILL -> {
-                // Isi solid polos: lebar konstan penuh, tanpa outline,
-                // tanpa dinamika — untuk blok huruf tebal yang rata.
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_NEON -> {
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_SHADOW -> {
-                paint.strokeCap = Paint.Cap.ROUND
-                paint.strokeJoin = Paint.Join.ROUND
-            }
-            BrushType.SFX_GRAD -> {
-                // Chrome split ala lettering manga: terang di atas.
                 paint.strokeCap = Paint.Cap.ROUND
                 paint.strokeJoin = Paint.Join.ROUND
             }
@@ -647,36 +613,6 @@ class BrushEngine {
         }
     }
 
-    /**
-     * Lebar satu dab SFX — inti dari "persis seperti video".
-     *
-     * Empat faktor, meniru sapuan kuas keras yang dipakai di frame PRO:
-     *  1. **Taper awal** — mulai dari ujung runcing, bukan garis tumpul.
-     *  2. **Kecepatan** — gerak cepat (flick) menipis, gerak lambat menebal.
-     *  3. **Kontras arah** — turun = tebal, atas = tipis, mendatar = tengah.
-     *     Inilah yang membuat huruf W/H di video terbaca sebagai tulisan
-     *     tangan, bukan font yang di-warp. Arah=(0,+1) turun, (0,-1) atas.
-     *  4. **Lift** — jeda >110ms = kuas diangkat → goresan menipis mendadak.
-     *
-     * [speed] & [lift] dihitung SEKALI per segmen (dari jarak event asli),
-     * bukan per dab — panjang satu dab cuma ~1-3px sehingga selalu terbaca
-     * "lambat" dan kontras arah jadi tidak akan pernah hidup.
-     */
-    private fun sfxDabWidth(base: Float, dx: Float, dy: Float, speed: Float, lift: Float): Float {
-        // SFX_FILL = lebar konstan penuh (blok huruf rata, tanpa dinamika).
-        if (brushType == BrushType.SFX_FILL) return max(1f, base)
-        val entryLen = max(6f, base * 0.9f)
-        val e = (sfxStrokeLen / entryLen).coerceIn(0f, 1f)
-        val entry = 0.06f + 0.94f * (e * e * (3f - 2f * e))
-        val len = max(1f, hypot(dx, dy))
-        val dir = 0.5f + 0.5f * (dy / len)          // 1 = ke bawah, 0 = ke atas
-        val contrast = 0.72f                       // belahan lebar: penuh ↔ ramping
-        val dirMul = 1f - contrast + contrast * dir
-        // Lantai 10% (bukan 5%): di bawah ini goresan terbaca putus/celah
-        // seperti brush rusak, bukan taper artistik.
-        return max(base * 0.10f, base * entry * speed * dirMul * lift)
-    }
-
     /** Faktor kecepatan dinormalisasi 0.32..1 dari jarak event asli. */
     private fun sfxSpeedFactor(eventDistance: Float): Float {
         val v = getVelocityFactor(eventDistance, wide = true).coerceIn(0.4f, 1.6f)
@@ -684,254 +620,14 @@ class BrushEngine {
     }
 
     /** Kuas SFX mana pun? (pintu masuk seluruh logika lettering komik.) */
-    private fun isSfxBrush(): Boolean = brushType == BrushType.SFX_LETTER ||
-        brushType == BrushType.SFX_TAPER || brushType == BrushType.SFX_OUTLINE ||
-        brushType == BrushType.SFX_FILL || brushType == BrushType.SFX_NEON ||
-        brushType == BrushType.SFX_SHADOW || brushType == BrushType.SFX_GRAD
+    private fun isSfxBrush(): Boolean = SfxBrushEngine.styleOf(brushType) != null
 
-    /** Kuas ini punya outline? (SFX_TAPER = goresan polos tanpa outline.) */
-    private fun sfxUsesOutline(): Boolean =
-        brushType == BrushType.SFX_LETTER || brushType == BrushType.SFX_OUTLINE
-
-    /** Lebar coretan outline di luar sisi goresan. */
-    private fun sfxOutlineWidth(base: Float): Float = max(2f, base * 0.32f)
-
-    /**
-     * Warna outline SFX. Di video outline selalu **putih** di atas isi biru
-     * (Layer 2 di-duplicate lalu diberi Stroke putih) — jadi SFX_LETTER
-     * memakai putih apa adanya; SFX_OUTLINE tetap otomatis kontras.
-     */
-    private fun sfxOutlineColor(fill: Int): Int = when (brushType) {
-        BrushType.SFX_LETTER -> Color.WHITE
-        else -> {
-            val lum = (0.299f * Color.red(fill) +
-                0.587f * Color.green(fill) +
-                0.114f * Color.blue(fill)) / 255f
-            if (lum > 0.5f) Color.BLACK else Color.WHITE
-        }
-    }
-
-    /** Paint outline SFX yang sudah diastolic (dipakai ulang semua dab). */
-    private fun sfxOutlinePaint(paint: Paint): Paint = Paint(paint).apply {
-        style = Paint.Style.STROKE
-        strokeWidth = paint.strokeWidth + sfxOutlineWidth(paint.strokeWidth)
-        color = sfxOutlineColor(paint.color)
-    }
-
-    /** Campur warna isi dengan putih (0 = asli, 1 = putih). */
-    private fun sfxMixWhite(fill: Int, f: Float): Int {
-        val r = Color.red(fill)
-        val g = Color.green(fill)
-        val b = Color.blue(fill)
-        return Color.rgb(
-            (r + (255 - r) * f).toInt().coerceIn(0, 255),
-            (g + (255 - g) * f).toInt().coerceIn(0, 255),
-            (b + (255 - b) * f).toInt().coerceIn(0, 255)
-        )
-    }
-
-    /** Gelapkan warna isi (0 = asli, 1 = hitam) untuk bayangan SFX. */
-    private fun sfxDarken(fill: Int, f: Float): Int {
-        return Color.rgb(
-            (Color.red(fill) * (1f - f)).toInt().coerceIn(0, 255),
-            (Color.green(fill) * (1f - f)).toInt().coerceIn(0, 255),
-            (Color.blue(fill) * (1f - f)).toInt().coerceIn(0, 255)
-        )
-    }
-
-    /**
-     * Satu lapisan gambar SFX: paint + pengali lebar + geseran + apakah
-     * lebarnya mengikuti isi (outline). Dirender berurutan per dab.
-     */
-    private class SfxPass(
-        val paint: Paint,
-        val widthMul: Float,
-        val dx: Float,
-        val dy: Float,
-        val outlineFollow: Boolean
-    )
-
-    /**
-     * Susun lapisan tiap kuas SFX dari paint isi:
-     * - LETTER/OUTLINE: outline mengikuti lebar + isi.
-     * - TAPER/FILL: isi polos.
-     * - NEON: halo blur warna isi + inti terang.
-     * - SHADOW: bayangan keras offset + isi.
-     * - GRAD: terang penuh + isi 0.62 (chrome split).
-     */
-    private fun buildSfxPasses(paint: Paint, isHuge: Boolean): List<SfxPass> {
-        val baseW = paint.strokeWidth
-        val out = ArrayList<SfxPass>(3)
-        when (brushType) {
-            BrushType.SFX_NEON -> {
-                val glow = Paint(paint).apply {
-                    style = Paint.Style.STROKE
-                    strokeWidth = baseW * 2.4f
-                    color = paint.color
-                    if (!isHuge) {
-                        maskFilter = BlurMaskFilter(max(2f, baseW * 0.45f), BlurMaskFilter.Blur.NORMAL)
-                    }
-                }
-                out.add(SfxPass(glow, 2.4f, 0f, 0f, outlineFollow = false))
-                val core = Paint(paint).apply { color = sfxMixWhite(paint.color, 0.7f) }
-                out.add(SfxPass(core, 1f, 0f, 0f, outlineFollow = false))
-            }
-            BrushType.SFX_SHADOW -> {
-                val off = size * 0.28f
-                val shadow = Paint(paint).apply { color = sfxDarken(paint.color, 0.7f) }
-                out.add(SfxPass(shadow, 1f, off, off, outlineFollow = false))
-                out.add(SfxPass(paint, 1f, 0f, 0f, outlineFollow = false))
-            }
-            BrushType.SFX_GRAD -> {
-                val light = Paint(paint).apply { color = sfxMixWhite(paint.color, 0.55f) }
-                out.add(SfxPass(light, 1f, 0f, 0f, outlineFollow = false))
-                out.add(SfxPass(paint, 0.62f, 0f, 0f, outlineFollow = false))
-            }
-            else -> {
-                if (sfxUsesOutline()) {
-                    out.add(SfxPass(sfxOutlinePaint(paint), 1f, 0f, 0f, outlineFollow = true))
-                }
-                out.add(SfxPass(paint, 1f, 0f, 0f, outlineFollow = false))
-            }
-        }
-        return out
-    }
-
-    /** Terapkan lebar dasar ke semua lapisan (dipanggil per dab). */
-    private fun setSfxPassWidths(passes: List<SfxPass>, baseW: Float) {
-        for (p in passes) {
-            var w = baseW * p.widthMul
-            if (p.outlineFollow) w += sfxOutlineWidth(w)
-            p.paint.strokeWidth = w
-        }
-    }
-
-    /** Gambar satu dab SFX: semua lapisan berurutan (bayangan/glow dulu). */
-    private fun sfxDrawDab(
-        canvas: Canvas,
-        passes: List<SfxPass>,
-        x1: Float, y1: Float, x2: Float, y2: Float
-    ) {
-        for (p in passes) {
-            canvas.drawLine(x1 + p.dx, y1 + p.dy, x2 + p.dx, y2 + p.dy, p.paint)
-        }
-    }
-
-    /**
-     * Bangun stroke SFX dari segmen kurva, tahan ekornya, lalu flush bagian
-     * depan yang sudah "aman" (jarak > target) supaya hanya ekor ~1.6x ukuran
-     * kuas yang belum digambar dan bisa diruncingkan di akhir stroke.
-     */
-    private fun sfxRenderSegment(
-        canvas: Canvas,
-        paint: Paint,
-        passes: List<SfxPass>,
-        curveStart: Offset,
-        ctrl: Offset?,
-        curveEnd: Offset,
-        steps: Int,
-        speed: Float
-    ) {
-        val lift = sfxLiftFactor()
-        val tailTarget = max(8f, size * 1.6f)
-        if (sfxPending.isEmpty()) sfxPending.add(curveStart)
-        for (i in 1..steps) {
-            val t = i / steps.toFloat()
-            val x: Float
-            val y: Float
-            if (ctrl != null) {
-                val u = 1f - t
-                x = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
-                y = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
-            } else {
-                x = curveStart.x + (curveEnd.x - curveStart.x) * t
-                y = curveStart.y + (curveEnd.y - curveStart.y) * t
-            }
-            val prev = sfxPending.last()
-            val d = hypot(x - prev.x, y - prev.y)
-            if (d > 0.01f) {
-                sfxPending.add(Offset(x, y))
-                sfxPendingLen += d
-            }
-        }
-        // Flush depan sampai sisa <= tailTarget. Pakai kursor indeks (bukan
-        // removeAt(0)) supaya tidak menggeser array berulang pada sapuan
-        // panjang yang menghasilkan ratusan dab per segmen.
-        var idx = 0
-        var base = paint.strokeWidth
-        while (sfxPending.size - idx > 2 && sfxPendingLen > tailTarget) {
-            val a = sfxPending[idx]
-            val b = sfxPending[idx + 1]
-            val dx = b.x - a.x
-            val dy = b.y - a.y
-            val segLen = hypot(dx, dy)
-            val w = sfxDabWidth(base, dx, dy, speed, lift)
-            base = w
-            setSfxPassWidths(passes, w)
-            sfxDrawDab(canvas, passes, a.x, a.y, b.x, b.y)
-            sfxStrokeLen += segLen
-            sfxPendingLen -= segLen
-            idx++
-        }
-        if (idx > 0) sfxPending.subList(0, idx).clear()
-        // Stroke SFX hanya mengatur GEOMETRI lewat lebar per-dab; alpha
-        // dikembalikan penuh agar dab yang bertumpuk tidak makin gelap.
-        paint.alpha = (opacity * 255f).toInt().coerceIn(0, 255)
-    }
-
-    /** Jeda = kuas diangkat: goresan menipis mendadak setelah 110ms diam. */
-    private fun sfxLiftFactor(): Float {
-        val now = SystemClock.elapsedRealtime()
-        val idle = (now - sfxLastMoveMs).coerceAtLeast(0L)
-        sfxLastMoveMs = now
-        if (idle <= 110L) return 1f
-        return (1f - (idle - 110L) / 190f).coerceIn(0.18f, 1f)
-    }
-
-    /** Flush ekor SFX dengan lebar meruncing → ujung akhir runcing. */
-    private fun flushSfxTail(layer: DrawingLayer) {
-        val bmp = layer.getPersistentBitmap()
-        val canvas = getCanvasFor(bmp)
-        val paint = createBasePaint(false)
-        if (layer.isAlphaLocked) paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
-        val passes = buildSfxPasses(paint, false)
-        val n = sfxPending.size
-        // Kecepatan dinolkan: di ujung goresan yang artistik, kelajuan
-        // tidak lagi menentukan — yang penting runcingnya.
-        val speed = 1f
-        // SFX_FILL tanpa runcing ekor (blok rata sampai ujung).
-        val taperTail = brushType != BrushType.SFX_FILL
-        var base = paint.strokeWidth
-        for (i in 0 until n - 1) {
-            val a = sfxPending[i]
-            val b = sfxPending[i + 1]
-            val dx = b.x - a.x
-            val dy = b.y - a.y
-            val segLen = hypot(dx, dy)
-            // Runcing kuadratik dari lebar terakhir ke ~4% di ujung.
-            val t = i / (n - 1f)
-            val runout = if (taperTail) (1f - t * t).coerceIn(0.04f, 1f) else 1f
-            val w = sfxDabWidth(base, dx, dy, speed, 1f) * runout
-            base = w
-            setSfxPassWidths(passes, w)
-            sfxDrawDab(canvas, passes, a.x, a.y, b.x, b.y)
-            sfxStrokeLen += segLen
-        }
-        // Kosongkan ekor supaya dab terakhir tetap runcing.
-        sfxPendingLen = 0f
-        val l = sfxPending.minOf { it.x } - size
-        val t = sfxPending.minOf { it.y } - size
-        val r = sfxPending.maxOf { it.x } + size
-        val b = sfxPending.maxOf { it.y } + size
-        markDirtyTiles(l, t, r, b)
-        layer.markDirty()
-    }
+    /** Gaya mesin SFX untuk kuas sekarang (null = bukan SFX). */
+    private fun currentSfxStyle(): SfxBrushEngine.Style? = SfxBrushEngine.styleOf(brushType)
 
     /** Buang ekor SFX tanpa menggambarnya (dipakai saat stroke di-undo). */
     fun discardSfxTail() {
-        sfxPending.clear()
-        sfxPendingLen = 0f
-        sfxStrokeLen = 0f
+        sfxStroke.discard()
         sfxLastLayer = null
     }
 
@@ -1022,9 +718,16 @@ class BrushEngine {
 
         val canvas = getCanvasFor(bmp)
 
-        // SFX: jalur render khusus (lebar per-dab + ekor ditahan). Huge canvas
-        // tetap pakai drawPath tunggal — lebar per-dab tak 가능 dalam 1 pass.
-        val sfx = isSfxBrush() && !isHuge
+        // SFX: jalur render mesin stamp (lebar per-dab + ekor ditahan). Di
+        // kanvas jumbo (>4MP) cukup drawPath tunggal, jadi mesin stamp hanya
+        // aktif pada kanvas biasa.
+        val sfxStyle = if (isHuge) null else currentSfxStyle()
+        if (isSfxBrush()) sfxLastLayer = layer
+        if (sfxStyle != null && !sfxStroke.isActive()) {
+            sfxStroke.begin(
+                curveStart, sfxStyle, color, size, opacity, layer.isAlphaLocked
+            )
+        }
         if (isSfxBrush()) sfxLastLayer = layer
 
         val paint = createBasePaint(isHuge)
@@ -1037,18 +740,19 @@ class BrushEngine {
 
         // Titik tunggal (tap): pastikan jadi dot bulat, bukan hilang.
         if (distance < 1f) {
-            // SFX: dot ikut ber-outline bila kuasnya memang ber-outline,
-            // supaya tap tidak meninggalkan titik polos yang beda gaya.
-            if (isSfxBrush() && sfxUsesOutline()) {
-                val op = Paint(paint).apply {
-                    style = Paint.Style.FILL
-                    strokeWidth = paint.strokeWidth + sfxOutlineWidth(paint.strokeWidth)
-                    color = sfxOutlineColor(paint.color)
-                }
-                canvas.drawCircle(smoothedP2.x, smoothedP2.y, op.strokeWidth / 2f, op)
+            val sfxDotStyle = currentSfxStyle()
+            if (sfxDotStyle != null) {
+                // SFX: tap = satu sentuhan kuas (stamp bertekstur), bukan
+                // lingkaran polos, supaya tak ada titik yang "beda gaya".
+                sfxStroke.begin(
+                    smoothedP2, sfxDotStyle, paint.color, size, opacity, layer.isAlphaLocked
+                )
+                sfxStroke.dot(canvas, smoothedP2)
+                sfxStroke.discard()
+            } else {
+                val dotPaint = Paint(paint).apply { style = Paint.Style.FILL }
+                canvas.drawCircle(smoothedP2.x, smoothedP2.y, max(0.5f, paint.strokeWidth / 2f), dotPaint)
             }
-            val dotPaint = Paint(paint).apply { style = Paint.Style.FILL }
-            canvas.drawCircle(smoothedP2.x, smoothedP2.y, max(0.5f, paint.strokeWidth / 2f), dotPaint)
             layer.markDirty()
             return
         }
@@ -1145,34 +849,33 @@ class BrushEngine {
             } else {
                 strokePath.lineTo(curveEnd.x, curveEnd.y)
             }
-            // SFX di kanvas jumbo: tiap lapisan digambar sebagai path
-            // (lebar tetap per segmen; tanpa dinamika per-dab di huge).
-            if (isSfxBrush()) {
-                val passes = buildSfxPasses(paint, isHuge)
-                setSfxPassWidths(passes, paint.strokeWidth)
-                for (p in passes) {
-                    if (p.dx != 0f || p.dy != 0f) {
-                        canvas.save()
-                        canvas.translate(p.dx, p.dy)
-                        canvas.drawPath(strokePath, p.paint)
-                        canvas.restore()
-                    } else {
-                        canvas.drawPath(strokePath, p.paint)
-                    }
+            // Kanvas jumbo: SATU drawPath per segmen untuk semua kuas
+            // (termasuk SFX — stamp per-dab terlalu berat di sini; goresan
+            // tetap polos, rata, dan tanpa celah karena cap membulat).
+            canvas.drawPath(strokePath, paint)
+        } else if (sfxStyle != null) {
+            // ── Jalur SFX: mesin stamp SfxBrushEngine. Kurva disampling jadi
+            // titik lalu di-resample jadi deretan stamp yang lebarnya dihitung
+            // per-dab (taper masuk, denyut organik, kontras arah, kecepatan,
+            // lift) dan teksturnya ikut berputar searah goresan. Ekor ditahan
+            // sampai stroke selesai supaya ujung runcing benar-benar terjadi.
+            val sfxPts = ArrayList<Offset>(steps + 1)
+            sfxPts.add(curveStart)
+            for (i in 1..steps) {
+                val t = i / steps.toFloat()
+                val px: Float
+                val py: Float
+                if (ctrl != null) {
+                    val u = 1f - t
+                    px = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
+                    py = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
+                } else {
+                    px = curveStart.x + (curveEnd.x - curveStart.x) * t
+                    py = curveStart.y + (curveEnd.y - curveStart.y) * t
                 }
-            } else {
-                canvas.drawPath(strokePath, paint)
+                sfxPts.add(Offset(px, py))
             }
-        } else if (sfx) {
-            // ── Jalur SFX: lebar per-dab (taper awal, kecepatan, kontras
-            // arah, lift) + lapisan gaya (outline/neon/shadow/gradasi) +
-            // ekor ditahan untuk runcing akhir. Inilah yang bikin goresan
-            // terbaca sebagai tulisan tangan ala video, bukan font/warp.
-            val passes = buildSfxPasses(paint, isHuge = false)
-            sfxRenderSegment(
-                canvas, paint, passes, curveStart, ctrl, curveEnd, steps,
-                sfxSpeedFactor(distance)
-            )
+            sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))
         } else {
             // Kuas ber-cap KOTAK (Marker/Flat): garis per-segmen terpisah
             // menyisakan takik/celah di tikungan (sambungan miter dihitung
