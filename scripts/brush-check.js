@@ -24,11 +24,12 @@ const projectManager = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/ap
 const migan = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/MiganInpainter.kt'));
 const textEditor = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
 const perspGrid = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/PerspectiveGrid.kt'));
+const overlays = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/EditorOverlays.kt'));
 const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
 const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
 const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
 const sfxEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
-for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout]]) {
+for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays]]) {
   const o = (tx.match(/\{/g) || []).length;
   const c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
@@ -137,7 +138,7 @@ assert(brush.includes('placeInRect'), 'ruler: bisa ditaruh di area yang terlihat
 assert(brush.includes('rulerAdjustMode'), 'ruler: mode atur (geser) tanpa menggambar');
 assert(editor.includes('canvasToScreenPos'), 'overlay penggaris/grid pivot-aware (preview tampil saat zoom)');
 assert((textEditor.match(/onOpenPerspectiveGrid = onOpenPerspectiveGrid/g) || []).length >= 2, 'tombol grid perspektif terhubung di tab Efek (dulu no-op)');
-assert(perspGrid.includes('fun bilerp') && editor.includes('PerspectiveGrid.bilerp(dst, u, v)'), 'grid perspektif menggambar trapesium hasil distorti yang sebenarnya');
+assert(perspGrid.includes('fun bilerp') && overlays.includes('PerspectiveGrid.bilerp(dst, u, v)'), 'grid perspektif menggambar trapesium hasil distorti yang sebenarnya');
 assert(editor.includes('refreshCompositeCoalesced()') && editor.includes('perspGridMode = true'), 'grid perspektif aktif dari panel teks + preview live');
 
 // 7. MiGAN (heal brush): tensor CHW planar + sanityOk longgarkan di tepi lubang.
@@ -189,6 +190,7 @@ assert(editor.includes('onPickFromCanvas = {'), 'editor: dialog warna brush terh
 assert(textEditor.includes('onStartEyedrop'), 'panel teks: eyedropper terhubung ke tiap target warna');
 // 14. SFX (dari video NOOB vs PRO): brush taper + outline ganda, mode SFX
 //     per-huruf di busur dengan jitter deterministik, preset & seed di panel.
+const bulkDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt'));
 const textRenderer = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextRenderer.kt'));
 const textBoxSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextBox.kt'));
 for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxSrc]]) {
@@ -250,7 +252,10 @@ const gridBlock = editor.slice(editor.indexOf('if (rulerAdjustMode || (perspGrid
 const gridBranch = gridBlock.slice(0, gridBlock.indexOf('} else {'));
 assert(!gridBranch.includes('change.consume()'), 'grid perspektif: branch mode overlay TIDAK consume (detectDragGestures butuh down belum consumed)');
 assert(perspGrid.includes('fun cornersCanvas') && editor.includes('PerspectiveGrid.cornersCanvas(pbox)'), 'grid perspektif: hit-test handle memakai sudut yang sama dengan overlay');
-assert(perspGrid.includes('fun dstPoints') && editor.includes('PerspectiveGrid.dstPoints(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
+assert(overlays.includes('fun perspectiveGrid') && overlays.includes('fun textFramePreview'), 'overlay: grid perspektif + preview kotak di file terpisah (badan editor <64KB)');
+assert(editor.includes('EditorOverlays.perspectiveGrid(') && editor.includes('EditorOverlays.textFramePreview('), 'editor: overlay dipanggil, bukan digambar inline');
+assert(overlays.includes('fun TextToolsExtra') || overlays.includes('fun richTextPanel'), 'overlay: host panel gaya per kata + tombol toolbar');
+assert(perspGrid.includes('fun dstPoints') && overlays.includes('PerspectiveGrid.dstPoints(box') && textRenderer.includes('PerspectiveGrid.matrix(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
 assert(editor.includes('val grab = 96f / sc') && editor.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
 assert(editor.includes('1 -> { p.tlX += dx; p.tlY += dy }') && editor.includes('4 -> { p.blX += dx; p.blY += dy }'), 'grid perspektif: 4 sudut digeser bebas (arah perspektif leluasa)');
 assert(perspGrid.includes('setPolyToPoly'), 'grid perspektif: homografi 4 titik (bukan cuma keystone atas/bawah)');
@@ -410,12 +415,12 @@ assert(textBoxSrc.includes('fun setTextKeepingSpans('), 'teks: span ikut terpeta
 assert(richLayout.includes('fun build') && richLayout.includes('class Run('), 'teks: layout kaya mengukur per run (gaya per kata tetap rapi)');
 assert(textRenderer.includes('fun renderRich') && textRenderer.includes('fun richFillPaint'), 'renderer: jalur kaya (warna/shadow/outline per kata)');
 assert(richPanel.includes('Gaya per kata') && richPanel.includes('Terapkan'), 'panel: gaya per kata (daftar kata + font/warna/tebal/miring/shadow/outline)');
-assert(editor.includes('showRichTextPanel') && editor.includes('RichTextPanel('), 'editor: panel gaya per kata terhubung dari toolbar');
+assert(editor.includes('showRichTextPanel') && editor.includes('EditorOverlays.richTextPanel('), 'editor: panel gaya per kata terhubung dari toolbar');
+assert(editor.includes('fun openRichTextPanel()') && editor.includes('fun newTextFrameBox('), 'editor: helper lokal (aksi panel & kotak) di method terpisah');
 assert(textBoxSrc.includes('parseSpans(') && textBoxSrc.includes('typefaceFor'), 'teks: font kata tetap berlaku setelah project dibuka lagi');
 assert(textBoxSrc.includes('put("spans"') && textBoxSrc.includes('put("persp"'), 'teks: span + perspektif tersimpan di project JSON');
-assert(!textEditor.includes('onOpenBulkEdit') && editor.includes('"Edit Teks Massal"'), 'bulk: dialog tetap ada');
-assert(editor.includes('Icons.Default.FormatSize') && editor.includes('contentDescription = "Edit Teks Massal"'), 'bulk: tombol Edit Teks Massal pindah ke toolbar utama');
-const bulkDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BulkTextDialog.kt'));
+assert(!textEditor.includes('onOpenBulkEdit') && bulkDlg.includes('"Edit Teks Massal"'), 'bulk: dialog tetap ada');
+assert(overlays.includes('Icons.Default.FormatSize') && overlays.includes('contentDescription = "Edit Teks Massal"'), 'bulk: tombol Edit Teks Massal pindah ke toolbar utama');
 {
   const o = (bulkDlg.match(/{/g) || []).length;
   const c = (bulkDlg.match(/}/g) || []).length;

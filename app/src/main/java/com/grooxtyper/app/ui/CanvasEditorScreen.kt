@@ -51,8 +51,6 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Flip
-import androidx.compose.material.icons.filled.FormatColorText
-import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.FlipToBack
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -2321,6 +2319,25 @@ fun CanvasEditorScreen(
         }
     }
 
+    /** Buka panel gaya per kata (satu langkah undo untuk sesi ini). */
+    fun openRichTextPanel() {
+        val rb = selectedTextBox
+        if (rb == null) {
+            healError = "Pilih satu teks dulu untuk edit per kata"
+            return
+        }
+        undoRedoManager.pushTextBox(textLayerIdOf(rb), rb.copy())
+        showRichTextPanel = true
+    }
+
+    /** Kotak seleksi teks baru (dipakai gestur drag di tool Teks). */
+    fun newTextFrameBox(rect: RectF): TextBox {
+        val c = Offset(rect.centerX(), rect.centerY())
+        val nb = TextBox(text = "Teks baru", position = c, color = brushEngine.color)
+        nb.setFrame(c, rect.width().coerceAtLeast(40f), rect.height().coerceAtLeast(24f))
+        return nb
+    }
+
     /**
      * Kebalikan [screenToCanvasCoordinates] (pivot-aware). Overlay penggaris &
      * grid perspektif dulu memakai `o * scale + offset` sehingga meleset dari
@@ -2917,16 +2934,7 @@ fun CanvasEditorScreen(
                                                             maxOf(st.x, touchCanvasPos.x),
                                                             maxOf(st.y, touchCanvasPos.y)
                                                         )
-                                                        val nb = TextBox(
-                                                            text = "Teks baru",
-                                                            position = Offset(r.centerX(), r.centerY()),
-                                                            color = brushEngine.color
-                                                        )
-                                                        nb.setFrame(
-                                                            Offset(r.centerX(), r.centerY()),
-                                                            r.width().coerceAtLeast(40f),
-                                                            r.height().coerceAtLeast(24f)
-                                                        )
+                                                        val nb = newTextFrameBox(r)
                                                         val nl = layerManager.addTextLayer(nb)
                                                         undoRedoManager.pushLayerAdd(nl.id)
                                                         selectedTextBox = nb
@@ -3934,73 +3942,20 @@ fun CanvasEditorScreen(
                 }
             }
 
-            // Preview kotak seleksi teks (tool Teks sedang diseret).
-            val dragFrame = textCreateStart?.let { st ->
-                textCreateNow?.let { now ->
-                    RectF(
-                        minOf(st.x, now.x), minOf(st.y, now.y),
-                        maxOf(st.x, now.x), maxOf(st.y, now.y)
-                    )
-                }
-            }
-            if (dragFrame != null && dragFrame.width() > 4f) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val a = canvasToScreenPos(Offset(dragFrame.left, dragFrame.top))
-                    val b = canvasToScreenPos(Offset(dragFrame.right, dragFrame.bottom))
-                    val dp = android.graphics.Paint().apply {
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 2f
-                        color = 0xFF00E5FF.toInt()
-                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 6f), 0f)
+            // Preview kotak seleksi teks + grid perspektif (UI dipisah ke
+            // EditorOverlays agar badan fungsi ini tak melewati batas 64KB).
+            EditorOverlays.textFramePreview(
+                textCreateStart?.let { st ->
+                    textCreateNow?.let { now ->
+                        RectF(
+                            minOf(st.x, now.x), minOf(st.y, now.y),
+                            maxOf(st.x, now.x), maxOf(st.y, now.y)
+                        )
                     }
-                    drawContext.canvas.nativeCanvas.drawRect(a.x, a.y, b.x, b.y, dp)
                 }
-            }
-            // Overlay perspektif: grid ringan (2 garis) + 4 handle sudut yang
-            // bisa diseret bebas (arah perspektif leluasa, bukan cuma tepi).
+            ) { canvasToScreenPos(it) }
             if (perspGridMode && selectedTextBox != null) {
-                val box = selectedTextBox!!
-                val area = com.grooxtyper.app.model.PerspectiveGrid.contentRect(box)
-                val dst = com.grooxtyper.app.model.PerspectiveGrid.dstPoints(box, area.width(), area.height())
-                val corners = com.grooxtyper.app.model.PerspectiveGrid.cornersCanvas(box)
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Titik lokal (u,v) -> kanvas (pusat + rotasi teks).
-                    fun toCanvas(u: Float, v: Float): Offset {
-                        val p = com.grooxtyper.app.model.PerspectiveGrid.bilerp(dst, u, v)
-                        val rad = Math.toRadians(box.rotation.toDouble())
-                        val c = kotlin.math.cos(rad).toFloat()
-                        val s = kotlin.math.sin(rad).toFloat()
-                        return Offset(area.centerX() + p.x * c - p.y * s, area.centerY() + p.x * s + p.y * c)
-                    }
-                    fun scr(u: Float, v: Float): Offset = canvasToScreenPos(toCanvas(u, v))
-                    val gp = android.graphics.Paint().apply {
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 1.2f
-                        color = 0x88FFFFFF.toInt()
-                    }
-                    val va = scr(0.5f, 0f)
-                    val vb = scr(0.5f, 1f)
-                    drawContext.canvas.nativeCanvas.drawLine(va.x, va.y, vb.x, vb.y, gp)
-                    val ha = scr(0f, 0.5f)
-                    val hb = scr(1f, 0.5f)
-                    drawContext.canvas.nativeCanvas.drawLine(ha.x, ha.y, hb.x, hb.y, gp)
-                    val bp = android.graphics.Paint().apply {
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 2.5f
-                        color = 0xFF00E5FF.toInt()
-                    }
-                    val sc2 = corners.map { canvasToScreenPos(it) }
-                    for (i in 0..3) {
-                        val a = sc2[i]
-                        val c = sc2[(i + 1) % 4]
-                        drawContext.canvas.nativeCanvas.drawLine(a.x, a.y, c.x, c.y, bp)
-                    }
-                    val hp = android.graphics.Paint().apply {
-                        style = android.graphics.Paint.Style.FILL
-                        color = 0xFF00E5FF.toInt()
-                    }
-                    sc2.forEach { drawContext.canvas.nativeCanvas.drawCircle(it.x, it.y, 15f, hp) }
-                }
+                EditorOverlays.perspectiveGrid(selectedTextBox!!) { canvasToScreenPos(it) }
             }
 
             // Brush cursor overlay
@@ -5034,35 +4989,14 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
             }
 
-            // Edit teks massal (pindah dari panel teks ke toolbar utama:
-            // di sanaozon kerja utama, panel teks jadi terlalu padat).
-            IconButton(onClick = { showBulkTextDialog = true }) {
-                Icon(
-                    Icons.Default.FormatSize,
-                    contentDescription = "Edit Teks Massal",
-                    tint = if (showBulkTextDialog) Accent else Color.White
-                )
-            }
-
-            // Gaya per kata (span): pilih kata lalu atur font/warna/shadow/outline.
-            IconButton(
-                onClick = {
-                    if (selectedTextBox != null) {
-                        undoRedoManager.pushTextBox(
-                            textLayerIdOf(selectedTextBox!!), selectedTextBox!!.copy()
-                        )
-                        showRichTextPanel = true
-                    } else {
-                        healError = "Pilih satu teks dulu untuk edit per kata"
-                    }
-                }
-            ) {
-                Icon(
-                    Icons.Default.FormatColorText,
-                    contentDescription = "Gaya Per Kata",
-                    tint = if (showRichTextPanel) Accent else Color.White
-                )
-            }
+            // Edit teks massal + gaya per kata (pindah dari panel teks ke
+            // toolbar utama: di sana zona kerja utama, panel teks padat).
+            TextToolsExtra(
+                bulkActive = showBulkTextDialog,
+                richActive = showRichTextPanel,
+                onBulk = { showBulkTextDialog = true },
+                onRich = { openRichTextPanel() }
+            )
 
             // Brush / Eraser toggle pill
             Row(
@@ -5508,22 +5442,16 @@ fun CanvasEditorScreen(
 
         // === Gaya per kata: satu kalimat, tiap kata beda font/warna/epek ===
         if (showRichTextPanel && selectedTextBox != null) {
-            val rbox = selectedTextBox!!
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                RichTextPanel(
-                    box = rbox,
-                    fonts = fontList,
-                    defaultColor = brushEngine.color,
-                    onApply = {
-                        undoRedoManager.pushTextBox(textLayerIdOf(rbox), rbox.copy())
-                        refreshComposite()
-                    },
-                    onClose = { showRichTextPanel = false }
-                )
-            }
+            EditorOverlays.richTextPanel(
+                box = selectedTextBox!!,
+                fonts = fontList,
+                defaultColor = brushEngine.color,
+                onApply = { rbox ->
+                    undoRedoManager.pushTextBox(textLayerIdOf(rbox), rbox.copy())
+                    refreshComposite()
+                },
+                onClose = { showRichTextPanel = false }
+            )
         }
 
         // === Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /
