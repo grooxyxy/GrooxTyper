@@ -224,6 +224,7 @@ assert(sfxInk.includes('spec.keylineWidth > 0f') && sfxInk.indexOf('spec.keyline
 assert(sfxInk.includes('.coerceIn(8, 20000)'), 'SFX tinta: panjang profil dibatasi (anti OOM pada glyph raksasa)');
 assert(sfxBrushes.every(b => sfxEng.includes(b)), 'SfxBrushEngine: semua 7 kuas SFX terpetakan ke gaya mesin');
 assert(sfxEng.includes('INK_SFX("SFX Tinta")') && sfxEng.includes('fun compositeInkOutline('), 'SFX brush: gaya Tinta memakai pita + outline putih saat stroke selesai');
+assert(sfxEng.includes('private var seed: Int = 1') && sfxEng.includes('abs(seed).toLong().coerceAtLeast(1L)'), 'SFX brush: seed tetap Int untuk noise1/hashF, Long hanya di boundary SfxInk');
 assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
 assert(sfxEng.includes('fun styleOf') && brush.includes('SfxBrushEngine.styleOf(brushType)'), 'SFX: peta BrushType ke gaya mesin');
 assert(sfxEng.includes('fun stampFor') && sfxEng.includes('BitmapShader') === false, 'SFX: stamp radial bertekstur (bukan shader garis)');

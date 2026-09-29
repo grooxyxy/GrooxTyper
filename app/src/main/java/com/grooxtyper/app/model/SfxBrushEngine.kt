@@ -199,7 +199,7 @@ class SfxBrushEngine {
         private val srcRect = Rect(0, 0, STAMP_PX, STAMP_PX)
 
         /** Benih acak stroke ini (sama = goresan identik saat undo/redo). */
-        private var seed: Long = 1L
+        private var seed: Int = 1
 
         /** Mulai goresan baru di titik [p]. */
         fun begin(
@@ -215,7 +215,7 @@ class SfxBrushEngine {
             this.size = max(1f, size)
             this.opacity = opacity.coerceIn(0f, 1f)
             this.alphaLocked = alphaLocked
-            seed = (abs(p.x.toInt() * 31 + p.y.toInt() * 17 + engine.tick++).toLong() or 1L)
+            seed = abs(p.x.toInt() * 31 + p.y.toInt() * 17 + engine.tick++) or 1
             pts.clear()
             cum.clear()
             inkX.clear()
@@ -340,7 +340,7 @@ class SfxBrushEngine {
                 alpha = opacity
             )
             SfxInk.compositeOutline(
-                canvas, path, spec, abs(seed).coerceAtLeast(1L),
+                canvas, path, spec, abs(seed).toLong().coerceAtLeast(1L),
                 RectF(minX, minY, maxX, maxY),
                 innerHole = inner
             )
