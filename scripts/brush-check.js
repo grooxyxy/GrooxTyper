@@ -221,6 +221,7 @@ assert(sfxInk.includes('fun ribbon(') && sfxInk.includes('PathMeasure'), 'SFX ti
 assert(sfxInk.includes('pm.nextContour()'), 'SFX tinta: outline ikut kontur DALAM huruf (counter) seperti video');
 assert(sfxInk.includes('fun drawGlyph(') && sfxInk.includes('fun compositeOutline('), 'SFX tinta: glyph & goresan Treatment');
 assert(sfxInk.includes('spec.keylineWidth > 0f') && sfxInk.indexOf('spec.keylineWidth > 0f') < sfxInk.indexOf('// L1: outline putih'), 'SFX tinta: URUTAN benar (keyline lebar digambar lebih dulu)');
+assert(sfxInk.includes('.coerceIn(8, 20000)'), 'SFX tinta: panjang profil dibatasi (anti OOM pada glyph raksasa)');
 assert(sfxBrushes.every(b => sfxEng.includes(b)), 'SfxBrushEngine: semua 7 kuas SFX terpetakan ke gaya mesin');
 assert(sfxEng.includes('INK_SFX("SFX Tinta")') && sfxEng.includes('fun compositeInkOutline('), 'SFX brush: gaya Tinta memakai pita + outline putih saat stroke selesai');
 assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
@@ -245,6 +246,13 @@ assert(brush.includes('brushType == BrushType.MARKER || brushType == BrushType.F
 assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
 assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
 assert(textBoxSrc.includes('data class SfxInkSpec') && textBoxSrc.includes('var inkSfx: SfxInkSpec?'), 'teks: gaya tinta SFX (SfxInkSpec) tersimpan di kotak');
+{
+  const inkPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/InkSfxPanel.kt'));
+  const textPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));
+  assert(inkPanel.includes('fun InkSfxSection(') && textPanel.includes('InkSfxSection('), 'panel: bagian Tinta SFX tersambung di tab Tulis');
+  assert(inkPanel.includes('onSpec(if (enabled) SfxInkSpec() else null)'), 'panel: toggle Tinta SFX bisa dinyalakan');
+  assert(inkPanel.includes('outlineRatio') && inkPanel.includes('roughOutline') && inkPanel.includes('tiltDeg'), 'panel: kendali outline / kasar tepi / miring');
+}
 assert(textRenderer.includes('fun renderInkSfx') && textRenderer.includes('SfxInk.drawGlyph('), 'renderer: jalur tinta SFX per glyph (isi + outline + keyline)');
 assert(textBoxSrc.includes('put("inkSfx"') && textBoxSrc.includes('optJSONObject("inkSfx")'), 'teks: tinta SFX ikut JSON project');
 assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');

@@ -9,13 +9,13 @@ import android.graphics.PorterDuffColorFilter
 import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.RectF
-import android.graphics.RectF
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -130,7 +130,8 @@ class SfxBrushEngine {
                     val dy = y - c
                     val d = hypot(dx, dy) / c
                     var a: Float = when (style) {
-                        Style.PEN, Style.NEON ->
+                        // INK_SFX ditangani di atas (pakai stamp PEN sebagai isi).
+                        Style.INK_SFX, Style.PEN, Style.NEON ->
                             if (d < 0.9f) 1f else (1f - (d - 0.9f) / 0.1f)
                         Style.MARKER ->
                             if (d < 0.94f) 1f else (1f - (d - 0.94f) / 0.06f)
@@ -198,7 +199,7 @@ class SfxBrushEngine {
         private val srcRect = Rect(0, 0, STAMP_PX, STAMP_PX)
 
         /** Benih acak stroke ini (sama = goresan identik saat undo/redo). */
-        private var seed: Int = 1
+        private var seed: Long = 1L
 
         /** Mulai goresan baru di titik [p]. */
         fun begin(
@@ -214,7 +215,7 @@ class SfxBrushEngine {
             this.size = max(1f, size)
             this.opacity = opacity.coerceIn(0f, 1f)
             this.alphaLocked = alphaLocked
-            seed = (abs(p.x.toInt() * 31 + p.y.toInt() * 17 + engine.tick++)) or 1
+            seed = (abs(p.x.toInt() * 31 + p.y.toInt() * 17 + engine.tick++).toLong() or 1L)
             pts.clear()
             cum.clear()
             inkX.clear()
@@ -339,7 +340,7 @@ class SfxBrushEngine {
                 alpha = opacity
             )
             SfxInk.compositeOutline(
-                canvas, path, spec, (abs(seed) or 1L).toLong(),
+                canvas, path, spec, abs(seed).coerceAtLeast(1L),
                 RectF(minX, minY, maxX, maxY),
                 innerHole = inner
             )

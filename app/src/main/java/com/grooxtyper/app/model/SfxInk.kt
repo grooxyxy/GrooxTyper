@@ -16,6 +16,8 @@ import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -225,16 +227,11 @@ object SfxInk {
     ) {
         val ds = max(0.5f, spec.strokeWidth * spec.spacing)
         val teeth = max(1, spec.teeth.toInt())
-        val profOutline = EdgeProfile.build(
-            (max(8f, bounds.width() + bounds.height()) / ds).toInt() + 8,
-            seed xor 0x5DEECE66DL,
-            teeth
-        )
-        val profInk = EdgeProfile.build(
-            (max(8f, bounds.width() + bounds.height()) / ds).toInt() + 8,
-            seed xor 0x9E3779B9L,
-            teeth
-        )
+        // Panjang profil dibatasi: glyph raksasa + ds kecil jangan sampai
+        // alokasi array besar (OOM).
+        val profN = ((max(8f, bounds.width() + bounds.height()) / ds).toInt() + 8)
+            .coerceIn(8, 20000)
+        val profOutline = EdgeProfile.build(profN, seed xor 0x5DEECE66DL, teeth)
         val a = (spec.alpha * 255f).toInt().coerceIn(0, 255)
         if (a <= 0) return
 

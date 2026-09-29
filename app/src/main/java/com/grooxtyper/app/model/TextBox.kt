@@ -1312,8 +1312,9 @@ class TextBox(
                         seed = ik.optInt("seed", 1)
                     )
                 }
-        }
+            )
     }
+}
 }
 
 /** Satu-satunya sumber daftar font: bawaan + folder custom_fonts. */

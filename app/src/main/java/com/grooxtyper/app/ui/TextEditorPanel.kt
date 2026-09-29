@@ -553,6 +553,15 @@ fun TextEditorPanel(
                             push()
                         }
                     )
+                    // Tinta SFX: isi padat + tepi bergerigi + outline putih
+                    // ala video lettering (lihat SfxInk).
+                    InkSfxSection(
+                        spec = box.inkSfx,
+                        onSpec = { newSpec ->
+                            box.inkSfx = newSpec
+                            push()
+                        }
+                    )
                 }
             }
         }
