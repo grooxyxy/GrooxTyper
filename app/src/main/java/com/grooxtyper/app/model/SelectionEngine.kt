@@ -186,11 +186,11 @@ class SelectionEngine(val width: Int, val height: Int) {
             val s = maxDim.toFloat() / longSide
             val dw = maxOf(8, (w * s).toInt())
             val dh = maxOf(8, (h * s).toInt())
-            val out = downsampleGrayStatic(px, w, h, dw, dh)
+            val out = downsampleGrayImpl(px, w, h, dw, dh)
             return WandSample(out, dw, dh, 1f / s)
         }
 
-        private fun downsampleGrayStatic(
+        fun downsampleGrayImpl(
             src: IntArray,
             sw: Int,
             sh: Int,
@@ -379,6 +379,14 @@ class SelectionEngine(val width: Int, val height: Int) {
             )
         }
     }
+
+    /**
+     * Turunkan ukuran area (rata-rata blok) sebelum watershed pada kanvas
+     * raksasa. Memakai helper statis yang sama dengan versi wand supaya
+     * hasil downsample konsisten.
+     */
+    private fun downsampleGray(src: IntArray, sw: Int, sh: Int, dw: Int, dh: Int): IntArray =
+        downsampleGrayImpl(src, sw, sh, dw, dh)
 
     /**
      * Perkirakan toleransi otomatis dari kontras lokal 9x9 di sekitar seed:

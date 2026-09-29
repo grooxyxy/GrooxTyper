@@ -49,6 +49,8 @@ object WandEngine {
     private const val SQRT2 = 1.41421356f
     private const val BIG = 1e9f
 
+    private fun absF(v: Float): Float = if (v < 0f) -v else v
+
     /**
      * Ubah ambang "jarak RGB" yang dipakai penggeser UI menjadi ambang di
      * metrik linear-light GIMP.
@@ -89,7 +91,7 @@ object WandEngine {
     class Mask(val w: Int, val h: Int) {
         val cov = ByteArray(w * h)
         var pixels: Int = 0
-            private set
+            internal set
 
         fun coverage(x: Int, y: Int): Int = cov[y * w + x].toInt() and 0xFF
 
@@ -114,7 +116,7 @@ object WandEngine {
             return n
         }
 
-        private fun mark(i: Int, c: Float): Boolean {
+        internal fun mark(i: Int, c: Float): Boolean {
             if (cov[i].toInt() != 0) return false
             cov[i] = (c * 255f + 0.5f).toInt().coerceIn(1, 255).toByte()
             pixels++
