@@ -410,7 +410,7 @@ assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), '
 assert(editor.includes('"Manual"') && editor.includes('"Otomatis"') && editor.includes('wandTolerance') && editor.includes('wandMode == "auto"'), 'wand: bar pengaturan mode Manual/Otomatis + slider toleransi');
 assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
 assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung (kasus webtoon)');
-assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('fun labelComponents(') && selectEng.includes('WATERSHED'), 'wand-otomatis: watershed biner (erosi kontraksi → seed → tumbuh serentak)');
+assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('WandEngine.splitBubbles('), 'wand-otomatis: watershed berbasis puncak distance transform (bukan erosi 1px per iterasi)');
 assert(editor.includes('Bubble gabung dipecah jadi 2 area'), 'wand-otomatis: pesan hasil pecah bubble');
 assert(editor.includes('fun focusRect(') && editor.includes('fun fitCanvasToScreen()'), 'navigasi: focusRect + fitCanvasToScreen');
 assert(bubDlg.includes('"Fokus"') && editor.includes('focusRect(rect)'), 'bubble: tombol Fokus per bubble (pusatkan kanvas)');
@@ -473,6 +473,34 @@ assert(bubbleDet.includes('if (src.hasAlpha()) android.graphics.Color.WHITE'), '
 assert(bubbleDet.includes('if (best < CONF_FLOOR) continue') && bubbleDet.includes('tak ada anchor >'), 'bubble: format koordinat dibaca dari anchor yang lolos ambang');
 assert(bubbleDet.includes('- padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
 const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
+// -- Tongkat sihir: span flood fill + anti-alias + watershed (riset sumber) ---
+const wandEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandEngine.kt'));
+const selEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SelectionEngine.kt'));
+{
+  const o = (wandEng.match(/{/g) || []).length;
+  const c = (wandEng.match(/}/g) || []).length;
+  assert(o === c, 'WandEngine braces balanced (' + o + '/' + c + ')');
+}
+assert(wandEng.includes('val aa = 1.5f - (d / thr)'), 'wand: ramp anti-alias GIMP (aa = 1.5 - d/threshold)');
+assert(wandEng.includes('aa < 0.5f -> aa * 2f') && wandEng.includes('aa <= 0f -> 0f'), 'wand: bentuk tiga tahap ramp anti-alias persis GIMP');
+assert(wandEng.includes('val cov = ByteArray(w * h)'), 'wand: mask coverage 0..255 (bukan boolean) - hilangkan white fringing');
+assert(wandEng.includes('fun toBinary(threshold: Int = 128)'), 'wand: kontur diambil pada coverage 50% (tepi falls di tepi asli)');
+assert(wandEng.includes('val LIN = FloatArray(256)') && wandEng.includes('1.055'), 'wand: metrik dihitung di ruang linear-light (GIMP_PRECISION_FLOAT_GAMMA)');
+assert(wandEng.includes('if (-e > d) d = -e') && wandEng.includes('(-f > d) d = -f'), 'wand: jarak Chebyshev (L-infinity), bukan Euclidean RGB');
+assert(wandEng.includes('var stack = IntArray(3 * 4096)'), 'wand: stack span IntArray (tanpa boxing per piksel)');
+assert(wandEng.includes('stack[sp++] = y'), 'wand: entri stack adalah rentang (y, dari, sampai) ala GIMP');
+assert(wandEng.includes('val pushFrom = if (p.diagonal && start > 0) start - 1 else start'), 'wand: opsi diagonal = memperlebar span (bukan probe diagonal)');
+assert(wandEng.includes('if (!p.contiguous)'), 'wand: mode sample-merged (semua warna serupa, tanpa syarat terhubung)');
+assert(wandEng.includes('fun feather(mask: Mask, radius: Float)'), 'wand: feather operasi terpisah setelah fill (default GIMP mati)');
+assert(wandEng.includes('val SQRT2 = 1.41421356f') && wandEng.includes('fun distanceTransform'), 'wand: distance transform chamfer 3x3 (DIST_L2 maskSize 5)');
+assert(wandEng.includes('val thr = max(1f, maxD * ratio.coerceIn(0.2f, 0.95f))') && wandEng.includes('ratio: Float = 0.7f'), 'wand: puncak watershed = jarak >= 0.7 * max (resep OpenCV)');
+assert(wandEng.includes('if (markCount < 2) return emptyList()'), 'wand: watershed perlu minimal 2 marker');
+assert(wandEng.includes('fun maskFromBinary(') && wandEng.includes('fun thresholdForSrgb('), 'wand: pembantu mask biner + konversi ambang UI ke metrik linear');
+assert(selEng.includes('WandEngine.flood(') && selEng.includes('WandEngine.Params('), 'seleksi: selectWand memakai mesin baru');
+assert(!selEng.includes('ArrayDeque<Int>()') || selEng.includes('WandEngine'), 'seleksi: tak ada lagi stack piksel berbasis Integer di jalur wand');
+assert(!selEng.includes('val thr2 = maxDist * maxDist'), 'seleksi: jarak Euclidean RGB lama dibuang');
+assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
+assert(!selEng.includes('fun erodeByDistance(') && !selEng.includes('fun topLabels('), 'seleksi: helper erosi/label lama yang sudah tak dipakai dibuang');
 assert(wf.includes('XOR satu byte 0x5A') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range) lalu di-dekode XOR');
 assert(wf.includes('for VARIAN in fp16 int8') && wf.includes('make-bubble-model.py "$VARIAN"'), 'CI: varian model bubble(fp16/int8) dicoba berurutan');
 assert(wf.includes('verify-bubble-model.py /tmp/bd_try.onnx') && wf.includes('::error::tidak ada varian model bubble yang lolos uji kontrak'), 'CI: tiap varian WAJIB lewat uji kontrak sebelum dipakai (gagal = build merah)');
@@ -492,14 +520,14 @@ assert(bubbleDet.includes('fun isTileBlank(') && bubbleDet.includes('maxTiles'),
 assert(bubbleDet.includes('fun checkNotCancelled()') && bubbleDet.includes('CancellationException'), 'bubble: inferensi bisa dibatalkan (tidak menggantung/crash)');
 assert(bubbleDet.includes('import kotlinx.coroutines.Job') && bubbleDet.includes('currentCoroutineContext'), 'bubble: helper cancel pakai API yang pasti ada (tanpa ini build gagal)');
 assert(editor.includes('bubbleDetectJob') && editor.includes('px > 8_000_000L'), 'bubble: cancel deteksi lama + snapshot downscale di kanvas raksasa');
-assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('KONTRAKSI') && selectEng.includes('WATERSHED: tumbuhkan'), 'wand: pecah bubble via watershed (erosi kontraksi → seed → tumbuh serentak)');
+assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('parts.map { r ->'), 'wand: pecah bubble mengembalikan semua bagian, bukan tepat 2');
 // 23. Fitur baru: SFX engine, wand ringan + watershed jarak, kotak seleksi
 //     teks (fit), gaya per kata (span), perspektif 4 sudut bebas.
 assert(selectEng.includes('fun downsampleForWand') && selectEng.includes('WAND_MAX_DIM = 480'), 'wand: snapshot diturunkan ke 480px (tak berat di kanvas 720x16000)');
 assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('1f / sample.scale'), 'wand: koordinat seed + Path dikembalikan ke kanvas penuh');
-assert(selectEng.includes('fun distanceTransform') && selectEng.includes('fun erodeByDistance'), 'wand: kontraksi pakai transformasi jarak (bukan erosi 1px per iterasi)');
-assert(selectEng.includes('fun topLabels') && selectEng.includes('total * minPct / 100'), 'wand: seed = 2 komponen terbesar, noise dibuang');
-assert(selectEng.includes('fun growIfFree'), 'wand: watershed tumbuh 4-arah (tak bocor diagonal)');
+assert(!selectEng.includes('fun erodeByDistance') && wandEng.includes('fun distanceTransform(bin: BooleanArray'), 'wand: kontraksi pakai distance transform (helper erosi lama dibuang)');
+assert(wandEng.includes('val minPixels = max(8, (any * minAreaRatio') && wandEng.includes('minPixels) {'), 'wand: noise dibuang lewat ambang luas minimum per marker');
+assert(wandEng.includes('private fun claim(') && wandEng.includes('(mask.cov[j].toInt() and 0xFF) < 128'), 'wand: watershed tumbuh 4-arah dan tak keluar dari mask (tak bocor diagonal)');
 assert(textBoxSrc.includes('fun setFrame') && textBoxSrc.includes('fun isFrame()'), 'teks: kotak seleksi ala Photoshop (lebar + tinggi)');
 assert(textBoxSrc.includes('var autoFit: Boolean') && richLayout.includes('fun fitOf'), 'teks: auto-fit mengecilkan font sampai muat di kotak');
 assert(textBoxSrc.includes('WIDTH_RIGHT, FRAME') && textBoxSrc.includes('fun dragFrameHandle('), 'teks: handle FRAME untuk menggeser tepi kotak');
