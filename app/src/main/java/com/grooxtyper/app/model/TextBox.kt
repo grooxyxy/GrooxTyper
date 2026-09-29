@@ -37,11 +37,12 @@ data class PerspSpec(
     /**
      * Jaga agar semua offset tetap FINITE dan di dalam rentang yang dipakai
      * slider panel (-1.2..1.2). Dua hal ini penting:
-     *  - NaN/Inf: `coerceIn`returning NaN, lalu Matrix/Canvas dapat NaN dan
-     *    aplikasi bisa force close.
+     *  - NaN/Inf: `coerceIn` mengembalikan NaN apa adanya, lalu Matrix dan
+     *    Canvas menerima NaN dan aplikasi bisa menutup paksa.
      *  - Nilai di luar rentang slider: Slider Material melempar exception
-     *    saat nilainya di luar valueRange - sumber "grid perspektif bikin
-     *    force close" ketika sudut digeser lewat kanvas lalu panel dibuka.
+     *    saat nilainya di luar valueRange. Inilah sumber "grid perspektif
+     *    bikin force close": sudut digeser lewat kanvas (batas 1.2) lalu
+     *    panel dibuka dengan nilai lama di luar rentang.
      */
     fun clampAll() {
         tlX = sane(tlX); tlY = sane(tlY)
@@ -69,12 +70,6 @@ data class PerspSpec(
     fun isFlat(): Boolean = tlX == 0f && tlY == 0f && trX == 0f && trY == 0f &&
         brX == 0f && brY == 0f && blX == 0f && blY == 0f
 
-    companion object {
-        /** Batas offset sudut (dalam fraksi setengah lebar/tinggi). */
-        const val MIN_OFFSET = -1.2f
-        const val MAX_OFFSET = 1.2f
-    }
-
     fun copyFrom(o: PerspSpec) {
         tlX = o.tlX; tlY = o.tlY; trX = o.trX; trY = o.trY
         brX = o.brX; brY = o.brY; blX = o.blX; blY = o.blY
@@ -85,16 +80,22 @@ data class PerspSpec(
         tlX, tlY, trX, trY, brX, brY, blX, blY
     )
 
-    /** Dari keystone lama (perspX = tepi atas/bawah, perspY = kiri/kanan). */
-    fun fromKeystone(perspX: Float, perspY: Float): PerspSpec {
-        val x = perspX.coerceIn(-1f, 1f)
-        val y = perspY.coerceIn(-1f, 1f)
-        return PerspSpec(
-            tlX = x, tlY = y,
-            trX = -x, trY = -y,
-            brX = x, brY = y,
-            blX = -x, blY = -y
-        ).sanitized()
+    companion object {
+        /** Batas offset sudut (dalam fraksi setengah lebar/tinggi). */
+        const val MIN_OFFSET = -1.2f
+        const val MAX_OFFSET = 1.2f
+
+        /** Dari keystone lama (perspX = tepi atas/bawah, perspY = kiri/kanan). */
+        fun fromKeystone(perspX: Float, perspY: Float): PerspSpec {
+            val x = perspX.coerceIn(-1f, 1f)
+            val y = perspY.coerceIn(-1f, 1f)
+            return PerspSpec(
+                tlX = x, tlY = y,
+                trX = -x, trY = -y,
+                brX = x, brY = y,
+                blX = -x, blY = -y
+            ).sanitized()
+        }
     }
 }
 

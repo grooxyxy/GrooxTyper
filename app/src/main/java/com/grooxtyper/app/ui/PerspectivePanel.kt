@@ -53,14 +53,23 @@ fun PerspectivePanel(
     onClose: () -> Unit
 ) {
     // Sumber tunggal = kotak teks itu sendiri (bukan salinan state lokal).
-    // Versi lama menyalin offset ke state lokal sekali saat panel dibuka,
-    // sehingga (a) slider menampilkan nilai basi setelah sudut digeser di kanvas dan
+    // Versi lama menyalin offset ke state lokal sekali saat panel dibuka, sehingga
+    // (a) slider menampilkan nilai basi setelah sudut digeser di kanvas dan
     // (b) nilai di luar rentang slider membuat Material Slider melempar
-    // exception -> aplikasi force close. Sekarang nilai selalu dibaca dari
-    // kotak dan dijepit ke rentang slider sebelum dipakai.
+    // exception sehingga aplikasi menutup paksa. Sekarang nilai selalu dibaca
+    // dari kotak dan dijepit ke rentang slider sebelum dipakai.
     val p = (box.persp ?: PerspSpec.fromKeystone(box.perspX, box.perspY)).sanitized()
     val lo = PerspSpec.MIN_OFFSET
     val hi = PerspSpec.MAX_OFFSET
+
+    fun commit(spec: PerspSpec) {
+        spec.clampAll()
+        box.persp = spec
+        // Sinkronkan keystone lama supaya panel teks & jalur lama tetap sinkron.
+        box.perspX = ((spec.tlX + spec.trX + spec.brX + spec.blX) / 4f).coerceIn(-1f, 1f)
+        box.perspY = ((spec.tlY + spec.trY + spec.brY + spec.blY) / 4f).coerceIn(-1f, 1f)
+        onChange()
+    }
 
     fun setX(corner: Int, v: Float) {
         val n = p.copyAll()
@@ -82,15 +91,6 @@ fun PerspectivePanel(
             else -> n.blY = v
         }
         commit(n)
-    }
-
-    fun commit(spec: PerspSpec) {
-        spec.clampAll()
-        box.persp = spec
-        // Sinkronkan keystone lama supaya panel teks & jalur lama tetap sinkron.
-        box.perspX = ((spec.tlX + spec.trX + spec.brX + spec.blX) / 4f).coerceIn(-1f, 1f)
-        box.perspY = ((spec.tlY + spec.trY + spec.brY + spec.blY) / 4f).coerceIn(-1f, 1f)
-        onChange()
     }
 
     val presets = listOf(
