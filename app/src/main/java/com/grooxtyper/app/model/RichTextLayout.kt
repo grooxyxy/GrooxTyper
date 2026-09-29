@@ -88,6 +88,7 @@ object RichTextLayout {
         return box.id + "|" + box.text.length + "|" + box.text.hashCode() + "|" +
             box.fontSize + "|" + box.scale + "|" + (box.boxWidth ?: -1f) + "|" +
             (box.boxHeight ?: -1f) + "|" + box.lineSpacing + "|" + box.letterSpacing + "|" +
+            (box.bubble?.let { b2 -> b2.shape.toString() + ":" + b2.bubbleW + ":" + b2.bubbleH } ?: "-") + "|" +
             box.wordSpacing + "|" + box.uppercase + "|" + box.fontName + "|" +
             (box.bold) + "|" + (box.italic) + "|" + (box.typeface?.hashCode() ?: 0) + "|" + spSig
     }
@@ -163,18 +164,32 @@ object RichTextLayout {
             words.add(runs)
         }
 
+        // Profil lebar per baris (hanya untuk teks yang mengikuti bubble):
+        // baris dekat tepi gelembung lebih sempit, jadi teks benar-benar
+        // membentuk kelengkungan bubble, bukan kotak yang dipotong.
+        val bubbleProfile = box.bubbleLineWidths()
+        var lineIndex = 0
+        fun limitOf(idx: Int): Float {
+            val p = bubbleProfile ?: return limit
+            val v = p[idx.coerceIn(0, p.size - 1)]
+            return if (v < limit) v else limit
+        }
+
         var cur = ArrayList<Run>(8)
         var curW = 0f
         for (wordRuns in words) {
             var ww = 0f
             for (r in wordRuns) ww += r.width
-            if (cur.isNotEmpty() && curW + ww > limit) {
+            val curLimit = limitOf(lineIndex)
+            if (cur.isNotEmpty() && curW + ww > curLimit) {
                 lines.add(finishLine(cur, curW - wordExtra))
                 cur = ArrayList(8)
                 curW = 0f
+                lineIndex++
             }
             // Kata tunggal lebih lebar dari kotak: patah per karakter.
-            if (ww > limit && cur.isEmpty()) {
+            val lineLimit = limitOf(lineIndex)
+            if (ww > lineLimit && cur.isEmpty()) {
                 for (r in wordRuns) {
                     val single = ArrayList<Run>(1)
                     var acc = 0f
@@ -182,11 +197,12 @@ object RichTextLayout {
                         val sub = makeRun(
                             box, r.text, ch, ch + 1, r.style, fit, ch == r.text.length - 1
                         )
-                        if (acc + sub.width > limit && single.isNotEmpty()) {
+                        if (acc + sub.width > limitOf(lineIndex) && single.isNotEmpty()) {
                             single[single.size - 1].wordEnd = false
                             lines.add(finishLine(single, acc))
                             single.clear()
                             acc = 0f
+                            lineIndex++
                         }
                         single.add(sub)
                         acc += sub.width

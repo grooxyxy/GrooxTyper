@@ -14,6 +14,7 @@ import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 import kotlin.math.sin
 
 enum class TextAlignMode { LEFT, CENTER, RIGHT }
@@ -687,6 +688,48 @@ class TextBox(
      * Baris efektif untuk render/ukur: bila paragraph, tiap paragraph
      * (\n) di-wrap ke [boxWidth] ala Photoshop/IbisPaint.
      */
+    /**
+     * Lebar maksimum tiap baris mengikuti PROFIL BENTUK bubble, bukan kotak
+     * persegi. Untuk elips, lebar baris ke-i = lebar_elips * sqrt(1 - t^2)
+     * dengan t posisi vertikal baris itu, sehingga baris pertama dan terakhir
+     * (dekat tepi gelembung) lebih sempit dan baris tengah paling lebar.
+     *
+     * Inilah yang dimaksud "teks mengikuti bubble": pada gambar referensi,
+     * setiap baris punya panjang berbeda sesuai kelengkungan gelembung, bukan
+     * semua baris sama lalu dipotong di sudut.
+     *
+     * Null bila tidak ada bubble, bubble tak punya ukuran, atau teksnya hanya
+     * satu baris (tak ada yang perlu/runcing).
+     */
+    fun bubbleLineWidths(): FloatArray? {
+        val b = bubble ?: return null
+        if (b.bubbleW <= 0f || b.bubbleH <= 0f) return null
+        val inner = bubbleInnerRectLocal()
+        val iw = inner.width()
+        val ih = inner.height()
+        if (!iw.isFinite() || !ih.isFinite() || iw < 24f || ih < 12f) return null
+        if (b.shape != BubbleSpec.SHAPE_ELIPS) return null
+        // Perkiraan jumlah baris: bungkus selebar tengah elips (lebar
+        // maksimum yang mungkin dipakai baris tengah).
+        val probe = wrapParagraph(
+            displayText(), basePaint(), iw,
+            letterSpacing * scale, wordSpacing * scale
+        )
+        val n = probe.size
+        if (n < 2) return null
+        val out = FloatArray(n)
+        val halfH = ih / 2f
+        for (i in 0 until n) {
+            // Blok teks dianggap mengisi tinggi interior (auto-fit sudah
+            // menyetel ukuran font supaya begitu).
+            val dy = -halfH + (i + 0.5f) * (ih / n)
+            val t = (dy / halfH).coerceIn(-1f, 1f)
+            val prof = sqrt(1f - t * t)
+            out[i] = (iw * prof).coerceAtLeast(iw * 0.34f)
+        }
+        return out
+    }
+
     fun wrappedLines(): List<String> {
         val rawParas = displayText().split("\n")
         val bw = boxWidth ?: return rawParas.ifEmpty { listOf("") }

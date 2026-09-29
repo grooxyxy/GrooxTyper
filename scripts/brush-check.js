@@ -455,6 +455,14 @@ assert(textBoxSrc.includes('m.setRotate(rotation)') && textBoxSrc.includes('m.po
 assert(textBoxSrc.includes('fun bubbleInnerRectLocal()') && textBoxSrc.includes('1.4142f'), 'teks: persegi terpanjang di dalam elips (teks tak keluar gelembung bulat)');
 assert(textBoxSrc.includes('bubble = bubble?.copy()') && textBoxSrc.includes('bubble = o.bubble?.copy()') && textBoxSrc.includes('bubble == o.bubble'), 'teks: bubble ikut copy/setFrom/contentEquals');
 assert(textBoxSrc.includes('put("bubble"') && textBoxSrc.includes('optJSONObject("bubble")'), 'teks: bubble ikut JSON project (lengkap bubbleW/bubbleH)');
+// -- Teks MENGIKUTI kurva bubble: lebar per baris, bukan satu kotak ------------
+assert(textBoxSrc.includes('fun bubbleLineWidths()') && textBoxSrc.includes('val prof = sqrt(1f - t * t)'), 'teks: lebar baris mengikuti profil elips (sqrt(1-t^2))');
+assert(textBoxSrc.includes('coerceAtLeast(iw * 0.34f)'), 'teks: baris tepi tak pernah lebih sempit dari 34% (tetap terbaca)');
+assert(textBoxSrc.includes('if (n < 2) return null'), 'teks: tapering hanya saat ada 2+ baris (satu baris tak perlu)');
+assert(textBoxSrc.includes('wrapParagraph(\n            displayText(), basePaint(), iw,'), 'teks: jumlah baris diperkirakan dari pembungkusan greedy');
+assert(richLayout.includes('val bubbleProfile = box.bubbleLineWidths()') && richLayout.includes('fun limitOf(idx: Int)'), 'layout: ambang lebar diambil per baris sesuai profil bubble');
+assert(richLayout.includes('lineIndex++') && richLayout.includes('val curLimit = limitOf(lineIndex)'), 'layout: indeks baris maju saat baris difinish (profil ikut geser)');
+assert(richLayout.includes('bubble?.let { b2 -> b2.shape.toString()'), 'layout: cache layout ikut memuat bentuk bubble (tak basi)');
 assert(textRenderer.includes('val clip = box.bubblePathPx()') && textRenderer.includes('canvas.clipPath(clip)') && textRenderer.includes('canvas.restoreToCount(c2)'), 'renderer: satu klip di luar berlaku untuk semua jalur (glif/outline/shadow/glow)');
 assert(editor.includes('val ir = probe.bubbleInnerRectPx()') && editor.includes('BubbleSpec.SHAPE_ELIPS'), 'editor: isi-bubble otomatis memakai persegi dalam elips + spec bubble');
 assert(editor.includes('box.autoFit = true') && editor.includes('box.boxHeight ='), 'editor: frame auto-fit dibuat eksplisit agar klip dan renderer punya kotak');
