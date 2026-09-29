@@ -209,8 +209,21 @@ const sfxEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/
   assert(o === c, 'SfxBrushEngine braces balanced (' + o + '/' + c + ')');
 }
 const sfxBrushes = ['SFX_PEN', 'SFX_BRUSH', 'SFX_MARKER', 'SFX_AIR', 'SFX_CRAYON', 'SFX_INK', 'SFX_NEON'];
-assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
+const sfxInk = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxInk.kt'));
+{
+  const o = (sfxInk.match(/\{/g) || []).length;
+  const c = (sfxInk.match(/\}/g) || []).length;
+  assert(o === c, 'SfxInk braces balanced (' + o + '/' + c + ')');
+}
+// SFX tinta: teknik dari video (path + profil half-width per panjang busur)
+assert(sfxInk.includes('class XorShift64') && sfxInk.includes('object EdgeProfile'), 'SFX tinta: PRNG deterministik + profil tepi (anti swim)');
+assert(sfxInk.includes('fun ribbon(') && sfxInk.includes('PathMeasure'), 'SFX tinta: pita (ribbon mesh) dari panjang busur - bukan tumpukan stamp');
+assert(sfxInk.includes('pm.nextContour()'), 'SFX tinta: outline ikut kontur DALAM huruf (counter) seperti video');
+assert(sfxInk.includes('fun drawGlyph(') && sfxInk.includes('fun compositeOutline('), 'SFX tinta: glyph & goresan Treatment');
+assert(sfxInk.includes('spec.keylineWidth > 0f') && sfxInk.indexOf('spec.keylineWidth > 0f') < sfxInk.indexOf('// L1: outline putih'), 'SFX tinta: URUTAN benar (keyline lebar digambar lebih dulu)');
 assert(sfxBrushes.every(b => sfxEng.includes(b)), 'SfxBrushEngine: semua 7 kuas SFX terpetakan ke gaya mesin');
+assert(sfxEng.includes('INK_SFX("SFX Tinta")') && sfxEng.includes('fun compositeInkOutline('), 'SFX brush: gaya Tinta memakai pita + outline putih saat stroke selesai');
+assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
 assert(sfxEng.includes('fun styleOf') && brush.includes('SfxBrushEngine.styleOf(brushType)'), 'SFX: peta BrushType ke gaya mesin');
 assert(sfxEng.includes('fun stampFor') && sfxEng.includes('BitmapShader') === false, 'SFX: stamp radial bertekstur (bukan shader garis)');
 assert(sfxEng.includes('val streak = 0.5f + 0.5f * noise1(y * 0.42f, seed)'), 'SFX: sabut kuas (streak) korelasi lintas goresan');
@@ -231,6 +244,9 @@ assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: ekor masuk cach
 assert(brush.includes('brushType == BrushType.MARKER || brushType == BrushType.FLAT'), 'gapless: Marker/Flat digambar satu path kontinu (tanpa takik sambungan)');
 assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
 assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
+assert(textBoxSrc.includes('data class SfxInkSpec') && textBoxSrc.includes('var inkSfx: SfxInkSpec?'), 'teks: gaya tinta SFX (SfxInkSpec) tersimpan di kotak');
+assert(textRenderer.includes('fun renderInkSfx') && textRenderer.includes('SfxInk.drawGlyph('), 'renderer: jalur tinta SFX per glyph (isi + outline + keyline)');
+assert(textBoxSrc.includes('put("inkSfx"') && textBoxSrc.includes('optJSONObject("inkSfx")'), 'teks: tinta SFX ikut JSON project');
 assert(textBoxSrc.includes('data class SfxSpec'), 'TextBox: SfxSpec (arc + jitter + seed) ada');
 assert(textBoxSrc.includes('var sfx: SfxSpec?'), 'TextBox: field mode SFX');
 assert(textBoxSrc.includes('put("sfx"') && textBoxSrc.includes('optJSONObject("sfx")'), 'TextBox: SfxSpec tersimpan di project JSON');

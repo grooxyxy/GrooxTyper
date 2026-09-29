@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.Shader
+import android.graphics.Path
+import android.graphics.RectF
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -26,6 +28,13 @@ object TextRenderer {
 
     fun render(canvas: Canvas, box: TextBox) {
         if (box.text.isEmpty()) return
+        // Gaya "tinta SFX" (video lettering): glyph path -> isi padat +
+        // outline putih bergerigi yang mengikuti cekungan. Jalur terpisah
+        // karena butuh Path, bukan per-glif drawText.
+        box.inkSfx?.let { spec ->
+            renderInkSfx(canvas, box, spec)
+            return
+        }
         // Gaya per kata (span) atau kotak seleksi auto-fit: jalur kaya.
         if (box.hasSpans() || box.isFrame()) {
             renderRich(canvas, box)
@@ -145,6 +154,69 @@ object TextRenderer {
         // Garis bawah / coret per baris.
         if (box.underline || box.strikethrough) {
             drawDecorations(canvas, layouts, widths, box, fill, fm)
+        }
+        canvas.restore()
+    }
+
+    /**
+     * Render gaya tinta SFX ala video: tiap huruf jadi path vektor lalu
+     * digambar berlapis (keyline -> outline putih bergerigi -> isi tinta
+     * solid/gradasi -> spatter). Noise tepi di-sample pada PANJANG BUSUR
+     * sehingga tidak "berenang" saat huruf dimiringkan.
+     */
+    private fun renderInkSfx(canvas: Canvas, box: TextBox, spec: SfxInkSpec) {
+        val text = box.displayText().replace("\n", "")
+        if (text.isEmpty()) return
+        val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = box.fontSize * box.scale
+            typeface = box.effectiveTypeface()
+            this.textScaleX = box.textScaleX.coerceIn(0.3f, 1f)
+        }
+        val fm = basePaint.fontMetrics
+        val capH = kotlin.math.max(4f, fm.descent - fm.ascent)
+        val strokeW = (spec.strokeRatio * capH).coerceAtLeast(1.2f)
+        val inkSpec = SfxInk.InkSpec(
+            strokeWidth = strokeW,
+            outlineWidth = strokeW * spec.outlineRatio,
+            outlineColor = spec.outlineColor,
+            keylineWidth = strokeW * spec.keylineRatio,
+            keylineColor = spec.keylineColor,
+            inkColor = box.color,
+            roughOutline = spec.roughOutline,
+            roughInk = 0.06f,
+            teeth = kotlin.math.max(2f, spec.teethRatio * capH),
+            spacing = 0.10f,
+            gradient = spec.gradient,
+            gradientDarken = spec.gradientDarken,
+            spatter = spec.spatter,
+            alpha = box.textOpacity
+        )
+        // Lebar total tiap huruf + posisi (huruf digambar berurutan).
+        val chars = text.map { it.toString() }.filter { it != " " }
+        val widths = chars.map { basePaint.measureText(it) }
+        val total = widths.sum()
+        val seedBase = (spec.seed * 7919L + box.text.hashCode().toLong()) or 1L
+        canvas.save()
+        canvas.translate(box.position.x, box.position.y)
+        if (box.rotation != 0f) canvas.rotate(box.rotation)
+        PerspectiveGrid.matrix(box, total, capH)?.let { canvas.concat(it) }
+        val baseline = -fm.ascent
+        var x = -total / 2f
+        for (i in chars.indices) {
+            val ch = chars[i]
+            val w = widths[i]
+            val cx = x + w / 2f
+            val glyph = Path()
+            basePaint.getTextPath(ch, 0, 1, -w / 2f, 0f, glyph)
+            val b = RectF()
+            glyph.computeBounds(b, true)
+            canvas.save()
+            canvas.translate(cx, baseline)
+            // Miring ala brush script (video: -15..-25 derajat).
+            if (spec.tiltDeg != 0f) canvas.rotate(spec.tiltDeg)
+            SfxInk.drawGlyph(canvas, glyph, inkSpec, seedBase + i * 7919L, b)
+            canvas.restore()
+            x += w
         }
         canvas.restore()
     }

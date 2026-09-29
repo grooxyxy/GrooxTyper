@@ -9,6 +9,7 @@ import android.graphics.PorterDuffColorFilter
 import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.RectF
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.abs
 import kotlin.math.cos
@@ -44,6 +45,8 @@ class SfxBrushEngine {
 
     /** Gaya kuas SFX (dipetakan dari enum BrushType). */
     enum class Style(val displayName: String) {
+        /** GAYA UTAMA ala video: pita tinta + outline putih bergerigi. */
+        INK_SFX("SFX Tinta"),
         /** Kuas pena tebal: tepi keras, denyut lebar halus. */
         PEN("SFX Pen"),
 
@@ -81,6 +84,7 @@ class SfxBrushEngine {
 
         /** Peta enum BrushType ke gaya mesin SFX (null = bukan kuas SFX). */
         fun styleOf(t: BrushType): Style? = when (t) {
+            BrushType.SFX_INK -> Style.INK_SFX
             BrushType.SFX_PEN -> Style.PEN
             BrushType.SFX_BRUSH -> Style.BRUSH
             BrushType.SFX_MARKER -> Style.MARKER
@@ -114,6 +118,7 @@ class SfxBrushEngine {
          * saat stamp dirotasi, seratnya sejajar arah goresan.
          */
         fun stampFor(style: Style): Bitmap {
+            if (style == Style.INK_SFX) return stampFor(Style.PEN)
             stampCache[style]?.let { return it }
             val bmp = Bitmap.createBitmap(STAMP_PX, STAMP_PX, Bitmap.Config.ARGB_8888)
             val px = IntArray(STAMP_PX * STAMP_PX)
@@ -176,6 +181,12 @@ class SfxBrushEngine {
 
         private val pts = ArrayList<Offset>(64)
         private val cum = ArrayList<Float>(64)
+        /** Half-width tiap titik (dinamika sapuan) untuk pita. */
+        private val halfs = ArrayList<Float>(64)
+        /** Titik + half-width yang sudah dipaint (dipakai pita outline). */
+        private val inkX = ArrayList<Float>(256)
+        private val inkY = ArrayList<Float>(256)
+        private val inkH = ArrayList<Float>(256)
         private var paintedLen = 0f
         private var totalLen = 0f
         private var curDist = 0f
@@ -206,6 +217,9 @@ class SfxBrushEngine {
             seed = (abs(p.x.toInt() * 31 + p.y.toInt() * 17 + engine.tick++)) or 1
             pts.clear()
             cum.clear()
+            inkX.clear()
+            inkY.clear()
+            inkH.clear()
             pts.add(p)
             cum.add(0f)
             resetCursor()
@@ -223,6 +237,9 @@ class SfxBrushEngine {
         fun discard() {
             pts.clear()
             cum.clear()
+            inkX.clear()
+            inkY.clear()
+            inkH.clear()
             resetCursor()
         }
 
@@ -251,6 +268,7 @@ class SfxBrushEngine {
                 totalLen += d
                 pts.add(p)
                 cum.add(totalLen)
+                halfs.add(0f)
             }
             if (pts.size < 2) return
             val now = System.currentTimeMillis()
@@ -265,19 +283,79 @@ class SfxBrushEngine {
             paintUntil(canvas, (totalLen - hold).coerceAtLeast(paintedLen), speed, lift, false)
         }
 
-        /** Tutup goresan: gambar ekor ditahan dengan taper kuadratik. */
+        /**
+         * Tutup goresan: gambar ekor ditahan dengan taper kuadratik, lalu
+         * (untuk gaya SFX Tinta) komposit outline putih + keyline lewat
+         * SfxInk - itu teknik "Mesh Redraw" (layer style Stroke) di video.
+         */
         fun finish(canvas: Canvas) {
             if (pts.size < 2) {
                 discard()
                 return
             }
             paintUntil(canvas, totalLen, 1f, 1f, true)
+            if (style == Style.INK_SFX) compositeInkOutline(canvas)
             discard()
+        }
+
+        /** Outline putih + keyline mengikuti bentuk goresan (pita). */
+        private fun compositeInkOutline(canvas: Canvas) {
+            val n = min(inkX.size, min(inkY.size, inkH.size))
+            if (n < 2) return
+            val xs = FloatArray(n)
+            val ys = FloatArray(n)
+            val hs = FloatArray(n)
+            for (i in 0 until n) {
+                xs[i] = inkX[i]; ys[i] = inkY[i]; hs[i] = inkH[i]
+            }
+            // Pita dalam (isi) & pita luar (outline) dari titik yang sama:
+            // ini yang membuat tepi bergerigi dan lebar mengikuti sapuan.
+            val inner = SfxInk.strokeRibbon(xs, ys, hs)
+            val outerH = FloatArray(n) { hs[it] * 1.9f }
+            val outer = SfxInk.strokeRibbon(xs, ys, outerH)
+            if (inner == null || outer == null) return
+            val path = outer
+            var minX = Float.MAX_VALUE
+            var minY = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var maxY = -Float.MAX_VALUE
+            for (p in pts) {
+                if (p.x < minX) minX = p.x
+                if (p.y < minY) minY = p.y
+                if (p.x > maxX) maxX = p.x
+                if (p.y > maxY) maxY = p.y
+            }
+            val spec = SfxInk.InkSpec(
+                strokeWidth = size,
+                outlineWidth = size * 0.38f,
+                outlineColor = Color.WHITE,
+                keylineWidth = size * 0.14f,
+                keylineColor = SfxInk.darken(color, 0.75f),
+                inkColor = color,
+                roughOutline = 0.34f,
+                roughInk = 0.06f,
+                teeth = max(2f, size * 0.5f),
+                spacing = 0.10f,
+                alpha = opacity
+            )
+            SfxInk.compositeOutline(
+                canvas, path, spec, (abs(seed) or 1L).toLong(),
+                RectF(minX, minY, maxX, maxY),
+                innerHole = inner
+            )
         }
 
         /** Ketukan tunggal = satu sentuhan kuas (bukan garis nol). */
         fun dot(canvas: Canvas, p: Offset) {
             dab(canvas, p, 0f, max(0.8f, size * 0.5f), 1f, 1f, dabCount++)
+        }
+
+        /** Simpan titik goresan + setengah lebarnya (dipakai pita outline). */
+        private fun rememberHalf(p: Offset, h: Float) {
+            if (inkX.size > 4000) return
+            inkX.add(p.x)
+            inkY.add(p.y)
+            inkH.add(h)
         }
 
         private fun resetCursor() {
@@ -307,7 +385,9 @@ class SfxBrushEngine {
                 val t = if (taperTail) ((d - tailStart) / tailSpan).coerceIn(0f, 1f) else 0f
                 val taper = if (taperTail) (1f - t * t).coerceIn(0.03f, 1f) else 1f
                 val w = max(0.6f, widthAt(d, speed, lift) * taper)
-                dab(canvas, pointAt(d), angleAt(d), w, speed, lift, dabCount++)
+                val pos = pointAt(d)
+                dab(canvas, pos, angleAt(d), w, speed, lift, dabCount++)
+                rememberHalf(pos, w * 0.5f)
                 val step = max(1.1f, w * 0.42f)
                 d += step
                 // Jaga agar tak looping tanpa batas pada goresan sangat

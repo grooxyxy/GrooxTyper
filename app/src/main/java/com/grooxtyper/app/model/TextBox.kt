@@ -154,6 +154,28 @@ data class SpanStyle(
     }
 }
 
+/**
+ * Parameter gaya "tinta SFX" untuk teks. Semua ukuran dalam fraksi tinggi
+ * huruf (H) mengikuti hasil ukur video: `strokeW = 0.065 H`,
+ * `outlineW = 0.38 strokeW`, `keylineW = 0.14 strokeW`, `teeth = 0.062 H`.
+ */
+data class SfxInkSpec(
+    /** Tulis huruf miring ala brush script (-15..-25 derajat). */
+    var tiltDeg: Float = -18f,
+    var strokeRatio: Float = 0.065f,
+    var outlineRatio: Float = 0.38f,
+    var keylineRatio: Float = 0.14f,
+    var outlineColor: Int = 0xFFF2EFE2.toInt(),
+    var keylineColor: Int = 0xFF1A1A1E.toInt(),
+    var roughOutline: Float = 0.34f,
+    var teethRatio: Float = 0.062f,
+    var gradient: Boolean = true,
+    var gradientDarken: Float = 0.42f,
+    var spatter: Int = 0,
+    /** Seed supaya tepihuruf yang sama selalu sama. */
+    var seed: Int = 1
+)
+
 /** Rentang [start, end) pada [TextBox.text] yang punya [style] sendiri. */
 data class TextSpan(val start: Int, val end: Int, val style: SpanStyle)
 
@@ -281,7 +303,11 @@ class TextBox(
     // satu gaya seperti biasa.
     var spans: List<TextSpan>? = null,
     // Mode SFX (lihat SfxSpec): null = teks baris biasa.
-    var sfx: SfxSpec? = null
+    var sfx: SfxSpec? = null,
+    // Gaya "tinta SFX" ala video lettering: isi padat + tepi bergerigi +
+    // outline putih yang mengikuti cekungan huruf (lihat SfxInk). null = pakai
+    // gaya huruf biasa.
+    var inkSfx: SfxInkSpec? = null
 ) {
     fun isParagraph(): Boolean = boxWidth != null
 
@@ -905,7 +931,8 @@ class TextBox(
         autoFit = autoFit,
         persp = persp?.copy(),
         spans = spans?.map { TextSpan(it.start, it.end, it.style.copy()) },
-        sfx = sfx?.copy()
+        sfx = sfx?.copy(),
+        inkSfx = inkSfx?.copy()
     )
 
     /** Pulihkan semua field dari [o] tanpa ganti objek (referensi seleksi tetap valid). */
@@ -946,6 +973,7 @@ class TextBox(
         persp = o.persp?.let { p -> PerspSpec().also { it.copyFrom(p) } }
         spans = o.spans?.map { TextSpan(it.start, it.end, it.style.copy()) }
         sfx = o.sfx?.copy()
+        inkSfx = o.inkSfx?.copy()
     }
 
     /** Samakan isi visual (untuk deteksi sesi edit panel). */
@@ -984,7 +1012,8 @@ class TextBox(
             autoFit == o.autoFit &&
             persp == o.persp &&
             spans == o.spans &&
-            sfx == o.sfx
+            sfx == o.sfx &&
+            inkSfx == o.inkSfx
     }
 
     companion object {
@@ -1152,6 +1181,22 @@ class TextBox(
                     put("seed", sp.seed)
                 })
             }
+            inkSfx?.let { ik ->
+                put("inkSfx", org.json.JSONObject().apply {
+                    put("tiltDeg", ik.tiltDeg.toDouble())
+                    put("strokeRatio", ik.strokeRatio.toDouble())
+                    put("outlineRatio", ik.outlineRatio.toDouble())
+                    put("keylineRatio", ik.keylineRatio.toDouble())
+                    put("outlineColor", ik.outlineColor)
+                    put("keylineColor", ik.keylineColor)
+                    put("roughOutline", ik.roughOutline.toDouble())
+                    put("teethRatio", ik.teethRatio.toDouble())
+                    put("gradient", ik.gradient)
+                    put("gradientDarken", ik.gradientDarken.toDouble())
+                    put("spatter", ik.spatter)
+                    put("seed", ik.seed)
+                })
+            }
         }
 
         /** Pasangan dari [toJson]: typeface dicari via [typefaceFor], fallback bold. */
@@ -1250,8 +1295,23 @@ class TextBox(
                         wave = sp.optDouble("wave", 0.0).toFloat(),
                         seed = sp.optInt("seed", 1)
                     )
+                },
+                inkSfx = o.optJSONObject("inkSfx")?.let { ik ->
+                    SfxInkSpec(
+                        tiltDeg = ik.optDouble("tiltDeg", -18.0).toFloat(),
+                        strokeRatio = ik.optDouble("strokeRatio", 0.065).toFloat(),
+                        outlineRatio = ik.optDouble("outlineRatio", 0.38).toFloat(),
+                        keylineRatio = ik.optDouble("keylineRatio", 0.14).toFloat(),
+                        outlineColor = ik.optInt("outlineColor", 0xFFF2EFE2.toInt()),
+                        keylineColor = ik.optInt("keylineColor", 0xFF1A1A1E.toInt()),
+                        roughOutline = ik.optDouble("roughOutline", 0.34).toFloat(),
+                        teethRatio = ik.optDouble("teethRatio", 0.062).toFloat(),
+                        gradient = ik.optBoolean("gradient", true),
+                        gradientDarken = ik.optDouble("gradientDarken", 0.42).toFloat(),
+                        spatter = ik.optInt("spatter", 0),
+                        seed = ik.optInt("seed", 1)
+                    )
                 }
-            )
         }
     }
 }

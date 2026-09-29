@@ -69,7 +69,7 @@ enum class BrushType(val displayName: String, val category: String) {
     SFX_MARKER("SFX Marker", "SFX"),
     SFX_AIR("SFX Airbrush", "SFX"),
     SFX_CRAYON("SFX Crayon", "SFX"),
-    SFX_INK("SFX Ink", "SFX"),
+    SFX_INK("SFX Tinta", "SFX"),
     SFX_NEON("SFX Neon", "SFX")
 }
 
