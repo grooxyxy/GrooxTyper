@@ -93,7 +93,7 @@ fun BrushPanel(
     BackHandler(onBack = onClose)
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Brush", "Stabilizer", "Fade")
+    val tabs = listOf("Brush", "SFX", "Stabilizer", "Fade")
 
     Box(
         modifier = Modifier
@@ -170,8 +170,9 @@ fun BrushPanel(
             ) {
                 when (selectedTab) {
                     0 -> BrushListTab(brushEngine)
-                    1 -> StabilizerTab(brushEngine)
-                    2 -> FadeTab(brushEngine)
+                    1 -> GenreBrushPanel(brushEngine)
+                    2 -> StabilizerTab(brushEngine)
+                    3 -> FadeTab(brushEngine)
                 }
             }
         }

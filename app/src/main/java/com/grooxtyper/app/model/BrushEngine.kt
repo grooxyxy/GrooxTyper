@@ -62,15 +62,13 @@ enum class BrushType(val displayName: String, val category: String) {
     HEAL_MIGAN("Heal MiGAN", "Hapus"),
     // AI inpaint (Agnes AI via jaringan, key di pengaturan)
     AI_INPAINT("AI Inpaint", "Hapus"),
-    // SFX komik: sapuan kuas sungguhan (lihat SfxBrushEngine). Tujuh gaya,
-    // semua pakai mesin stamp bertekstur — bukan garis tebal.
-    SFX_PEN("SFX Pen", "SFX"),
-    SFX_BRUSH("SFX Brush", "SFX"),
-    SFX_MARKER("SFX Marker", "SFX"),
-    SFX_AIR("SFX Airbrush", "SFX"),
-    SFX_CRAYON("SFX Crayon", "SFX"),
-    SFX_INK("SFX Tinta", "SFX"),
-    SFX_NEON("SFX Neon", "SFX")
+    // SFX komik BERGENRE (lihat GenreBrushEngine). Empat gaya yang bentuknya
+    // benar-benar berbeda: horror / romance / action / fantasy. Tiap genre punya
+    // gradasi, opacity, outline, shadow, dan tekstur yang bisa disetel sendiri.
+    GENRE_HORROR("SFX Horror", "SFX"),
+    GENRE_ROMANCE("SFX Romance", "SFX"),
+    GENRE_ACTION("SFX Action", "SFX"),
+    GENRE_FANTASY("SFX Fantasy", "SFX")
 }
 
 enum class RulerType {
@@ -208,16 +206,18 @@ class BrushEngine {
     // Kecepatan lowpass ala MyPaint (fac=exp(-dt/T)) untuk dynamics halus.
     private var velocityEma = 0f
 
-    // ── State kuas SFX (lettering komik) ──────────────────────────────────
-    // Lebar SFX dihitung PER-DAB di SfxBrushEngine: taper awal runcing,
-    // denyut organik, kontras arah (turun tebal / atas tipis ala kaligrafi),
-    // kecepatan, dan jeda = angkat kuas. Tekstur sabut kuas ikut berputar
-    // mengikuti arah goresan. Ekor stroke ditahan supaya ujung AKHIR bisa
-    // diruncingkan waktu stroke selesai — tanpa ini goresan selalu berakhir
-    // bulat seperti font yang diketik, bukan sapuan tangan.
-    private val sfxEngine = SfxBrushEngine()
-    private val sfxStroke = sfxEngine.newStroke()
-    /** Layer tempat goresan SFX berjalan (untuk flush ekor saat selesai). */
+    // ── State kuas SFX bergenre (lettering komik) ──────────────────────────
+    // Lebar tiap titik dihitung dari profil genre (lihat GenreBrushEngine):
+    // horror bergerigi + tetesan, romance lembut, action berepersi + garis
+    // kecepatan, fantasy bergelombang + kilau. Profil half-width di-sample
+    // pada PANJANG BUSUR sehingga tekstur tidak berenang saat goresan diputar,
+    // dan tiap goresan dirender utuh saat selesai supaya outline/bayangan/
+    // gradasi bisa ditumpuk dengan urutan benar.
+    // Setelan tampilan tiap genre (gradasi, opacity, outline, shadow, tekstur)
+    // disimpan di [genreSettings] dan disunting dari panel kuas.
+    val genreSettings = GenreBrushEngine.SettingsStore()
+    private val sfxStroke = GenreBrushEngine.newStroke(genreSettings)
+    /** Layer tempat goresan SFX berjalan (untuk render akhir saat selesai). */
     private var sfxLastLayer: DrawingLayer? = null
     // One-Euro filter per sumbu (studi stroke-stabilizer): lambat = halus,
     // cepat = responsif. Reset tiap stroke agar tak ada lompatan awal.
@@ -329,7 +329,9 @@ class BrushEngine {
         if (sfxStroke.hasTail()) {
             val layer = sfxLastLayer
             if (layer != null) {
-                sfxStroke.finish(getCanvasFor(layer.getPersistentBitmap()))
+                // Render ulang seluruh goresan (bayangan -> outline -> tinta):
+                // urutan itu hanya benar kalau digambar utuh sekaligus.
+                sfxStroke.renderFinal(getCanvasFor(layer.getPersistentBitmap()))
                 tailLayer = layer
             }
         }
@@ -620,10 +622,10 @@ class BrushEngine {
     }
 
     /** Kuas SFX mana pun? (pintu masuk seluruh logika lettering komik.) */
-    private fun isSfxBrush(): Boolean = SfxBrushEngine.styleOf(brushType) != null
+    private fun isSfxBrush(): Boolean = GenreBrushEngine.genreOf(brushType) != null
 
     /** Gaya mesin SFX untuk kuas sekarang (null = bukan SFX). */
-    private fun currentSfxStyle(): SfxBrushEngine.Style? = SfxBrushEngine.styleOf(brushType)
+    private fun currentSfxGenre(): GenreBrushEngine.Genre? = GenreBrushEngine.genreOf(brushType)
 
     /** Buang ekor SFX tanpa menggambarnya (dipakai saat stroke di-undo). */
     fun discardSfxTail() {
@@ -721,14 +723,13 @@ class BrushEngine {
         // SFX: jalur render mesin stamp (lebar per-dab + ekor ditahan). Di
         // kanvas jumbo (>4MP) cukup drawPath tunggal, jadi mesin stamp hanya
         // aktif pada kanvas biasa.
-        val sfxStyle = if (isHuge) null else currentSfxStyle()
+        // Kuas genre tetap jalan di kanvas jumbo: pitanya satu path per
+        // goresan (bukan stamp per-dab) jadi tidak mahal.
+        val sfxGenre = currentSfxGenre()
         if (isSfxBrush()) sfxLastLayer = layer
-        if (sfxStyle != null && !sfxStroke.isActive()) {
-            sfxStroke.begin(
-                curveStart, sfxStyle, color, size, opacity, layer.isAlphaLocked
-            )
+        if (sfxGenre != null && !sfxStroke.isActive()) {
+            sfxStroke.begin(curveStart, sfxGenre, color, size, layer.isAlphaLocked)
         }
-        if (isSfxBrush()) sfxLastLayer = layer
 
         val paint = createBasePaint(isHuge)
         if (layer.isAlphaLocked) {
@@ -740,15 +741,12 @@ class BrushEngine {
 
         // Titik tunggal (tap): pastikan jadi dot bulat, bukan hilang.
         if (distance < 1f) {
-            val sfxDotStyle = currentSfxStyle()
-            if (sfxDotStyle != null) {
-                // SFX: tap = satu sentuhan kuas (stamp bertekstur), bukan
+            val sfxDotGenre = currentSfxGenre()
+            if (sfxDotGenre != null) {
+                // SFX: tap = satu sentuhan kuas (pita + outline), bukan
                 // lingkaran polos, supaya tak ada titik yang "beda gaya".
-                sfxStroke.begin(
-                    smoothedP2, sfxDotStyle, paint.color, size, opacity, layer.isAlphaLocked
-                )
+                sfxStroke.begin(smoothedP2, sfxDotGenre, paint.color, size, layer.isAlphaLocked)
                 sfxStroke.dot(canvas, smoothedP2)
-                sfxStroke.discard()
             } else {
                 val dotPaint = Paint(paint).apply { style = Paint.Style.FILL }
                 canvas.drawCircle(smoothedP2.x, smoothedP2.y, max(0.5f, paint.strokeWidth / 2f), dotPaint)
@@ -853,12 +851,11 @@ class BrushEngine {
             // (termasuk SFX — stamp per-dab terlalu berat di sini; goresan
             // tetap polos, rata, dan tanpa celah karena cap membulat).
             canvas.drawPath(strokePath, paint)
-        } else if (sfxStyle != null) {
-            // ── Jalur SFX: mesin stamp SfxBrushEngine. Kurva disampling jadi
-            // titik lalu di-resample jadi deretan stamp yang lebarnya dihitung
-            // per-dab (taper masuk, denyut organik, kontras arah, kecepatan,
-            // lift) dan teksturnya ikut berputar searah goresan. Ekor ditahan
-            // sampai stroke selesai supaya ujung runcing benar-benar terjadi.
+        } else if (sfxGenre != null) {
+            // ── Jalur SFX genre: pita (ribbon) dengan profil half-width
+            // per titik menurut genre, di-sample pada panjang busur supaya
+            // tekstur tidak berenang. Isi digambar langsung biar responsif;
+            // outline/bayangan/gradasi dirender utuh saat stroke selesai.
             val sfxPts = ArrayList<Offset>(steps + 1)
             sfxPts.add(curveStart)
             for (i in 1..steps) {

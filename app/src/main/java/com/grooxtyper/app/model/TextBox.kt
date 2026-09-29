@@ -1,7 +1,9 @@
 package com.grooxtyper.app.model
 
 import android.content.Context
+import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import androidx.compose.ui.geometry.Offset
@@ -11,6 +13,7 @@ import java.util.UUID
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 
 enum class TextAlignMode { LEFT, CENTER, RIGHT }
@@ -151,6 +154,31 @@ data class SpanStyle(
             underline = a.underline ?: base.underline,
             strikethrough = a.strikethrough ?: base.strikethrough
         )
+    }
+}
+
+/**
+ * Bentuk bubble yang harus DIKUTI teks: teks di-wrap ke interior bubble dan
+ * dipotong tepat pada bentuknya, jadi huruf tak pernah keluar dari gelembung
+ * (tidak seperti kotak persegi yang temblok sudut bulat).
+ *
+ *SHAPE_ELIPS dipakai untuk gelembung oval komik, SHAPE_BULAT untuk gelembung
+ * persegi membulat (shounen). [inset] adalah jarak aman dari tepi bubble dalam
+ * fraksi ukuran terkecil; [roundRatio] hanya untuk SHAPE_BULAT (fraksi sisi
+ * pendek sebagai jari-jari sudut).
+ */
+data class BubbleSpec(
+    val shape: Int = SHAPE_ELIPS,
+    val inset: Float = 0.06f,
+    val roundRatio: Float = 0.32f,
+    // Ukuran bubble dalam satuan poin (dikali [scale] saat dirender), supaya
+    // gelembung ikut gepeng/berputar bersama kotak teksnya.
+    val bubbleW: Float = 0f,
+    val bubbleH: Float = 0f
+) {
+    companion object {
+        const val SHAPE_ELIPS = 0
+        const val SHAPE_BULAT = 1
     }
 }
 
@@ -307,7 +335,10 @@ class TextBox(
     // Gaya "tinta SFX" ala video lettering: isi padat + tepi bergerigi +
     // outline putih yang mengikuti cekungan huruf (lihat SfxInk). null = pakai
     // gaya huruf biasa.
-    var inkSfx: SfxInkSpec? = null
+    var inkSfx: SfxInkSpec? = null,
+    // Bentuk bubble yang diikuti teks (lihat BubbleSpec). null = teks bebas
+    // mengikuti kotak biasa (persegi/seleksi).
+    var bubble: BubbleSpec? = null
 ) {
     fun isParagraph(): Boolean = boxWidth != null
 
@@ -345,6 +376,64 @@ class TextBox(
         val w = bw * scale
         val h = bh * scale
         return RectF(position.x - w / 2f, position.y - h / 2f, position.x + w / 2f, position.y + h / 2f)
+    }
+
+    /**
+     * Persegi panjang terbesar di DALAM bubble, koordinat lokal (0,0 = pusat
+     * teks). Untuk elips, sisi dibagi akar 2 (persegi terpanjang yang tetap di
+     * dalam elips); untuk bulat, cukup dikecilkan [inset].
+     */
+    fun bubbleInnerRectLocal(): RectF {
+        val b = bubble
+        if (b == null || b.bubbleW <= 0f || b.bubbleH <= 0f) {
+            return RectF(-1f, -1f, 1f, 1f)
+        }
+        val w = b.bubbleW * scale
+        val h = b.bubbleH * scale
+        if (!w.isFinite() || !h.isFinite()) return RectF(-1f, -1f, 1f, 1f)
+        val pad = min(w, h) * b.inset.coerceIn(0f, 0.35f)
+        if (b.shape != BubbleSpec.SHAPE_ELIPS) {
+            return RectF(-w / 2f + pad, -h / 2f + pad, w / 2f - pad, h / 2f - pad)
+        }
+        val iw = ((w - pad * 2f).coerceAtLeast(4f)) / 1.4142f
+        val ih = ((h - pad * 2f).coerceAtLeast(4f)) / 1.4142f
+        return RectF(-iw / 2f, -ih / 2f, iw / 2f, ih / 2f)
+    }
+
+    /** Sama seperti [bubbleInnerRectLocal] tapi dalam koordinat kanvas absolut. */
+    fun bubbleInnerRectPx(): RectF {
+        val r = bubbleInnerRectLocal()
+        return RectF(position.x + r.left, position.y + r.top,
+            position.x + r.right, position.y + r.bottom)
+    }
+
+    /**
+     * Path bentuk bubble untuk memotong teks, koordinat KANVAS absolut:
+     * bentuk dibuat di titik asal lalu diputar [rotation] dan dipindah ke
+     * [position], jadi gelembung ikut gerak sama persis dengan teksnya.
+     * Null bila tidak ada bubble atau ukurannya tidak masuk akal.
+     */
+    fun bubblePathPx(): Path? {
+        val b = bubble ?: return null
+        if (b.bubbleW <= 0f || b.bubbleH <= 0f) return null
+        val w = b.bubbleW * scale
+        val h = b.bubbleH * scale
+        if (!w.isFinite() || !h.isFinite() || w < 4f || h < 4f) return null
+        val pad = min(w, h) * b.inset.coerceIn(0f, 0.35f)
+        val r = RectF(-w / 2f + pad, -h / 2f + pad, w / 2f - pad, h / 2f - pad)
+        if (r.width() < 2f || r.height() < 2f) return null
+        val p = Path()
+        if (b.shape == BubbleSpec.SHAPE_BULAT) {
+            val rad = min(r.width(), r.height()) * b.roundRatio.coerceIn(0f, 0.5f)
+            p.addRoundRect(r, rad, rad, Path.Direction.CW)
+        } else {
+            p.addOval(r, Path.Direction.CW)
+        }
+        val m = Matrix()
+        m.setRotate(rotation)
+        m.postTranslate(position.x, position.y)
+        p.transform(m)
+        return p
     }
 
     /** Ubah teks dengan memetakan ulang span lewat diff prefix/suffix. */
@@ -932,7 +1021,8 @@ class TextBox(
         persp = persp?.copy(),
         spans = spans?.map { TextSpan(it.start, it.end, it.style.copy()) },
         sfx = sfx?.copy(),
-        inkSfx = inkSfx?.copy()
+        inkSfx = inkSfx?.copy(),
+        bubble = bubble?.copy()
     )
 
     /** Pulihkan semua field dari [o] tanpa ganti objek (referensi seleksi tetap valid). */
@@ -974,6 +1064,7 @@ class TextBox(
         spans = o.spans?.map { TextSpan(it.start, it.end, it.style.copy()) }
         sfx = o.sfx?.copy()
         inkSfx = o.inkSfx?.copy()
+        bubble = o.bubble?.copy()
     }
 
     /** Samakan isi visual (untuk deteksi sesi edit panel). */
@@ -1013,7 +1104,8 @@ class TextBox(
             persp == o.persp &&
             spans == o.spans &&
             sfx == o.sfx &&
-            inkSfx == o.inkSfx
+            inkSfx == o.inkSfx &&
+            bubble == o.bubble
     }
 
     companion object {
@@ -1197,6 +1289,15 @@ class TextBox(
                     put("seed", ik.seed)
                 })
             }
+            bubble?.let { b ->
+                put("bubble", org.json.JSONObject().apply {
+                    put("shape", b.shape)
+                    put("inset", b.inset.toDouble())
+                    put("roundRatio", b.roundRatio.toDouble())
+                    put("bubbleW", b.bubbleW.toDouble())
+                    put("bubbleH", b.bubbleH.toDouble())
+                })
+            }
         }
 
         /** Pasangan dari [toJson]: typeface dicari via [typefaceFor], fallback bold. */
@@ -1310,6 +1411,15 @@ class TextBox(
                         gradientDarken = ik.optDouble("gradientDarken", 0.42).toFloat(),
                         spatter = ik.optInt("spatter", 0),
                         seed = ik.optInt("seed", 1)
+                    )
+                },
+                bubble = o.optJSONObject("bubble")?.let { b ->
+                    BubbleSpec(
+                        shape = b.optInt("shape", BubbleSpec.SHAPE_ELIPS),
+                        inset = b.optDouble("inset", 0.06).toFloat(),
+                        roundRatio = b.optDouble("roundRatio", 0.32).toFloat(),
+                        bubbleW = b.optDouble("bubbleW", 0.0).toFloat(),
+                        bubbleH = b.optDouble("bubbleH", 0.0).toFloat()
                     )
                 }
             )

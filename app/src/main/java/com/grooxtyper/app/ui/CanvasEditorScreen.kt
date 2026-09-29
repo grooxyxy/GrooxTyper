@@ -1527,7 +1527,23 @@ fun CanvasEditorScreen(
         var lastLayerId = ""
         for (i in 0 until n) {
             val b = ordered[i].boundingBox
-            val inset = RectF(
+            // Teks HARUS mengikuti bentuk gelembung: pakai persegi panjang
+            // terbesar yang masih di dalam elips (bukan inset 12% kotak), lalu
+            // renderer memotong glif tepat pada bentuk bubble sehingga baris
+            // pertama/terakhir tak pernah keluar gelembung bulat.
+            val probe = TextBox(
+                text = multiBubbleLines[i],
+                position = Offset(b.centerX(), b.centerY()),
+                color = brushEngine.color,
+                bubble = com.grooxtyper.app.model.BubbleSpec(
+                    shape = com.grooxtyper.app.model.BubbleSpec.SHAPE_ELIPS,
+                    inset = 0.06f,
+                    bubbleW = b.width(),
+                    bubbleH = b.height()
+                )
+            )
+            val ir = probe.bubbleInnerRectPx()
+            val inset = if (ir.width() > 8f && ir.height() > 8f) ir else RectF(
                 b.left + b.width() * 0.12f,
                 b.top + b.height() * 0.12f,
                 b.right - b.width() * 0.12f,
@@ -1536,11 +1552,23 @@ fun CanvasEditorScreen(
             val box = TextBox(
                 text = multiBubbleLines[i],
                 position = Offset(inset.centerX(), inset.centerY()),
-                color = brushEngine.color
+                color = brushEngine.color,
+                bubble = probe.bubble
             )
             template?.let { box.applyStyleFrom(it) }
             applyAllStylesTo(box)
             box.color = contrastTextColorAt(inset.centerX(), inset.centerY())
+            // Ukuran bubble disimpan dalam satuan poin: kalau template mengubah
+            // skala teks, ukuran gelembung ikut dinormalkan agar tetap sama
+            // dengan kotak yang terdeteksi di kanvas.
+            val sc = box.scale.coerceAtLeast(0.05f)
+            box.bubble = probe.bubble?.copy(bubbleW = b.width() / sc, bubbleH = b.height() / sc)
+            // Frame (kotak seleksi) dibuat eksplisit: renderer butuh
+            // boxWidth+boxHeight untuk auto-fit sekaligus untuk memotong
+            // teks pada bentuk bubble.
+            box.boxWidth = (inset.width() / box.scale).coerceIn(24f, 6000f)
+            box.boxHeight = (inset.height() / box.scale).coerceIn(18f, 6000f)
+            box.autoFit = true
             box.fitToRect(inset)
             val created = layerManager.addTextLayer(box)
             undoRedoManager.pushLayerAdd(created.id)

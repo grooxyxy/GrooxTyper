@@ -31,7 +31,7 @@ const rulesDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/S
 const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
 const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
 const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
-const sfxEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
+const genreEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/GenreBrushEngine.kt'));
 for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays], ['OverlayGestures', ovGest], ['BubbleDetectorDialog', bubDlg], ['StyleRulesDialog', rulesDlg]]) {
   const o = (tx.match(/\{/g) || []).length;
   const c = (tx.match(/\}/g) || []).length;
@@ -201,51 +201,51 @@ for (const [name, text] of [['TextRenderer', textRenderer], ['TextBox', textBoxS
   const close = (text.match(/}/g) || []).length;
   assert(open === close, name + ' braces balanced (' + open + '/' + close + ')');
 }
-// SFX: mesin stamp terpisah (SfxBrushEngine) - sapuan kuas bukannya garis.
-const sfxEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxBrushEngine.kt'));
+// SFX bergenre: empat kuas yang bentuknya jelas berbeda (GenreBrushEngine).
+const sfxEng = genreEngineSrc;
 {
   const o = (sfxEng.match(/{/g) || []).length;
   const c = (sfxEng.match(/}/g) || []).length;
-  assert(o === c, 'SfxBrushEngine braces balanced (' + o + '/' + c + ')');
+  assert(o === c, 'GenreBrushEngine braces balanced (' + o + '/' + c + ')');
 }
-const sfxBrushes = ['SFX_PEN', 'SFX_BRUSH', 'SFX_MARKER', 'SFX_AIR', 'SFX_CRAYON', 'SFX_INK', 'SFX_NEON'];
-const sfxInk = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxInk.kt'));
-{
-  const o = (sfxInk.match(/\{/g) || []).length;
-  const c = (sfxInk.match(/\}/g) || []).length;
-  assert(o === c, 'SfxInk braces balanced (' + o + '/' + c + ')');
+const genreBrushes = ['GENRE_HORROR', 'GENRE_ROMANCE', 'GENRE_ACTION', 'GENRE_FANTASY'];
+assert(genreBrushes.every(b => brush.includes(b + '(')), 'BrushType: 4 kuas genre SFX terdaftar');
+for (const b of ['SFX_PEN', 'SFX_BRUSH', 'SFX_MARKER', 'SFX_AIR', 'SFX_CRAYON', 'SFX_INK', 'SFX_NEON']) {
+  assert(!brush.includes(b + '('), 'kuas SFX lama sudah dibuang: ' + b);
 }
-// SFX tinta: teknik dari video (path + profil half-width per panjang busur)
-assert(sfxInk.includes('class XorShift64') && sfxInk.includes('object EdgeProfile'), 'SFX tinta: PRNG deterministik + profil tepi (anti swim)');
-assert(sfxInk.includes('fun ribbon(') && sfxInk.includes('PathMeasure'), 'SFX tinta: pita (ribbon mesh) dari panjang busur - bukan tumpukan stamp');
-assert(sfxInk.includes('pm.nextContour()'), 'SFX tinta: outline ikut kontur DALAM huruf (counter) seperti video');
-assert(sfxInk.includes('fun drawGlyph(') && sfxInk.includes('fun compositeOutline('), 'SFX tinta: glyph & goresan Treatment');
-assert(sfxInk.includes('spec.keylineWidth > 0f') && sfxInk.indexOf('spec.keylineWidth > 0f') < sfxInk.indexOf('// L1: outline putih'), 'SFX tinta: URUTAN benar (keyline lebar digambar lebih dulu)');
-assert(sfxInk.includes('.coerceIn(8, 20000)'), 'SFX tinta: panjang profil dibatasi (anti OOM pada glyph raksasa)');
-assert(sfxBrushes.every(b => sfxEng.includes(b)), 'SfxBrushEngine: semua 7 kuas SFX terpetakan ke gaya mesin');
-assert(sfxEng.includes('INK_SFX("SFX Tinta")') && sfxEng.includes('fun compositeInkOutline('), 'SFX brush: gaya Tinta memakai pita + outline putih saat stroke selesai');
-assert(sfxEng.includes('private var seed: Int = 1') && sfxEng.includes('abs(seed).toLong().coerceAtLeast(1L)'), 'SFX brush: seed tetap Int untuk noise1/hashF, Long hanya di boundary SfxInk');
-assert(sfxBrushes.every(b => brush.includes(b)), 'brush SFX: 7 kuas (Pen/Brush/Marker/Airbrush/Crayon/Ink/Neon)');
-assert(sfxEng.includes('fun styleOf') && brush.includes('SfxBrushEngine.styleOf(brushType)'), 'SFX: peta BrushType ke gaya mesin');
-assert(sfxEng.includes('fun stampFor') && sfxEng.includes('BitmapShader') === false, 'SFX: stamp radial bertekstur (bukan shader garis)');
-assert(sfxEng.includes('val streak = 0.5f + 0.5f * noise1(y * 0.42f, seed)'), 'SFX: sabut kuas (streak) korelasi lintas goresan');
-assert(sfxEng.includes('if (style.isTextured)') && sfxEng.includes('a *= 0.12f'), 'SFX: celah kering pada kuas bertekstur (tidak seperti garis penuh)');
-assert(sfxEng.includes('private fun widthAt') && sfxEng.includes('val entry = 0.10f + 0.90f'), 'SFX: taper masuk runcing per-dab');
-assert(sfxEng.includes('val pulse = 1f + 0.16f * noise1(dist * 0.035f, seed)'), 'SFX: denyut lebar organik (gaya tangan)');
-assert(sfxEng.includes('val dirMul = 1f - 0.30f'), 'SFX: kontras arah (turun tebal, naik tipis)');
-assert(sfxEng.includes('LIFT_MS') && sfxEng.includes('if (gapMs > LIFT_MS)'), 'SFX: jeda = kuas diangkat (lift)');
-assert(sfxEng.includes('val hold = max(6f, size * 1.3f)'), 'SFX: ekor ditahan supaya ujung runcing');
-assert(sfxEng.includes('fun paintUntil') && sfxEng.includes('val taper = if (taperTail) (1f - t * t)'), 'SFX: ekor diruncingkan saat stroke selesai');
-assert(sfxEng.includes('canvas.rotate(ang)'), 'SFX: stamp dirotasi searah goresan (tekstur tidak berenang)');
-assert(sfxEng.includes('private val srcRect = Rect(0, 0, STAMP_PX, STAMP_PX)') && sfxEng.includes('canvas.drawBitmap(stamp, srcRect, dst, paint)'), 'SFX: drawBitmap pakai Rect (src) + RectF (dst) yang benar');
-assert(sfxEng.includes('val step = max(1.1f, w * 0.42f)'), 'SFX: jarak antar stamp < radius (goresan tanpa celah)');
-assert(sfxEng.includes('Style.INK') && sfxEng.includes('hashF(index * 3 + 1, seed)'), 'SFX: tinta punya cipratan deterministik');
-assert(brush.includes('sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))'), 'brush: segmen SFXلعvement lewat mesin stamp');
-assert(brush.includes('fun discardSfxTail') && brush.includes('sfxStroke.discard()'), 'SFX: buang ekor saat stroke di-undo');
-assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: ekor masuk cache tile walau syncTiles dipanggil sebelum endStroke');
-assert(brush.includes('brushType == BrushType.MARKER || brushType == BrushType.FLAT'), 'gapless: Marker/Flat digambar satu path kontinu (tanpa takik sambungan)');
-assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar ekor tidak terpotong');
-assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event (bukan per dab)');
+assert(genreBrushes.every(b => sfxEng.includes(b)), 'GenreBrushEngine: keempat genre terpetakan ke mesin');
+assert(sfxEng.includes('HORROR("SFX Horror")') && sfxEng.includes('ROMANCE("SFX Romance")') &&
+  sfxEng.includes('ACTION("SFX Action")') && sfxEng.includes('FANTASY("SFX Fantasy")'),
+  'GenreBrushEngine: nama genre tampil apa adanya di daftar kuas');
+assert((sfxEng.match(/Genre\.\w+ ->/g) || []).length >= 4, 'GenreBrushEngine: profil lebar terpisah per genre');
+assert(sfxEng.includes('drawDrips') && sfxEng.includes('drawSpeedLines') && sfxEng.includes('drawSparkles'),
+  'GenreBrushEngine: hiasan khas tiap genre (tetesan / garis kecepatan / kilau bintang)');
+for (const f of ['var gradient', 'var gradStart', 'var gradEnd', 'var gradAngle', 'var opacity',
+  'var outlineWidth', 'var outlineColor', 'var shadowOn', 'var shadowDx', 'var shadowDy',
+  'var shadowBlur', 'var shadowColor', 'var texture', 'var spatter']) {
+  assert(sfxEng.includes(f), 'GenreBrushEngine: setelan editable ' + f);
+}
+assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 'GenreBrushEngine: preset per genre + salinan setelan');
+const sI_shadow = sfxEng.indexOf('c.translate(st.shadowDx, st.shadowDy)');
+const sI_outline = sfxEng.indexOf('if (outline != null) {', sI_shadow);
+const sI_mask = sfxEng.indexOf('PorterDuff.Mode.DST_IN', sI_shadow);
+const sI_ink = sfxEng.indexOf('c.drawPath(ink, fillPaintFor(st, clip))', sI_shadow);
+assert(sI_shadow > 0 && sI_outline > sI_shadow && sI_mask > sI_outline && sI_ink > sI_mask,
+  'GenreBrushEngine: URUTAN benar (bayangan -> outline -> lubangi -> tinta)');
+assert(sfxEng.includes('SfxInk.strokeRibbon') && sfxEng.includes('SfxInk.EdgeProfile.sample'),
+  'GenreBrushEngine: pita + noise di-sample pada panjang busur (anti swim)');
+assert(sfxEng.includes('val ds = if (nPts > 1) max(0.4f, length / profSize) else 1f'),
+  'GenreBrushEngine: jarak sampling profil dihitung dari panjang busur');
+assert(brush.includes('GenreBrushEngine.newStroke(genreSettings)') && brush.includes('sfxStroke.renderFinal('),
+  'BrushEngine: kuas genre memakai mesin baru + render akhir utuh');
+assert(brush.includes('val genreSettings = GenreBrushEngine.SettingsStore()'),
+  'BrushEngine: setelan genre milik engine (bisa disunting panel)');
+assert(brush.includes('sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))'),
+  'brush: segmen SFX lewat mesin genre');
+assert(brush.includes('fun discardSfxTail') && brush.includes('sfxStroke.discard()'), 'SFX: buang goresan saat stroke di-undo');
+assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: render akhir masuk cache tile walau syncTiles dipanggil sebelum endStroke');
+assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar render akhir tidak terpotong');
+assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event');
 assert(textBoxSrc.includes('data class SfxInkSpec') && textBoxSrc.includes('var inkSfx: SfxInkSpec?'), 'teks: gaya tinta SFX (SfxInkSpec) tersimpan di kotak');
 {
   const inkPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/InkSfxPanel.kt'));
@@ -428,8 +428,45 @@ assert(!/^internal val (Accent|PanelBg)/m.test(editor), 'refaktor: tanpa interna
 // 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,
 //     kuas SFX lettering + gapless, bulk text edit.
 assert(bubbleDet.includes('val padX = (INPUT_SIZE - nw) / 2f') && bubbleDet.includes('Color.rgb(114, 114, 114)'), 'bubble: preprocessing letterbox 640 + isi abu 114 (standar training YOLO)');
-assert(bubbleDet.includes('fun decodeYolo6') && bubbleDet.includes('val pixelXyxy = maxCoord > 2.5f'), 'bubble: decoder 6 kanal (xyxy-piksel vs cxcywh ternormalisasi)');
+assert(bubbleDet.includes('fun decodeYolo6') && bubbleDet.includes('val pixels = maxCoord > 2.5f'), 'bubble: decoder 6 kanal (piksel vs ternormalisasi)');
+assert(bubbleDet.includes('val cornerXyxy = pixels && cornerRatio >= 0.6f') && bubbleDet.includes('cxcywh dalam PIKSEL input 640'), 'bubble: format kotak = cxcywh-PIKSEL (terbukti IoU 0.96 di atas model sungguhan)');
+assert(bubbleDet.includes('if (c2 > c0 && c3 > c1) cornerLike++'), 'bubble: xyxy vs cxcywh dibedakan dari kandidat aktif (bukan tebakan)');
+assert(bubbleDet.includes('IoU 0.96'), 'bubble: hasil pengukuran model tercatat di KDoc decoder');
+assert(bubbleDet.includes('const val REL_CONF') && bubbleDet.includes('topScore * REL_CONF'), 'bubble: ambang RELATIF terhadap skor tertinggi halaman (gelembung kedua hanya 0.03)');
+assert(bubbleDet.includes('ASPECT_MIN') && bubbleDet.includes('ASPECT_MAX'), 'bubble: filter rasio aspek membuang kotak bukan-bubble');
+assert(bubbleDet.includes('AMBANG RELATIF'), 'bubble: diagnostik melaporkan jalur ambang yang dipakai');
 assert(bubbleDet.includes('val numScores =') && bubbleDet.includes('bestC = c'), 'bubble: channel 4.. = skor tiap kelas (argmax), bukan (skor, index kelas)');
+
+// -- Teks mengikuti bentuk bubble (isi-bubble otomatis + panel) --------------
+const bubShapePanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BubbleShapeSection.kt'));
+const genrePanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/GenreBrushPanel.kt'));
+const brushDrawer = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BrushDrawerPanel.kt'));
+{
+  for (const [nm, tx] of [['BubbleShapeSection', bubShapePanel], ['GenreBrushPanel', genrePanel]]) {
+    const o = (tx.match(/{/g) || []).length;
+    const c2 = (tx.match(/}/g) || []).length;
+    assert(o === c2, nm + ' braces balanced (' + o + '/' + c2 + ')');
+  }
+}
+assert(textBoxSrc.includes('data class BubbleSpec') && textBoxSrc.includes('var bubble: BubbleSpec?'), 'teks: spec bubble (bentuk yang diikuti teks) tersimpan di kotak');
+assert(textBoxSrc.includes('SHAPE_ELIPS') && textBoxSrc.includes('SHAPE_BULAT'), 'teks: dua bentuk bubble (elips + persegi bulat) plus mode bebas');
+assert(textBoxSrc.includes('fun bubblePathPx()') && textBoxSrc.includes('addOval(r, Path.Direction.CW)'), 'teks: path bubble untuk memotong glif tepat pada bentuk gelembung');
+assert(textBoxSrc.includes('m.setRotate(rotation)') && textBoxSrc.includes('m.postTranslate(position.x, position.y)'), 'teks: gelembung ikut putar/geser bersama kotak teks');
+assert(textBoxSrc.includes('fun bubbleInnerRectLocal()') && textBoxSrc.includes('1.4142f'), 'teks: persegi terpanjang di dalam elips (teks tak keluar gelembung bulat)');
+assert(textBoxSrc.includes('bubble = bubble?.copy()') && textBoxSrc.includes('bubble = o.bubble?.copy()') && textBoxSrc.includes('bubble == o.bubble'), 'teks: bubble ikut copy/setFrom/contentEquals');
+assert(textBoxSrc.includes('put("bubble"') && textBoxSrc.includes('optJSONObject("bubble")'), 'teks: bubble ikut JSON project (lengkap bubbleW/bubbleH)');
+assert(textRenderer.includes('val clip = box.bubblePathPx()') && textRenderer.includes('canvas.clipPath(clip)') && textRenderer.includes('canvas.restoreToCount(c2)'), 'renderer: satu klip di luar berlaku untuk semua jalur (glif/outline/shadow/glow)');
+assert(editor.includes('val ir = probe.bubbleInnerRectPx()') && editor.includes('BubbleSpec.SHAPE_ELIPS'), 'editor: isi-bubble otomatis memakai persegi dalam elips + spec bubble');
+assert(editor.includes('box.autoFit = true') && editor.includes('box.boxHeight ='), 'editor: frame auto-fit dibuat eksplisit agar klip dan renderer punya kotak');
+assert(textEditor.includes('BubbleShapeSection(') && bubShapePanel.includes('fun BubbleShapeSection('), 'panel: pilihan bentuk bubble (bebas / elips / persegi bulat) di tab Tulis');
+assert(bubShapePanel.includes('spec.copy(inset = it)') && bubShapePanel.includes('spec.copy(roundRatio = it)'), 'panel: jarak aman + kelengkungan bisa disetel');
+assert(brushDrawer.includes('"Brush", "SFX", "Stabilizer", "Fade"') && brushDrawer.includes('1 -> GenreBrushPanel(brushEngine)'), 'panel kuas: tab SFX membuka setelan 4 genre');
+assert(genrePanel.includes('fun GenreBrushPanel(') && genrePanel.includes('store.of(genre)'), 'panel kuas: setelan per genre dibaca dari engine');
+assert(genrePanel.includes('st.widthMul = it') && genrePanel.includes('st.opacity = it') && genrePanel.includes('st.texture = it') && genrePanel.includes('st.spatter ='), 'panel kuas: lebar/opacity/tekstur/percikan bisa diedit');
+assert(genrePanel.includes('st.gradStart = c') && genrePanel.includes('st.gradEnd = c') && genrePanel.includes('st.gradient = it'), 'panel kuas: gradasi (dua warna + sudut) bisa diedit');
+assert(genrePanel.includes('st.outlineWidth = it') && genrePanel.includes('st.outlineColor = c'), 'panel kuas: outline (tebal + warna) bisa diedit');
+assert(genrePanel.includes('st.shadowOn = it') && genrePanel.includes('st.shadowBlur = it') && genrePanel.includes('st.shadowColor = c'), 'panel kuas: bayangan (geser/kabut/warna) bisa diedit');
+assert(genrePanel.includes('st.applyPreset(genre)') && genrePanel.includes('store.of(other).copyFrom(st)'), 'panel kuas: kembali ke bawaan + salin setelan antar genre');
 assert(bubbleDet.includes('private const val CONF_THRESH = 0.10f') && bubbleDet.includes('CONF_FLOOR = 0.02f'), 'bubble: ambang turun (bias head model -7.7 membuat skor default ~0)');
 assert(bubbleDet.includes('relaxed = true') && bubbleDet.includes('DITURUNKAN'), 'bubble: ambang adaptif (8 teratas) bila tak ada yang lolos');
 assert(bubbleDet.includes('if (src.hasAlpha()) android.graphics.Color.WHITE'), 'bubble: area transparan jadi putih (kertas, bukan hitam)');

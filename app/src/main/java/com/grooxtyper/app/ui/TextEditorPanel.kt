@@ -562,6 +562,18 @@ fun TextEditorPanel(
                             push()
                         }
                     )
+                    // Bentuk bubble yang harus diikuti teks (elips/bulat/bebas).
+                    val fr = box.frameRectPx()
+                    val sc = box.scale.coerceAtLeast(0.05f)
+                    BubbleShapeSection(
+                        spec = box.bubble,
+                        defaultW = if (fr != null) fr.width() / sc else 0f,
+                        defaultH = if (fr != null) fr.height() / sc else 0f,
+                        onSpec = { newSpec ->
+                            box.bubble = newSpec
+                            push()
+                        }
+                    )
                 }
             }
         }

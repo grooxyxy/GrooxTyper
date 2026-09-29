@@ -26,8 +26,26 @@ object TextRenderer {
 
     private data class LineLayout(val text: String, val x0: Float, val baseline: Float)
 
+    /**
+     * Entry point render teks. Bila kotak punya [TextBox.bubble], seluruh isi
+     * (glif, outline, shadow, glow - semuanya) dipotong tepat pada bentuk
+     * gelembung, sehingga huruf benar-benar MENGIKUTI bubble dan tak pernah
+     * menondoz keluar dari elips. Tanpa bubble, jalur lama apa adanya.
+     */
     fun render(canvas: Canvas, box: TextBox) {
         if (box.text.isEmpty()) return
+        val clip = box.bubblePathPx()
+        if (clip == null) {
+            renderContent(canvas, box)
+            return
+        }
+        val c2 = canvas.save()
+        canvas.clipPath(clip)
+        renderContent(canvas, box)
+        canvas.restoreToCount(c2)
+    }
+
+    private fun renderContent(canvas: Canvas, box: TextBox) {
         // Gaya "tinta SFX" (video lettering): glyph path -> isi padat +
         // outline putih bergerigi yang mengikuti cekungan. Jalur terpisah
         // karena butuh Path, bukan per-glif drawText.

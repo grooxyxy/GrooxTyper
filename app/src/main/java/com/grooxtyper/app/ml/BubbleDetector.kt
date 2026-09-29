@@ -93,11 +93,23 @@ class BubbleDetector {
         // Ambang model bubble KZKT jauh lebih rendah dari model YOLO biasa:
         // bias head-nya [ -7.75, -7.80 ] sehingga sigmoid(logit) defaultnya
         // ~0.0004. Dengan ambang 0.25 semua deteksi hilang (user: "model gak
-        // berfungsi"). 0.10 dipakai sebagai ambang utama, 0.04 sebagai lantai
-        // adaptif (lihat decodeYolo6: kalau tak ada yang lolos, ambil 8 teratas).
+        // berfungsi").
+        //
+        // Diukur di atas model sungguhan (onnxruntime-web/WASM, halaman manga
+        // sintetis 3 gelembung): skor gelembung terkuat 0.334, gelembung
+        // kedua 0.0285, ketiga 0.0017; halaman TANPA gelembung punya skor
+        // tertinggi 0.2021 dengan rata-rata 0.0003. Artinya ambang absolut
+        // saja tak cukup: gelembung kedua ada di 0.03. Karena itu decodeYolo6
+        // memakai ambang relatif terhadap skor tertinggi halaman (REL_CONF)
+        // plus lantai absolut, dan confund yang tidak sesuai bentuk bubble
+        // dibuang lewat ASPECT_MIN/MAX.
         private const val CONF_THRESH = 0.10f
         private const val TALL_CONF_THRESH = 0.06f
         private const val CONF_FLOOR = 0.02f
+        private const val REL_CONF = 0.08f
+        private const val REL_MAX_CANDIDATES = 24
+        private const val ASPECT_MIN = 0.10f
+        private const val ASPECT_MAX = 8f
         private const val IOU_THRESH = 0.45f
         private const val MAX_DETECTIONS = 150
         private const val TALL_MAX_DETECTIONS = 300
@@ -391,9 +403,13 @@ class BubbleDetector {
      * Decode output YOLO 6 kanal - format model bubble kzkt (Ultralytics
      * comic-speech-bubble-detector): `images` float32 0..1 NCHW 640x640
      * dengan letterbox, output `output0` (1,6,8400) berisi
-     * [x1, y1, x2, y2, skor, kelas] dalam PIXEL input 640 (bukan ternormalisasi),
-     * skor sudah lewat sigmoid, decode DFL sudah dilakukan di dalam graf, dan
-     * NMS harus dijalankan di luar model.
+     * [cx, cy, w, h, P(kelas), P(kelas)] dalam PIXEL input 640
+     * (bukan ternormalisasi), skor sudah lewat sigmoid, decode DFL sudah
+     * dilakukan di dalam graf, dan NMS harus dijalankan di luar model.
+     * Bentuk ini diverifikasi dengan menjalankan model sungguhan di atas
+     * halaman uji (IoU 0.96 ke kotak gelembung yang diketahui); sebelumnya
+     * kanal 0..3 dibaca sebagai xyxy sehingga setiap kotak berbalik dan
+     * model terlihat "tidak berfungsi".
      *
      * Karena varian ekspor bisa berorientasi kanal-dulu (6,8400) maupun
      * anchor-dulu (8400,6), keduanya ditangani di sini. Format koordinat
@@ -446,7 +462,28 @@ class BubbleDetector {
             lastOutputDesc = "yolo6 ${rows}x${cols} tak ada anchor > $CONF_FLOOR"
             return emptyList()
         }
-        val pixelXyxy = maxCoord > 2.5f
+        // 1b) Bentuk kotak dibaca dari kandidat aktif, bukan dari tebakan.
+        //     Diuji NYATA di atas model kzkt (onnxruntime-web, WASM): output
+        //     punya 6 kanal [cx, cy, w, h, P(kelas0), P(kelas1)] dalam PIKSEL
+        //     input 640 (bukan ternormalisasi, bukan xyxy). Bukti: kotak
+        //     cxcywh-piksel menghasilkan IoU 0.96 terhadap posisi gelembung
+        //     yang diketahui, sedangkan xyxy IoU 0.00 dan cxcywh-norm 0.00
+        //     (koordinatnya meledak jadi >100000 piksel).
+        //     Pembeda xyxy vs cxcywh: di xyxy, kanal 2/3 hampir selalu lebih
+        //     besar dari kanal 0/1 (sudut kanan bawah > sudut kiri atas);
+        //     di cxcywh, kanal 2/3 adalah ukuran yang biasanya lebih kecil
+        //     dari titik pusat.
+        val pixels = maxCoord > 2.5f
+        var cornerLike = 0
+        for (ai in keep) {
+            val c0 = get(channelFirst, mat, 0, ai)
+            val c1 = get(channelFirst, mat, 1, ai)
+            val c2 = get(channelFirst, mat, 2, ai)
+            val c3 = get(channelFirst, mat, 3, ai)
+            if (c2 > c0 && c3 > c1) cornerLike++
+        }
+        val cornerRatio = if (keep.isEmpty()) 0f else cornerLike.toFloat() / keep.size
+        val cornerXyxy = pixels && cornerRatio >= 0.6f
 
         // 2) Bangun kandidat lengkap: kelas = argmax skor.
         class Cand(val ai: Int, val score: Float, val cls: Int)
@@ -465,13 +502,23 @@ class BubbleDetector {
             if (best > topScore) topScore = best
             cands.add(Cand(ai, best, bestC))
         }
-        // 3) Ambil yang lolos ambang; kalau tak ada, turunkan ambang ke 8
-        //    teratas (bukan "nol deteksi") supaya model tetap berguna.
+        // 3) Ambil yang lolos ambang. Kalau tak ada, pakai ambang RELATIF
+        //    terhadap skor tertinggi halaman ini (dihasilkan pengukuran nyata:
+        //    gelembung kedua hanya 0.0285 dari 0.334). Kalau tetap kosong,
+        //    ambil 8 teratas supaya model tak pernah diam total.
         var used = cands.filter { it.score >= conf }
         var relaxed = false
+        var usedRel = false
         if (used.isEmpty()) {
-            used = cands.sortedByDescending { it.score }.take(8)
-            relaxed = true
+            val rel = max(conf, topScore * REL_CONF).coerceAtLeast(CONF_FLOOR)
+            used = cands.filter { it.score >= rel }
+                .sortedByDescending { it.score }
+                .take(REL_MAX_CANDIDATES)
+            usedRel = true
+            if (used.isEmpty()) {
+                used = cands.sortedByDescending { it.score }.take(8)
+                relaxed = true
+            }
         }
         val out = ArrayList<DetectedBubble>(used.size)
         for (cd in used) {
@@ -480,12 +527,23 @@ class BubbleDetector {
             val y1: Float
             val x2: Float
             val y2: Float
-            if (pixelXyxy) {
+            if (cornerXyxy) {
                 // xyxy dalam piksel input 640: kurangi pad letterbox.
                 x1 = (get(channelFirst, mat, 0, ai) - padX) / scaleX
                 y1 = (get(channelFirst, mat, 1, ai) - padY) / scaleY
                 x2 = (get(channelFirst, mat, 2, ai) - padX) / scaleX
                 y2 = (get(channelFirst, mat, 3, ai) - padY) / scaleY
+            } else if (pixels) {
+                // cxcywh dalam PIKSEL input 640 (format nyata model kzkt):
+                // titik pusat dikurangi pad, ukuran dibagi skala saja.
+                val cx = get(channelFirst, mat, 0, ai)
+                val cy = get(channelFirst, mat, 1, ai)
+                val bw = get(channelFirst, mat, 2, ai)
+                val bh = get(channelFirst, mat, 3, ai)
+                x1 = (cx - bw / 2f - padX) / scaleX
+                y1 = (cy - bh / 2f - padY) / scaleY
+                x2 = (cx + bw / 2f - padX) / scaleX
+                y2 = (cy + bh / 2f - padY) / scaleY
             } else {
                 // cxcywh ternormalisasi terhadap seluruh input 640 (pad sudah
                 // termasuk di dalamnya) -> tak perlu kurangi pad.
@@ -505,12 +563,19 @@ class BubbleDetector {
                 y2.coerceIn(0f, origH.toFloat())
             )
             if (box.width() < 8f || box.height() < 8f) continue
+            // Buang kotak yang tak masuk akal sebagai bubble (paling sering
+            // panel/garis yang memicu model).
+            val ar = box.width() / box.height().coerceAtLeast(1f)
+            if (ar < ASPECT_MIN || ar > ASPECT_MAX) continue
             out.add(DetectedBubble(box, cd.score, null, cd.cls))
         }
         lastOutputDesc = "yolo6 ${rows}x${cols} " +
-            (if (pixelXyxy) "xyxy-piksel" else "cxcywh-norm") +
+            (if (cornerXyxy) "xyxy-piksel" else if (pixels) "cxcywh-piksel" else "cxcywh-norm") +
+            " sudut=${(cornerRatio * 100).toInt()}%" +
             " kelas=$numScores ambang=$conf" +
-            (if (relaxed) " (DITURUNKAN: skor tertinggi $topScore)" else " skor-teratas=$topScore") +
+            (if (relaxed) " (DITURUNKAN: skor tertinggi $topScore)"
+             else if (usedRel) " (AMBANG RELATIF: skor tertinggi $topScore)"
+             else " skor-teratas=$topScore") +
             " total=${out.size}"
         return out.sortedByDescending { it.score }
     }
