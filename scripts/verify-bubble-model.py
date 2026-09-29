@@ -184,9 +184,12 @@ def main(path):
     tensor, scale, pad_x, pad_y = letterbox(img)
     x = np.transpose(tensor, (2, 0, 1))[None].astype(np.float32)
     name = sess.get_inputs()[0].name
-    res = sess.run(None, {name: x})[0]
-    out = res[0] if res.ndim == 4 else res
-    print("output:", out.shape, out.dtype)
+    raw = sess.run(None, {name: x})[0]
+    out = raw[0] if raw.ndim == 3 else raw
+    if out.ndim != 2:
+        print("GAGAL: output setelah buang dimensi batch bukan 2D:", raw.shape)
+        return 1
+    print("output:", raw.shape, "-> matriks", out.shape, out.dtype)
     if out.shape[1:] != (6, 8400) and out.shape[-2:] != (6, 8400):
         print("GAGAL: bentuk output tidak sesuai (1,6,8400)")
         return 1

@@ -473,8 +473,19 @@ assert(bubbleDet.includes('if (src.hasAlpha()) android.graphics.Color.WHITE'), '
 assert(bubbleDet.includes('if (best < CONF_FLOOR) continue') && bubbleDet.includes('tak ada anchor >'), 'bubble: format koordinat dibaca dari anchor yang lolos ambang');
 assert(bubbleDet.includes('- padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
 const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
-assert(wf.includes('XOR satu byte 0x5A') && wf.includes('quantize_dynamic') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range), di-dekode XOR, dikuantisasi int8');
-assert(wf.includes('::warning::model bubble') && wf.includes('test -s app/src/main/assets/models/bd.onnx'), 'CI: model selalu terpasang (gate <50MB jadi peringatan, bukan gagal build)');
+assert(wf.includes('XOR satu byte 0x5A') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range) lalu di-dekode XOR');
+assert(wf.includes('for VARIAN in fp16 int8') && wf.includes('make-bubble-model.py "$VARIAN"'), 'CI: varian model bubble(fp16/int8) dicoba berurutan');
+assert(wf.includes('verify-bubble-model.py /tmp/bd_try.onnx') && wf.includes('::error::tidak ada varian model bubble yang lolos uji kontrak'), 'CI: tiap varian WAJIB lewat uji kontrak sebelum dipakai (gagal = build merah)');
+assert(wf.includes('test "$SIZE" -lt 52428800') && !wf.includes('::warning::model bubble'), 'CI: model wajib <50MB (gagal build, bukan sekadar peringatan)');
+{
+  const mk = read(path.join(ROOT, 'scripts/make-bubble-model.py'));
+  const vb = read(path.join(ROOT, 'scripts/verify-bubble-model.py'));
+  assert(mk.includes('convert_float_to_float16') && mk.includes('del out.graph.value_info[:]'), 'skrip model: fp16 + buang deklarasi value_info usang (ORT menolak tipe campur)');
+  assert(mk.includes('QuantFormat.QOperator') && !mk.includes('quantize_dynamic('), 'skrip model: int8 memakai QOperator (QLinearConv), bukan ConvInteger');
+  assert(mk.includes('CalibrationDataReader') && mk.includes('sintetis('), 'skrip model: kalibrasi int8 pakai halaman manga sintetis');
+  assert(vb.includes('ConvInteger') && vb.includes('MIN_IOU') && vb.includes('IoU per gelembung'), 'skrip uji: menolak op integer + mengukur IoU kotak decoder');
+  assert(vb.includes('def decode(') && vb.includes('corner_ratio >= 0.6'), 'skrip uji: decoder sama persis dengan decodeYolo6 (cxcywh-piksel)');
+}
 assert(bubbleDet.includes('isLogitsName') && bubbleDet.includes('ByteArray'), 'bubble: peran output dari nama + konversi dtype generik (tahan varian int8)');
 assert(bubbleDet.includes('n < 10 || n > 5000') && bubbleDet.includes('lg[0].size !in 2..8'), 'bubble: jumlah query & kelas fleksibel (bukan hardcode 300/3)');
 assert(bubbleDet.includes('fun isTileBlank(') && bubbleDet.includes('maxTiles'), 'bubble: lewati tile kosong + batas tile (anti-delay/OOM)');
