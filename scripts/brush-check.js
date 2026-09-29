@@ -262,6 +262,11 @@ assert(overlays.includes('fun perspectiveGrid') && overlays.includes('fun textFr
 assert(overlays.includes('import androidx.compose.ui.graphics.nativeCanvas'), 'overlay: import nativeCanvas ada (tanpa ini build gagal)');
 assert(editor.includes('EditorOverlays.perspectiveGrid(') && editor.includes('EditorOverlays.textFramePreview('), 'editor: overlay dipanggil, bukan digambar inline');
 assert(overlays.includes('fun TextToolsExtra') || overlays.includes('fun richTextPanel'), 'overlay: host panel gaya per kata + tombol toolbar');
+assert(textBoxSrc.includes('fun sanitized()') && textBoxSrc.includes('MAX_OFFSET = 1.2f') && textBoxSrc.includes('if (!v.isFinite()) return 0f'), 'perspektif: offset dijaga finite + dalam rentang slider (anti force close)');
+assert(perspPanel.includes('x.coerceIn(lo, hi)') && perspPanel.includes('valueRange = lo..hi'), 'perspektif: nilai slider selalu dijepit ke rentang (Material Slider melempar exception kalau tidak)');
+assert(perspPanel.includes('val p = (box.persp ?:') && !perspPanel.includes('mutableFloatStateOf(p.') && !perspPanel.includes('mutableFloatStateOf(p.tlX)'), 'perspektif: panel membaca langsung dari kotak (tak ada state basi)');
+assert(perspGrid.includes('.sanitized()') && perspGrid.includes('isFinite()'), 'perspektif: matriks & titik sudut bebas NaN/Infinity');
+assert(ovGest.includes('if (!area.width().isFinite()') && ovGest.includes('2_000_000f'), 'perspektif: gestur batal bila geometri rusak (anti force close)');
 assert(perspGrid.includes('fun dstPoints') && overlays.includes('PerspectiveGrid.dstPoints(box') && textRenderer.includes('PerspectiveGrid.matrix(box'), 'grid perspektif: sumber tunggal geometri (renderer + overlay + gesture)');
 assert(ovGest.includes('val grab = 96f / sc') && ovGest.includes('if (bestD > grab) perspHandle = 0'), 'grid perspektif: radius genggam lega + handle terdekat');
 assert(!ovGest.includes('selectedTextBox') && !ovGest.includes('pbox\n'), 'gestur overlay: hanya memakai parameter sendiri (tak grab state editor)');
@@ -397,10 +402,14 @@ assert(!/^internal val (Accent|PanelBg)/m.test(editor), 'refaktor: tanpa interna
 
 // 22. Model bubble tahan-bentuk + deteksi anti-delay/crash, watershed,
 //     kuas SFX lettering + gapless, bulk text edit.
-assert(bubbleDet.includes('val padX = (INPUT_SIZE - nw) / 2f') && bubbleDet.includes('114f / 255f'), 'bubble: preprocessing letterbox 640 + isi abu 114 (standar training YOLO)');
+assert(bubbleDet.includes('val padX = (INPUT_SIZE - nw) / 2f') && bubbleDet.includes('Color.rgb(114, 114, 114)'), 'bubble: preprocessing letterbox 640 + isi abu 114 (standar training YOLO)');
 assert(bubbleDet.includes('fun decodeYolo6') && bubbleDet.includes('val pixelXyxy = maxCoord > 2.5f'), 'bubble: decoder 6 kanal (xyxy-piksel vs cxcywh ternormalisasi)');
-assert(bubbleDet.includes('if (get(4, ai) < conf) continue') && bubbleDet.includes('tak ada anchor > conf'), 'bubble: format koordinat dibaca dari anchor yang lolos conf');
-assert(bubbleDet.includes('(get(0, ai) - padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
+assert(bubbleDet.includes('val numScores =') && bubbleDet.includes('bestC = c'), 'bubble: channel 4.. = skor tiap kelas (argmax), bukan (skor, index kelas)');
+assert(bubbleDet.includes('private const val CONF_THRESH = 0.10f') && bubbleDet.includes('CONF_FLOOR = 0.02f'), 'bubble: ambang turun (bias head model -7.7 membuat skor default ~0)');
+assert(bubbleDet.includes('relaxed = true') && bubbleDet.includes('DITURUNKAN'), 'bubble: ambang adaptif (8 teratas) bila tak ada yang lolos');
+assert(bubbleDet.includes('if (src.hasAlpha()) android.graphics.Color.WHITE'), 'bubble: area transparan jadi putih (kertas, bukan hitam)');
+assert(bubbleDet.includes('if (best < CONF_FLOOR) continue') && bubbleDet.includes('tak ada anchor >'), 'bubble: format koordinat dibaca dari anchor yang lolos ambang');
+assert(bubbleDet.includes('- padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
 const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
 assert(wf.includes('XOR satu byte 0x5A') && wf.includes('quantize_dynamic') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range), di-dekode XOR, dikuantisasi int8');
 assert(wf.includes('::warning::model bubble') && wf.includes('test -s app/src/main/assets/models/bd.onnx'), 'CI: model selalu terpasang (gate <50MB jadi peringatan, bukan gagal build)');

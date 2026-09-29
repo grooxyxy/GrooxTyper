@@ -5,6 +5,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.RectF
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -89,8 +90,14 @@ class BubbleDetector {
         private const val PROTO_SIZE = 160
         // Legacy seg: box(4) + 1 kelas + 32 koef = 37 kanal.
         private const val NUM_CHANNELS_SEG = 4 + 1 + NUM_MASK_COEF
-        private const val CONF_THRESH = 0.25f
-        private const val TALL_CONF_THRESH = 0.15f
+        // Ambang model bubble KZKT jauh lebih rendah dari model YOLO biasa:
+        // bias head-nya [ -7.75, -7.80 ] sehingga sigmoid(logit) defaultnya
+        // ~0.0004. Dengan ambang 0.25 semua deteksi hilang (user: "model gak
+        // berfungsi"). 0.10 dipakai sebagai ambang utama, 0.04 sebagai lantai
+        // adaptif (lihat decodeYolo6: kalau tak ada yang lolos, ambil 8 teratas).
+        private const val CONF_THRESH = 0.10f
+        private const val TALL_CONF_THRESH = 0.06f
+        private const val CONF_FLOOR = 0.02f
         private const val IOU_THRESH = 0.45f
         private const val MAX_DETECTIONS = 150
         private const val TALL_MAX_DETECTIONS = 300
@@ -256,27 +263,36 @@ class BubbleDetector {
         val scaleX = scale
         val scaleY = scale
 
-        val resized = Bitmap.createScaledBitmap(src, nw, nh, true)
-        val rpx = IntArray(nw * nh)
-        resized.getPixels(rpx, 0, nw, 0, 0, nw, nh)
-        resized.recycle()
+        // Render ke kanvas 640x640, bukan scaled-bitmap: ini sekaligus
+        // menerapkan letterbox (abu 114) DAN mengubah area transparan jadi
+        // putih. Tanpa itu, halaman manga berlatar transparan terbaca
+        // HITAM oleh model (kertas = sinyal utama bubble).
+        val padded = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
+        val padCanvas = Canvas(padded)
+        val bg = if (src.hasAlpha()) android.graphics.Color.WHITE
+        else android.graphics.Color.rgb(114, 114, 114)
+        padCanvas.drawColor(bg)
+        val blit = android.graphics.Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+            isDither = true
+        }
+        padCanvas.drawBitmap(
+            src, null,
+            android.graphics.RectF(padX, padY, padX + nw, padY + nh),
+            blit
+        )
+        val rpx = IntArray(INPUT_SIZE * INPUT_SIZE)
+        padded.getPixels(rpx, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        padded.recycle()
 
-        val data = FloatArray(3 * INPUT_SIZE * INPUT_SIZE) { 114f / 255f }
+        val data = FloatArray(3 * INPUT_SIZE * INPUT_SIZE)
         val plane = INPUT_SIZE * INPUT_SIZE
-        for (y in 0 until nh) {
-            val dy = (y + padY).toInt()
-            if (dy < 0 || dy >= INPUT_SIZE) continue
-            val rowBase = y * nw
-            val outBase = dy * INPUT_SIZE
-            for (x in 0 until nw) {
-                val dx = (x + padX).toInt()
-                if (dx < 0 || dx >= INPUT_SIZE) continue
-                val p = rpx[rowBase + x]
-                val o = outBase + dx
-                data[o] = ((p shr 16) and 0xFF) / 255f
-                data[plane + o] = ((p shr 8) and 0xFF) / 255f
-                data[2 * plane + o] = (p and 0xFF) / 255f
-            }
+        for (i in rpx.indices) {
+            val p = rpx[i]
+            data[i] = ((p shr 16) and 0xFF) / 255f
+            data[plane + i] = ((p shr 8) and 0xFF) / 255f
+            data[2 * plane + i] = (p and 0xFF) / 255f
         }
 
         return inferMutex.withLock {
@@ -325,15 +341,14 @@ class BubbleDetector {
                     val rows = mat.size
                     val cols = mat[0].size
                     lastOutputDesc = "out=${res.size()} mat=${rows}x${cols}"
-                    // Bentuk 6 kanal = 4 box + 1 skor + 1 kelas. Dua orientasi
-                    // mungkin: kanal-dulu (6,8400) ala ekspor Ultralytics, atau
-                    // anchor-dulu (8400,6). Keduanya ditangani decodeYolo6 yang
-                    // auto mengenali xyxy-piksel vs cxcywh ternormalisasi.
-                    val sixCh = (rows == 6 && cols > 8) || (cols == 6 && rows > 8)
+                    // Bentuk "4 box + N skor kelas" (model KZKT: 4+2 = 6
+                    // kanal). Dua orientasi mungkin: kanal-dulu (6,8400) ala
+                    // ekspor Ultralytics, atau anchor-dulu (8400,6). Keduanya
+                    // ditangani decodeYolo6 yang auto mengenali xyxy-piksel vs
+                    // cxcywh ternormalisasi.
+                    val sixCh = (rows in 5..12 && cols > 8) || (cols in 5..12 && rows > 8)
                     if (sixCh) {
-                        decodeYolo6(mat, src.width, src.height, scaleX, scaleY, padX, padY, conf).also {
-                            lastOutputDesc = "yolo6 ${rows}x${cols} kept=${it.size}"
-                        }
+                        decodeYolo6(mat, src.width, src.height, scaleX, scaleY, padX, padY, conf)
                     } else if (cols == 6 && rows in 2..1000) {
                         decodeE2E(mat, src.width, src.height, scaleX, scaleY, padX, padY, conf).also {
                             lastOutputDesc = "e2e rows=${mat.size} kept=${it.size}"
@@ -398,46 +413,86 @@ class BubbleDetector {
         val cols = mat[0].size
         val channelFirst = rows <= 8 && cols > 8
         val n = if (channelFirst) cols else rows
-        fun get(c: Int, a: Int): Float = if (channelFirst) mat[c][a] else mat[a][c]
-        // 1) Kumpulkan anchor yang skornya lolos. Format koordinat dibaca dari
-        //    anchor-anchor ini saja: kalau dihitung dari semua anchor, angka
-        //    kecil pada anchor tak aktif bisa membuat format salah baca.
+        // Kanal 4.. = skor tiap kelas (sigmoid sudah di dalam graf model KZKT).
+        // BUKAN satu skor + satu index kelas: untuk 2 kelas (text_bubble,
+        // text_free) channel 4 dan 5 keduanya probabilitas. Versi lama
+        // membaca channel 5 sebagai index kelas sehingga kelas kedua tak
+        // pernah tersaring dan ambang 0.25 membuang semua deteksi.
+        val numScores = if (channelFirst) rows - 4 else cols - 4
+        if (numScores < 1) {
+            lastOutputDesc = "yolo6 ${rows}x${cols} kanal tak cukup"
+            return emptyList()
+        }
+        fun scoreOf(c: Int, a: Int): Float = get(channelFirst, mat, 4 + c, a)
+
+        // 1) Kumpulkan kandidat di atas lantai. Format koordinat dibaca dari
+        //    kandidat itu (angka anchor tak aktif bisa menyesatkan).
         val keep = ArrayList<Int>(64)
         var maxCoord = 0f
         for (ai in 0 until n) {
-            if (get(4, ai) < conf) continue
+            var best = 0f
+            for (c in 0 until numScores) {
+                val v = scoreOf(c, ai)
+                if (v > best) best = v
+            }
+            if (best < CONF_FLOOR) continue
             keep.add(ai)
             for (c in 0..3) {
-                val v = abs(get(c, ai))
+                val v = abs(get(channelFirst, mat, c, ai))
                 if (v > maxCoord) maxCoord = v
             }
         }
         if (keep.isEmpty()) {
-            lastOutputDesc = "yolo6 ${rows}x${cols} tak ada anchor > conf"
+            lastOutputDesc = "yolo6 ${rows}x${cols} tak ada anchor > $CONF_FLOOR"
             return emptyList()
         }
         val pixelXyxy = maxCoord > 2.5f
-        val out = ArrayList<DetectedBubble>(keep.size)
+
+        // 2) Bangun kandidat lengkap: kelas = argmax skor.
+        class Cand(val ai: Int, val score: Float, val cls: Int)
+        val cands = ArrayList<Cand>(keep.size)
+        var topScore = 0f
         for (ai in keep) {
-            val score = get(4, ai)
-            val cls = get(5, ai).toInt()
+            var best = 0f
+            var bestC = 0
+            for (c in 0 until numScores) {
+                val v = scoreOf(c, ai)
+                if (v > best) {
+                    best = v
+                    bestC = c
+                }
+            }
+            if (best > topScore) topScore = best
+            cands.add(Cand(ai, best, bestC))
+        }
+        // 3) Ambil yang lolos ambang; kalau tak ada, turunkan ambang ke 8
+        //    teratas (bukan "nol deteksi") supaya model tetap berguna.
+        var used = cands.filter { it.score >= conf }
+        var relaxed = false
+        if (used.isEmpty()) {
+            used = cands.sortedByDescending { it.score }.take(8)
+            relaxed = true
+        }
+        val out = ArrayList<DetectedBubble>(used.size)
+        for (cd in used) {
+            val ai = cd.ai
             val x1: Float
             val y1: Float
             val x2: Float
             val y2: Float
             if (pixelXyxy) {
                 // xyxy dalam piksel input 640: kurangi pad letterbox.
-                x1 = (get(0, ai) - padX) / scaleX
-                y1 = (get(1, ai) - padY) / scaleY
-                x2 = (get(2, ai) - padX) / scaleX
-                y2 = (get(3, ai) - padY) / scaleY
+                x1 = (get(channelFirst, mat, 0, ai) - padX) / scaleX
+                y1 = (get(channelFirst, mat, 1, ai) - padY) / scaleY
+                x2 = (get(channelFirst, mat, 2, ai) - padX) / scaleX
+                y2 = (get(channelFirst, mat, 3, ai) - padY) / scaleY
             } else {
                 // cxcywh ternormalisasi terhadap seluruh input 640 (pad sudah
                 // termasuk di dalamnya) -> tak perlu kurangi pad.
-                val cx = get(0, ai) * INPUT_SIZE
-                val cy = get(1, ai) * INPUT_SIZE
-                val bw = get(2, ai) * INPUT_SIZE
-                val bh = get(3, ai) * INPUT_SIZE
+                val cx = get(channelFirst, mat, 0, ai) * INPUT_SIZE
+                val cy = get(channelFirst, mat, 1, ai) * INPUT_SIZE
+                val bw = get(channelFirst, mat, 2, ai) * INPUT_SIZE
+                val bh = get(channelFirst, mat, 3, ai) * INPUT_SIZE
                 x1 = (cx - bw / 2f) / scaleX
                 y1 = (cy - bh / 2f) / scaleY
                 x2 = (cx + bw / 2f) / scaleX
@@ -450,13 +505,19 @@ class BubbleDetector {
                 y2.coerceIn(0f, origH.toFloat())
             )
             if (box.width() < 8f || box.height() < 8f) continue
-            out.add(DetectedBubble(box, score, null, cls))
+            out.add(DetectedBubble(box, cd.score, null, cd.cls))
         }
         lastOutputDesc = "yolo6 ${rows}x${cols} " +
             (if (pixelXyxy) "xyxy-piksel" else "cxcywh-norm") +
-            " conf=$conf kept=${out.size}"
+            " kelas=$numScores ambang=$conf" +
+            (if (relaxed) " (DITURUNKAN: skor tertinggi $topScore)" else " skor-teratas=$topScore") +
+            " total=${out.size}"
         return out.sortedByDescending { it.score }
     }
+
+    /** Ambil elemen matriks (c, a) untuk layout kanal-dulu atau anchor-dulu. */
+    private fun get(channelFirst: Boolean, mat: Array<FloatArray>, c: Int, a: Int): Float =
+        if (channelFirst) mat[c][a] else mat[a][c]
 
     /**
      * Decode output YOLO end-to-end NMS-free: matriks (N,6) dengan baris

@@ -52,34 +52,44 @@ fun PerspectivePanel(
     onChange: () -> Unit,
     onClose: () -> Unit
 ) {
-    val p = remember(box.id) {
-        val src = box.persp ?: PerspSpec.fromKeystone(box.perspX, box.perspY)
-        PerspSpec().also { it.copyFrom(src) }
-    }
-    // Varian lokal supaya slider terasa responsif; commit ke box saat Selesai.
-    var tlX by remember(box.id) { mutableFloatStateOf(p.tlX) }
-    var tlY by remember(box.id) { mutableFloatStateOf(p.tlY) }
-    var trX by remember(box.id) { mutableFloatStateOf(p.trX) }
-    var trY by remember(box.id) { mutableFloatStateOf(p.trY) }
-    var brX by remember(box.id) { mutableFloatStateOf(p.brX) }
-    var brY by remember(box.id) { mutableFloatStateOf(p.brY) }
-    var blX by remember(box.id) { mutableFloatStateOf(p.blX) }
-    var blY by remember(box.id) { mutableFloatStateOf(p.blY) }
+    // Sumber tunggal = kotak teks itu sendiri (bukan salinan state lokal).
+    // Versi lama menyalin offset ke state lokal sekali saat panel dibuka,
+    // sehingga (a) slider menampilkan nilai basi setelah sudut digeser di kanvas dan
+    // (b) nilai di luar rentang slider membuat Material Slider melempar
+    // exception -> aplikasi force close. Sekarang nilai selalu dibaca dari
+    // kotak dan dijepit ke rentang slider sebelum dipakai.
+    val p = (box.persp ?: PerspSpec.fromKeystone(box.perspX, box.perspY)).sanitized()
+    val lo = PerspSpec.MIN_OFFSET
+    val hi = PerspSpec.MAX_OFFSET
 
-    fun applyPreset(spec: PerspSpec) {
-        tlX = spec.tlX; tlY = spec.tlY
-        trX = spec.trX; trY = spec.trY
-        brX = spec.brX; brY = spec.brY
-        blX = spec.blX; blY = spec.blY
+    fun setX(corner: Int, v: Float) {
+        val n = p.copyAll()
+        when (corner) {
+            0 -> n.tlX = v
+            1 -> n.trX = v
+            2 -> n.brX = v
+            else -> n.blX = v
+        }
+        commit(n)
     }
 
-    fun commit() {
-        val sp = PerspSpec(tlX, tlY, trX, trY, brX, brY, blX, blY)
-        sp.clampAll()
-        box.persp = sp
-        // Sinkronkan juga keystone lama supaya panel teks lama tetap sinkron.
-        box.perspX = ((tlX + trX + brX + blX) / 4f).coerceIn(-1f, 1f)
-        box.perspY = ((tlY + trY + brY + blY) / 4f).coerceIn(-1f, 1f)
+    fun setY(corner: Int, v: Float) {
+        val n = p.copyAll()
+        when (corner) {
+            0 -> n.tlY = v
+            1 -> n.trY = v
+            2 -> n.brY = v
+            else -> n.blY = v
+        }
+        commit(n)
+    }
+
+    fun commit(spec: PerspSpec) {
+        spec.clampAll()
+        box.persp = spec
+        // Sinkronkan keystone lama supaya panel teks & jalur lama tetap sinkron.
+        box.perspX = ((spec.tlX + spec.trX + spec.brX + spec.blX) / 4f).coerceIn(-1f, 1f)
+        box.perspY = ((spec.tlY + spec.trY + spec.brY + spec.blY) / 4f).coerceIn(-1f, 1f)
         onChange()
     }
 
@@ -123,7 +133,7 @@ fun PerspectivePanel(
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             presets.take(3).forEach { (label, spec) ->
-                PresetChip(label, Modifier.weight(1f)) { applyPreset(spec) }
+                PresetChip(label, Modifier.weight(1f)) { commit(spec) }
             }
         }
         Row(
@@ -131,29 +141,28 @@ fun PerspectivePanel(
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             presets.drop(3).forEach { (label, spec) ->
-                PresetChip(label, Modifier.weight(1f)) { applyPreset(spec) }
+                PresetChip(label, Modifier.weight(1f)) { commit(spec) }
             }
         }
         Spacer(modifier = Modifier.height(2.dp))
-        CornerSliders("Kiri-atas", tlX, { tlX = it; commit() }, tlY, { tlY = it; commit() })
-        CornerSliders("Kanan-atas", trX, { trX = it; commit() }, trY, { trY = it; commit() })
-        CornerSliders("Kanan-bawah", brX, { brX = it; commit() }, brY, { brY = it; commit() })
-        CornerSliders("Kiri-bawah", blX, { blX = it; commit() }, blY, { blY = it; commit() })
+        CornerSliders("Kiri-atas", p.tlX, { setX(0, it) }, p.tlY, { setY(0, it) }, lo, hi)
+        CornerSliders("Kanan-atas", p.trX, { setX(1, it) }, p.trY, { setY(1, it) }, lo, hi)
+        CornerSliders("Kanan-bawah", p.brX, { setX(2, it) }, p.brY, { setY(2, it) }, lo, hi)
+        CornerSliders("Kiri-bawah", p.blX, { setX(3, it) }, p.blY, { setY(3, it) }, lo, hi)
         Spacer(modifier = Modifier.height(2.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
-                onClick = {
-                    applyPreset(PerspSpec())
-                    commit()
-                },
+                onClick = { commit(PerspSpec()) },
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A41)),
                 modifier = Modifier.weight(1f)
             ) { Text("Datar", color = Color.White, fontSize = 12.sp) }
             Button(
-                onClick = {
-                    commit()
-                    onClose()
-                },
+                onClick = { commit(p) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3A3A41)),
+                modifier = Modifier.weight(1f)
+            ) { Text("Simpan", color = Color.White, fontSize = 12.sp) }
+            Button(
+                onClick = onClose,
                 colors = ButtonDefaults.buttonColors(containerColor = PerspAccent),
                 modifier = Modifier.weight(1f)
             ) { Text("Selesai", color = Color.White, fontSize = 12.sp) }
@@ -182,18 +191,24 @@ private fun CornerSliders(
     x: Float,
     onX: (Float) -> Unit,
     y: Float,
-    onY: (Float) -> Unit
+    onY: (Float) -> Unit,
+    lo: Float,
+    hi: Float
 ) {
+    // Nilai SELALU dijepit ke rentang slider: Material Slider melempar
+    // exception kalau nilainya di luar valueRange.
+    val xs = if (x.isFinite()) x.coerceIn(lo, hi) else 0f
+    val ys = if (y.isFinite()) y.coerceIn(lo, hi) else 0f
     Column {
         Text(
-            "$label  X ${(x * 100).roundToInt()}  Y ${(y * 100).roundToInt()}",
+            "$label  X ${(xs * 100).roundToInt()}  Y ${(ys * 100).roundToInt()}",
             color = Color(0xFF9AA0A6), fontSize = 10.sp, fontWeight = FontWeight.Bold
         )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Slider(
-                value = x,
+                value = xs,
                 onValueChange = onX,
-                valueRange = -1.2f..1.2f,
+                valueRange = lo..hi,
                 modifier = Modifier.weight(1f),
                 colors = SliderDefaults.colors(
                     thumbColor = PerspAccent, activeTrackColor = PerspAccent
@@ -201,9 +216,9 @@ private fun CornerSliders(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Slider(
-                value = y,
+                value = ys,
                 onValueChange = onY,
-                valueRange = -1.2f..1.2f,
+                valueRange = lo..hi,
                 modifier = Modifier.weight(1f),
                 colors = SliderDefaults.colors(
                     thumbColor = Color(0xFF00E5FF), activeTrackColor = Color(0xFF00E5FF)

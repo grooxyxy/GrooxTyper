@@ -101,6 +101,14 @@ fun Modifier.perspectiveRulerGestures(
                 if (perspHandle == 0) return@detectDragGestures
                 val sc = viewState.scale.coerceAtLeast(0.05f)
                 val area = com.grooxtyper.app.model.PerspectiveGrid.contentRect(box)
+                // Area tak wajar (NaN atau gigantic) = state rusak: batalkan
+                // gestur daripada mengirim angka aneh ke renderer.
+                if (!area.width().isFinite() || !area.height().isFinite()) {
+                    return@detectDragGestures
+                }
+                if (area.width() > 2_000_000f || area.height() > 2_000_000f) {
+                    return@detectDragGestures
+                }
                 val hw = (area.width() / 2f).coerceAtLeast(1f)
                 val hh = (area.height() / 2f).coerceAtLeast(1f)
                 // Delta-based: sudut mengikuti GERAKAN jari (bukan

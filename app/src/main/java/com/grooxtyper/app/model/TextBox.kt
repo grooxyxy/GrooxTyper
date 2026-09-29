@@ -34,33 +34,67 @@ data class PerspSpec(
     var blX: Float = 0f,
     var blY: Float = 0f
 ) {
+    /**
+     * Jaga agar semua offset tetap FINITE dan di dalam rentang yang dipakai
+     * slider panel (-1.2..1.2). Dua hal ini penting:
+     *  - NaN/Inf: `coerceIn`returning NaN, lalu Matrix/Canvas dapat NaN dan
+     *    aplikasi bisa force close.
+     *  - Nilai di luar rentang slider: Slider Material melempar exception
+     *    saat nilainya di luar valueRange - sumber "grid perspektif bikin
+     *    force close" ketika sudut digeser lewat kanvas lalu panel dibuka.
+     */
     fun clampAll() {
-        tlX = tlX.coerceIn(-1.6f, 1.6f); tlY = tlY.coerceIn(-1.6f, 1.6f)
-        trX = trX.coerceIn(-1.6f, 1.6f); trY = trY.coerceIn(-1.6f, 1.6f)
-        brX = brX.coerceIn(-1.6f, 1.6f); brY = brY.coerceIn(-1.6f, 1.6f)
-        blX = blX.coerceIn(-1.6f, 1.6f); blY = blY.coerceIn(-1.6f, 1.6f)
+        tlX = sane(tlX); tlY = sane(tlY)
+        trX = sane(trX); trY = sane(trY)
+        brX = sane(brX); brY = sane(brY)
+        blX = sane(blX); blY = sane(blY)
+    }
+
+    /** Nilai aman untuk slider & matriks: bukan NaN/Inf dan dalam batas. */
+    private fun sane(v: Float): Float {
+        if (!v.isFinite()) return 0f
+        return v.coerceIn(MIN_OFFSET, MAX_OFFSET)
+    }
+
+    /** Salinan yang sudah dibersihkan (dipakai renderer & overlay). */
+    fun sanitized(): PerspSpec {
+        val c = PerspSpec()
+        c.tlX = sane(tlX); c.tlY = sane(tlY)
+        c.trX = sane(trX); c.trY = sane(trY)
+        c.brX = sane(brX); c.brY = sane(brY)
+        c.blX = sane(blX); c.blY = sane(blY)
+        return c
     }
 
     fun isFlat(): Boolean = tlX == 0f && tlY == 0f && trX == 0f && trY == 0f &&
         brX == 0f && brY == 0f && blX == 0f && blY == 0f
+
+    companion object {
+        /** Batas offset sudut (dalam fraksi setengah lebar/tinggi). */
+        const val MIN_OFFSET = -1.2f
+        const val MAX_OFFSET = 1.2f
+    }
 
     fun copyFrom(o: PerspSpec) {
         tlX = o.tlX; tlY = o.tlY; trX = o.trX; trY = o.trY
         brX = o.brX; brY = o.brY; blX = o.blX; blY = o.blY
     }
 
-    companion object {
-        /** Dari keystone lama (perspX = tepi atas/bawah, perspY = kiri/kanan). */
-        fun fromKeystone(perspX: Float, perspY: Float): PerspSpec {
-            val x = perspX.coerceIn(-1f, 1f)
-            val y = perspY.coerceIn(-1f, 1f)
-            return PerspSpec(
-                tlX = x, tlY = y,
-                trX = -x, trY = -y,
-                brX = x, brY = y,
-                blX = -x, blY = -y
-            )
-        }
+    /** Salinan bebas (dipakai panel saat menggeser satu sudut). */
+    fun copyAll(): PerspSpec = PerspSpec(
+        tlX, tlY, trX, trY, brX, brY, blX, blY
+    )
+
+    /** Dari keystone lama (perspX = tepi atas/bawah, perspY = kiri/kanan). */
+    fun fromKeystone(perspX: Float, perspY: Float): PerspSpec {
+        val x = perspX.coerceIn(-1f, 1f)
+        val y = perspY.coerceIn(-1f, 1f)
+        return PerspSpec(
+            tlX = x, tlY = y,
+            trX = -x, trY = -y,
+            brX = x, brY = y,
+            blX = -x, blY = -y
+        ).sanitized()
     }
 }
 

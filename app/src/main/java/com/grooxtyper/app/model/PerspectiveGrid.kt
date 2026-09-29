@@ -20,8 +20,10 @@ object PerspectiveGrid {
     /** Area konten teks dalam koordinat kanvas (kotak frame bila ada). */
     fun contentRect(box: TextBox): RectF {
         val fr = box.frameRectPx()
-        if (fr != null) return fr
-        val (w, h) = box.contentSize()
+        if (fr != null && fr.width().isFinite() && fr.height().isFinite()) return fr
+        val (w0, h0) = box.contentSize()
+        val w = if (w0.isFinite()) w0 else 0f
+        val h = if (h0.isFinite()) h0 else 0f
         val rad = Math.toRadians(box.rotation.toDouble())
         val c = kotlin.math.abs(cos(rad)).toFloat()
         val s = kotlin.math.abs(sin(rad)).toFloat()
@@ -40,9 +42,11 @@ object PerspectiveGrid {
      * urutan: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah.
      */
     fun dstPoints(box: TextBox, w: Float, h: Float): FloatArray {
-        val hw = w / 2f
-        val hh = h / 2f
-        val p = box.activePersp()
+        // Lebar/tinggi dibatasi finite: kanvas HUGE atau box rusak tak boleh
+        // mengirim NaN/Infinity ke Matrix/Canvas (bisa menutup paksa aplikasi).
+        val hw = (if (w.isFinite()) w else 0f) / 2f
+        val hh = (if (h.isFinite()) h else 0f) / 2f
+        val p = box.activePersp().sanitized()
         return floatArrayOf(
             -hw + p.tlX * hw, -hh + p.tlY * hh,
             hw + p.trX * hw, -hh + p.trY * hh,
@@ -53,7 +57,7 @@ object PerspectiveGrid {
 
     /** Matrix perspektif (null bila tak ada distorsi). */
     fun matrix(box: TextBox, w: Float, h: Float): Matrix? {
-        val p = box.activePersp()
+        val p = box.activePersp().sanitized()
         if (p.isFlat()) return null
         if (w <= 0.5f || h <= 0.5f) return null
         val hw = w / 2f
@@ -67,9 +71,9 @@ object PerspectiveGrid {
     /** Keempat sudut konten dalam koordinat KANVAS (rotasi ikut teks). */
     fun cornersCanvas(box: TextBox): Array<Offset> {
         val r = contentRect(box)
-        val w = r.width()
-        val h = r.height()
-        val p = box.activePersp()
+        val w = if (r.width().isFinite()) r.width() else 0f
+        val h = if (r.height().isFinite()) r.height() else 0f
+        val p = box.activePersp().sanitized()
         val cx = r.centerX()
         val cy = r.centerY()
         val hw = w / 2f
@@ -97,6 +101,7 @@ object PerspectiveGrid {
 
     /** Titik di dalam trapesium (u = kiri-kanan, v = atas-bawah). */
     fun bilerp(dst: FloatArray, u: Float, v: Float): Offset {
+        if (dst.size < 16) return Offset.Zero
         val topX = dst[0] + (dst[2] - dst[0]) * u
         val topY = dst[1] + (dst[3] - dst[1]) * u
         val botX = dst[12] + (dst[14] - dst[12]) * u
