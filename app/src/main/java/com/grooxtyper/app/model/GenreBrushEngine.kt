@@ -349,9 +349,20 @@ object GenreBrushEngine {
             if (nPts == 1) {
                 return Path().apply { addCircle(xs[0], ys[0], max(1f, half + extra), Path.Direction.CW) }
             }
-            return SfxInk.strokeRibbon(
-                xs.toFloatArray(nPts), ys.toFloatArray(nPts), halfWidths(extra), 0.35f
-            )
+            return SfxInk.strokeRibbon(xsArr(), ysArr(), halfWidths(extra), 0.35f)
+        }
+
+        /** Salinan koordinat titik jadi array (dipakai peregang pita). */
+        private fun xsArr(): FloatArray {
+            val a = FloatArray(nPts)
+            for (i in 0 until nPts) a[i] = xs[i]
+            return a
+        }
+
+        private fun ysArr(): FloatArray {
+            val a = FloatArray(nPts)
+            for (i in 0 until nPts) a[i] = ys[i]
+            return a
         }
 
         private fun boundsOf(pad: Float): RectF {
@@ -738,17 +749,15 @@ object GenreBrushEngine {
         }
     }
 
-    companion object {
-        /** Batas titik per goresan (selaras dengan buffer panjang busur). */
-        const val MAX_PTS = 4096
+    /** Batas titik per goresan (selaras dengan buffer panjang busur). */
+    const val MAX_PTS = 4096
 
-        /** Batas piksel render sementara (4MP = 16MB) sebelum pakai jalur langsung. */
-        const val MAX_TEMP_PIXELS = 4_000_000L
+    /** Batas piksel render sementara (4MP = 16MB) sebelum pakai jalur langsung. */
+    const val MAX_TEMP_PIXELS = 4_000_000L
 
-        /** Peta kuas ke genre (null kalau bukan kuas genre). */
-        fun genreOf(brushType: BrushType): Genre? = Genre.of(brushType)
+    /** Peta kuas ke genre (null kalau bukan kuas genre). */
+    fun genreOf(brushType: BrushType): Genre? = Genre.of(brushType)
 
-        /** Pabrik stroke (dipakai BrushEngine). */
-        fun newStroke(store: SettingsStore): Stroke = Stroke(store)
-    }
+    /** Pabrik stroke (dipakai BrushEngine). */
+    fun newStroke(store: SettingsStore): Stroke = Stroke(store)
 }
