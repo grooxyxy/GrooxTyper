@@ -21,29 +21,26 @@ import numpy as np
 
 
 def sintetis(varian=0):
-    """Halaman manga sintetis untuk kalibrasi (bukan untuk menilai akurasi)."""
+    """Halaman manga sintetis untuk kalibrasi (bukan untuk menilai akurasi).
+
+    Penugasan ditulis langsung ke larik gambar: pembacaan fancy index
+    (``img[yy, xx]``) mengembalikan salinan, jadi menulis ke hasil bacaan
+    tidak mengubah apa pun.
+    """
     rng = np.random.RandomState(1234 + varian)
     img = np.ones((640, 640, 3), dtype=np.float32)
-    jumlah = 3 + varian
-    for i in range(jumlah):
-        cx = rng.randint(90, 550)
-        cy = rng.randint(90, 550)
-        rx = rng.randint(60, 170)
-        ry = int(rx * rng.uniform(0.55, 0.95))
-        edge = rng.randint(4, 9)
-        ys = np.arange(max(0, cy - ry - edge), min(640, cy + ry + edge + 1))
-        xs = np.arange(max(0, cx - rx - edge), min(640, cx + rx + edge + 1))
-        if len(ys) == 0 or len(xs) == 0:
-            continue
-        yy, xx = np.meshgrid(ys, xs, indexing="ij")
+    yy, xx = np.mgrid[0:640, 0:640]
+    for i in range(3 + varian):
+        cx = int(rng.randint(90, 550))
+        cy = int(rng.randint(90, 550))
+        rx = int(rng.randint(60, 170))
+        ry = max(20, int(rx * rng.uniform(0.55, 0.95)))
+        edge = int(rng.randint(4, 9))
         d = ((xx - cx) / float(rx)) ** 2 + ((yy - cy) / float(ry)) ** 2
-        inside = d <= 1.0
-        ring = d > (1.0 - edge / float(min(rx, ry))) ** 2
-        sub = img[np.clip(ys, 0, 639)][:, np.clip(xs, 0, 639)]
-        sub[inside] = 0.05
-        sub[inside & ring] = 0.05
-        # garis teks di dalam gelembung
-        for line in range(rng.randint(2, 5)):
+        img[d <= 1.0] = 1.0
+        inner = (1.0 - edge / float(min(rx, ry))) ** 2
+        img[(d <= 1.0) & (d > inner)] = 0.05
+        for line in range(int(rng.randint(2, 5))):
             ly = cy - 30 + line * 26
             half = int(rx * 0.6)
             y0, y1 = max(0, ly - 4), min(640, ly + 5)

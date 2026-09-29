@@ -31,32 +31,32 @@ MIN_DETECTIONS = 1
 
 
 def buat_halaman(pw=720, ph=1024):
-    """Halaman manga sintetis: kertas putih + 3 gelembung oval + garis teks."""
+    """Halaman manga sintetis: kertas putih + 3 gelembung oval + garis teks.
+
+    Perhatikan: penugasan harus langsung ke img (numpy advanced indexing
+    pada pembacaan menghasilkan SALINAN, jadi menulis ke hasil bacaan tidak
+    pernah mengubah gambar - bug ini membuat halaman uji kosong putih dan
+    model terlihat "tidak berfungsi").
+    """
     img = np.ones((ph, pw, 3), dtype=np.float32)
     bubbles = [
         dict(cx=180, cy=220, rx=150, ry=105),
         dict(cx=540, cy=430, rx=130, ry=90),
         dict(cx=260, cy=800, rx=175, ry=115),
     ]
-    edge = 7
+    yy, xx = np.mgrid[0:ph, 0:pw]
     for b in bubbles:
-        ys = np.arange(b["cy"] - b["ry"] - edge - 2, b["cy"] + b["ry"] + edge + 3)
-        xs = np.arange(b["cx"] - b["rx"] - edge - 2, b["cx"] + b["rx"] + edge + 3)
-        yy, xx = np.meshgrid(ys, xs, indexing="ij")
-        inside = ((xx - b["cx"]) / b["rx"]) ** 2 + ((yy - b["cy"]) / b["ry"]) ** 2 <= 1.0
-        ring = ((xx - b["cx"]) / b["rx"]) ** 2 + ((yy - b["cy"]) / b["ry"]) ** 2 > (
-            1.0 - edge / min(b["rx"], b["ry"])
-        ) ** 2
-        yy = np.clip(yy, 0, ph - 1)
-        xx = np.clip(xx, 0, pw - 1)
-        patch = img[yy, xx]
-        patch[inside] = 0.05
-        patch[inside & ring] = 0.05
+        edge = 7
+        d = ((xx - b["cx"]) / float(b["rx"])) ** 2 + ((yy - b["cy"]) / float(b["ry"])) ** 2
+        img[d <= 1.0] = 1.0
+        inner = (1.0 - edge / float(min(b["rx"], b["ry"]))) ** 2
+        img[(d <= 1.0) & (d > inner)] = 0.05
+        # garis teks di dalam gelembung (baris horizontal hitam)
         for line in range(3):
-            ly = int(b["cy"] - 34 + line * 34)
+            ly = b["cy"] - 34 + line * 34
             half = int(b["rx"] * 0.62 * (1 - 0.12 * line))
-            y0, y1 = max(0, ly - 5), min(ph, ly + 6)
-            x0, x1 = max(0, b["cx"] - half), min(pw, b["cx"] + half)
+            y0, y1 = max(0, int(ly) - 5), min(ph, int(ly) + 6)
+            x0, x1 = max(0, int(b["cx"]) - half), min(pw, int(b["cx"]) + half)
             if y1 > y0 and x1 > x0:
                 img[y0:y1, x0:x1] = 0.05
     return img, bubbles
