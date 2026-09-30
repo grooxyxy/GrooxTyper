@@ -74,7 +74,19 @@ data class SfxStyleSpec(
     /** Kemiringan tiap kata (derajat). "Slightly rotated" = kecil. */
     val tiltPerWord: Float,
     /** Percikan tepi; sumber menyebut tepi diserbati tanpa angka. */
-    val spatter: Int
+    val spatter: Int,
+    /**
+     * Kekuatan grain bertekstur 0..1. 0 berarti tinta polos tanpa grain
+     * (menuju kuas lama). Di atas 0, mesin kuas merender langkah tinta lewat
+     * Ink API dengan grain sebagai tekstur, jadi hurufnya punya pori-pori.
+     */
+    val grain: Float = 0f,
+    /**
+     * Jenis grain. Dipasangkan dengan [grain] karena tiap bunyi punya
+     * PORI yang berbeda: horror retak, romance air, action ciprican,
+     * fantasy tone dots.
+     */
+    val texture: SfxTextureBrush.Texture = SfxTextureBrush.Texture.CRUNCH
 ) {
     /**
      * Lebar outline lapis dalam (warna terang) = setengah lapis luar.
@@ -85,7 +97,7 @@ data class SfxStyleSpec(
     fun copy(): SfxStyleSpec = SfxStyleSpec(
         gradStart, gradEnd, gradAngle, inkScale, outlineScale, outlineColor,
         outlineInnerColor, shadowDx, shadowDy, shadowBlur, shadowColor,
-        roughness, tiltPerWord, spatter
+        roughness, tiltPerWord, spatter, grain, texture
     )
 
     companion object {
@@ -102,6 +114,18 @@ data class SfxStyleSpec(
          *    tebal, bayangan geser mendatar (benturan datang dari samping).
          *  - FANTASY: gradasi diagonal + rombakan, outline bersih, percikan
          *    paling banyak.
+         *
+         * `grain` dan `texture` menentukan pori huruf lewat Ink API. Angkanya
+         * dipilih supaya tiap genre terbaca berbeda, bukan asal bagus:
+         *
+         *  - HORROR  retak 0.55: cat retak punya pori besar dan tidak rata,
+         *    paling dekat dengan "kasar" pada preset roughness 0.85.
+         *  - ROMANCE pita air 0.18: paling bersih dari empat genre; butiran
+         *    halus supaya gradasi hangatnya tetap terbaca.
+         *  - ACTION  ciprican 0.45: bunyi hempasan, jadi porinya ciprican.
+         *  - FANTASY halftone 0.50: screentone adalah tekstur komik yang
+         *    benar-benar dipakai di lettering, bukan sekadar efek.
+         *  - NETRAL  0: teks tanpa genre tetap polos, bukan mengira ada preset.
          */
         fun presetOf(genre: SfxGenre): SfxStyleSpec = when (genre) {
             SfxGenre.HORROR -> SfxStyleSpec(
@@ -118,7 +142,9 @@ data class SfxStyleSpec(
                 shadowColor = 0xB3000000.toInt(),
                 roughness = 0.85f,
                 tiltPerWord = -6f,
-                spatter = 10
+                spatter = 10,
+                grain = 0.55f,
+                texture = SfxTextureBrush.Texture.CRUNCH
             )
             SfxGenre.ROMANCE -> SfxStyleSpec(
                 gradStart = 0xFFFFF2F5.toInt(),
@@ -134,7 +160,9 @@ data class SfxStyleSpec(
                 shadowColor = 0x8C7A1B3A.toInt(),
                 roughness = 0.12f,
                 tiltPerWord = 3f,
-                spatter = 0
+                spatter = 0,
+                grain = 0.18f,
+                texture = SfxTextureBrush.Texture.RIBBON
             )
             SfxGenre.ACTION -> SfxStyleSpec(
                 gradStart = 0xFFFFF0B3.toInt(),
@@ -150,7 +178,9 @@ data class SfxStyleSpec(
                 shadowColor = 0xE6000000.toInt(),
                 roughness = 0.30f,
                 tiltPerWord = 10f,
-                spatter = 6
+                spatter = 6,
+                grain = 0.45f,
+                texture = SfxTextureBrush.Texture.SPATTER
             )
             SfxGenre.FANTASY -> SfxStyleSpec(
                 gradStart = 0xFFFFFDE7.toInt(),
@@ -166,7 +196,9 @@ data class SfxStyleSpec(
                 shadowColor = 0x994A148C.toInt(),
                 roughness = 0.45f,
                 tiltPerWord = 5f,
-                spatter = 14
+                spatter = 14,
+                grain = 0.50f,
+                texture = SfxTextureBrush.Texture.HALFTONE
             )
         }
 
@@ -185,7 +217,9 @@ data class SfxStyleSpec(
             shadowColor = 0x80000000.toInt(),
             roughness = 0.25f,
             tiltPerWord = 0f,
-            spatter = 0
+            spatter = 0,
+            grain = 0f,
+            texture = SfxTextureBrush.Texture.CRUNCH
         )
     }
 }

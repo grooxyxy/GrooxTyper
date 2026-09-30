@@ -713,6 +713,58 @@ for (const t of ['HALFTONE', 'HATCH', 'CRUNCH', 'SPATTER', 'RIBBON', 'ERODED']) 
   assert(sfxTex.includes(t + '('), 'tekstur: ' + t + ' ada di daftar enum');
 }
 assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(sfxTex), 'kode kuas bertekstur bebas karakter asing');
+const genre = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/GenreBrushEngine.kt'));
+const sfxStyle = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxStyle.kt'));
+assert(genre.includes('var grain by mutableFloatStateOf(0f)'), 'grain: setelan kekuatan grain 0..1 ada di Settings');
+assert(genre.includes('grain = spec.grain') && genre.includes('textureKind = spec.texture'), 'grain: preset SFXStyleSpec diteruskan ke setelan kuas');
+assert(genre.includes('grain = o.grain; textureKind = o.textureKind'), 'grain: setelan ikut tersalin saat preset dicopy');
+assert(genre.includes('private fun drawGrain(c: Canvas, st: Settings, offX: Int, offY: Int): Boolean'), 'grain: langkah render grain punya helper sendiri');
+assert(genre.includes('drawGrain(c, st, l, t)') && genre.includes('drawGrain(canvas, st, 0, 0)'), 'grain: dipanggil di jalur bitmap sementara dan jalur langsung');
+assert(genre.includes('if (!SfxTextureBrush.prepare()) return false'), 'grain: Ink dicek sebelum dipakai, gagal berarti polos');
+assert(genre.includes('tx[i] = xs[i] - offX'), 'grain: koordinat ikut digeser agar tidak meleset dari kanvas sementara');
+assert(sfxStyle.includes('val grain: Float = 0f'), 'grain: preset gaya punya kolom grain');
+assert(sfxStyle.includes('val texture: SfxTextureBrush.Texture'), 'preset gaya punya jenis grain');
+assert((sfxStyle.match(/grain = 0\.\d+f/g) || []).length === 4, 'grain: keempat genre punya angka grain sendiri');
+assert(/grain = 0f,/.test(sfxStyle), 'grain: teks tanpa genre (NETRAL) tetap polos');
+assert(sfxStyle.includes('roughness, tiltPerWord, spatter, grain, texture'), 'grain: copy() preset menyalin kolom baru');
+for (const t of ['CRUNCH', 'RIBBON', 'SPATTER', 'HALFTONE']) {
+  assert(sfxStyle.includes('texture = SfxTextureBrush.Texture.' + t), 'grain: preset memakai tekstur ' + t);
+}
+assert(!/[Ѐ-ӿ]/.test(sfxStyle + genre), 'kode grain bebas karakter asing');
+const textBox = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextBox.kt'));
+assert(textBox.includes('put("grain", st.grain.toDouble())'), 'grain: disimpan ke proyek agar pori tidak hilang');
+assert(textBox.includes('put("grainKind", st.texture.ordinal)'), 'grain: jenis tekstur ikut disimpan');
+assert(textBox.includes('grain = st.optDouble("grain", 0.0).toFloat()'), 'grain: proyek lama dibaca sebagai polos (default 0)');
+assert(textBox.includes('coerceIn(0, SfxTextureBrush.Texture.entries.size - 1)'), 'grain: indeks jenis tekstur dari berkas dijaga tetap sah');
+// Menyisipkan baris baru ke daftar argumen bernama Kotlin mudah lupa
+// koma, dan koma yang hilang hanya ketahuan saat kompilasi. Pola dua
+// baris tiap preset dikunci di sini.
+const pasanganPreset = [
+  ['                spatter = 10,\n                grain = 0.55f,', 'horror'],
+  ['                spatter = 0,\n                grain = 0.18f,', 'romance'],
+  ['                spatter = 6,\n                grain = 0.45f,', 'action'],
+  ['                spatter = 14,\n                grain = 0.50f,', 'fantasy'],
+  ['            spatter = 0,\n            grain = 0f,', 'netral']
+];
+for (const [potongan, nama] of pasanganPreset) {
+  assert(sfxStyle.includes(potongan), 'preset ' + nama + ': setiap argumen bernama dipisah koma (grain tidak menempel ke spatter)');
+}
+// Tanda kurawal bisa dihitung polos: berbeda dengan kurung, tanda ini
+// hampir tak pernah muncul di dalam string atau komentar pada kode ini.
+for (const [nama, f] of [['SfxStyle', sfxStyle], ['GenreBrushEngine', genre], ['SfxTextureBrush', sfxTex], ['TextBox', textBox]]) {
+  const o = (f.match(/\{/g) || []).length, c = (f.match(/\}/g) || []).length;
+  assert(o === c, nama + ': tanda kurawal seimbang (' + o + '/' + c + ')');
+}
+// Kurung hanya diperiksa di dua file yang isinya bersih dari kurung dalam
+// string; TextBox punya kurung di dalam teks KDoc sehingga tak bisa dihitung
+// polos tanpa parser.
+for (const [nama, f] of [['SfxStyle', sfxStyle], ['SfxTextureBrush', sfxTex]]) {
+  const o = (f.match(/\(/g) || []).length, c = (f.match(/\)/g) || []).length;
+  assert(o === c, nama + ': tanda kurung seimbang (' + o + '/' + c + ')');
+}
+
+
+
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

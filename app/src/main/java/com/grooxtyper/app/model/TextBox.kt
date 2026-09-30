@@ -1358,6 +1358,10 @@ class TextBox(
                     put("roughness", st.roughness.toDouble())
                     put("tiltPerWord", st.tiltPerWord.toDouble())
                     put("spatter", st.spatter)
+                    // Grain bertekstur ikut disimpan, kalau tidak proyek yang
+                    // disimpan ulang akan kehilangan pori hurufnya.
+                    put("grain", st.grain.toDouble())
+                    put("grainKind", st.texture.ordinal)
                 })
             }
             bubble?.let { b ->
@@ -1499,7 +1503,14 @@ class TextBox(
                         shadowColor = st.optInt("shadowColor", 0x80000000.toInt()),
                         roughness = st.optDouble("roughness", 0.25).toFloat(),
                         tiltPerWord = st.optDouble("tiltPerWord", 0.0).toFloat(),
-                        spatter = st.optInt("spatter", 0)
+                        spatter = st.optInt("spatter", 0),
+                        // Proyek lama tidak punya kunci grain: default-nya 0
+                        // supaya huruf lama tetap polos, bukan tiba-tiba
+                        // bertekstur.
+                        grain = st.optDouble("grain", 0.0).toFloat(),
+                        texture = SfxTextureBrush.Texture.entries[
+                            st.optInt("grainKind", 0).coerceIn(0, SfxTextureBrush.Texture.entries.size - 1)
+                        ]
                     )
                 },
                 bubble = o.optJSONObject("bubble")?.let { b ->

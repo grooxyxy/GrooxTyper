@@ -96,6 +96,14 @@ object GenreBrushEngine {
         /** Percikan kecil di sekitar goresan. */
         var spatter by mutableIntStateOf(0)
         /**
+         * Kekuatan grain bertekstur 0..1, dibaca dari preset [SfxStyleSpec].
+         * 0 berarti langkah tinta digambar polos seperti biasa; di atas 0 mesin
+         * menumpuk satu langkah bertekstur (Ink API) di atas tinta itu.
+         */
+        var grain by mutableFloatStateOf(0f)
+        /** Jenis grain; ikut diubah oleh [applyStyle] dari preset. */
+        var textureKind by mutableStateOf(SfxTextureBrush.Texture.CRUNCH)
+        /**
          * Preset gaya yang terakhir dipakai (null = gaya manual penuh).
          * Disimpan supaya panel bisa menampilkan angka preset asli ketika
          * pengali lebar berubah, dan tombol "Bawaan" bisa memulihkannya.
@@ -111,6 +119,7 @@ object GenreBrushEngine {
             shadowOn = o.shadowOn; shadowDx = o.shadowDx; shadowDy = o.shadowDy
             shadowBlur = o.shadowBlur; shadowColor = o.shadowColor
             texture = o.texture; spatter = o.spatter
+            grain = o.grain; textureKind = o.textureKind
             styleRef = o.styleRef
         }
 
@@ -153,6 +162,8 @@ object GenreBrushEngine {
             shadowColor = spec.shadowColor
             texture = spec.roughness
             spatter = spec.spatter
+            grain = spec.grain
+            textureKind = spec.texture
             // Semua ukuran disimpan sebagai RASIO terhadap ukuran kuas (sama
             // seperti outlineWidth), lalu dikalikan ukuran kuas saat render.
             // Dulu outlineWidth dibagi inkScale sehingga jadi 0.34/0.065 = 5.2
@@ -577,6 +588,7 @@ object GenreBrushEngine {
                     }
                 }
                 c.drawPath(ink, fillPaintFor(st, clip))
+                drawGrain(c, st, l, t)
                 drawExtras(c, st, clip)
                 canvas.drawBitmap(tmp, l.toFloat(), t.toFloat(), null)
             } finally {
@@ -623,7 +635,41 @@ object GenreBrushEngine {
                 )
             }
             canvas.drawPath(ink, fillPaintFor(st, clip))
+            drawGrain(canvas, st, 0, 0)
             drawExtras(canvas, st, clip)
+        }
+
+        /**
+         * Menumpuk satu goresan bertekstur di atas tinta memakai Ink API.
+         *
+         * Ini murni TAMBAHAN: tinta polos (solid atau gradasi) tetap digambar
+         * lebih dulu oleh pemanggil, lalu langkah ini menumpuk grain di
+         * atasnya. Untuk tekstur ber-`DST_OUT` (retak, tepi robek) hasilnya
+         * celah putih di dalam huruf, persis cat kering. Untuk tekstur
+         * bermotif (halftone, arsir) hasilnya huruf bertitik atau bergaris.
+         *
+         * [offX] dan [offY] adalah geseran kanvas yang sudah dipasang pemanggil
+         * pada [c]; koordinat titik ikut digeser agar tidak meleset. Mengembalikan
+         * false berarti tidak ada yang digambar (grain dimatikan atau pustaka
+         * native Ink gagal dimuat) dan pemanggil boleh finishing seperti biasa.
+         */
+        private fun drawGrain(c: Canvas, st: Settings, offX: Int, offY: Int): Boolean {
+            val g = st.grain.coerceIn(0f, 1f)
+            if (g < 0.02f || nPts < 2) return false
+            if (!SfxTextureBrush.prepare()) return false
+            val brush = SfxTextureBrush.brushFor(
+                st.textureKind,
+                inkColor,
+                size * st.widthMul.coerceIn(0.2f, 4f),
+                g
+            )
+            val tx = FloatArray(nPts)
+            val ty = FloatArray(nPts)
+            for (i in 0 until nPts) {
+                tx[i] = xs[i] - offX
+                ty[i] = ys[i] - offY
+            }
+            return SfxTextureBrush.drawStroke(c, tx, ty, nPts, brush)
         }
 
         /** Paint isi: warna solid atau gradasi sesuai sudut setelan. */

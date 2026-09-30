@@ -68,8 +68,10 @@ import kotlin.math.sin
  * 1. `ink-brush` 1.0.0 masih berstatus [ExperimentalInkCustomBrushApi];
  *   karena itu ada `@file:OptIn` di baris pertama.
  * 2. Bentuk goresannya adalah mesh Ink (lebar ikut `Brush.size`), bukan pita
- *   lebar-variabel milik [GenreBrushEngine]. Karena itu jalur ini dipakai
- *   **menggantikan** langkah tinta polos ketika tekstur aktif, bukan menimpanya.
+ *   lebar-variabel milik [GenreBrushEngine]. Karena itu mesin TIDAK mengganti
+ *   langkah tinta, melainkan menumpuk grain di atasnya: gradasi isi tetap utuh
+ *   dan yang berubah hanya porinya. Untuk tekstur ber-`DST_OUT` hasilnya celah
+ *   putih di dalam huruf; untuk yang bermotif, hurufnya bertitik atau bergaris.
  * 3. [available] dicek sekali. Kalau pustaka native `libink.so` gagal dimuat
  *   (misal ABI tak cocok), mesin diam-diam jatuh ke kuas polos; kuas tidak
  *   pernah membuat aplikasi crash.
@@ -126,8 +128,8 @@ object SfxTextureBrush {
     private var inkStore: StockTextureBitmapStore? = null
     private var inkRenderer: CanvasStrokeRenderer? = null
 
-    /** Cache keluarga kuas per tekstur, supaya tak dibangun tiap goresan. */
-    private val families = HashMap<Texture, BrushFamily>()
+    /** Cache keluarga kuas per (tekstur, kekuatan), tak dibangun tiap goresan. */
+    private val families = HashMap<String, BrushFamily>()
 
     private val tried = AtomicBoolean(false)
 
@@ -296,8 +298,10 @@ object SfxTextureBrush {
      * menyisakan celah di sepanjang goresan. Itulah yang dipakai tekstur Retak
      * dan Tepi Robek supaya terlihat patah, bukan sekadar bergaris.
      */
-    private fun familyFor(t: Texture): BrushFamily {
-        families[t]?.let { return it }
+    private fun familyFor(t: Texture, amount: Float): BrushFamily {
+        val step = (amount.coerceIn(0f, 1f) * 10f).toInt()
+        val key = "$t#$step"
+        families[key]?.let { return it }
         val gap = when (t) {
             Texture.CRUNCH -> 0.18f
             Texture.ERODED -> 0.10f
@@ -314,14 +318,19 @@ object SfxTextureBrush {
             .setParticleGapDurationMillis(if (gap > 0f) 40L else 0L)
             .setBehaviors(emptyList())
             .build()
-        val paint = BrushPaint(listOf(layerFor(t)))
+        val paint = BrushPaint(listOf(layerFor(t, step / 10f)))
         val family = BrushFamily(tip, paint)
-        families[t] = family
+        families[key] = family
         return family
     }
 
-    /** Lapisan grain untuk satu tekstur, ditunjuk lewat id di store. */
-    private fun layerFor(t: Texture): BrushPaint.TextureLayer {
+    /**
+     * Lapisan grain untuk satu tekstur, ditunjuk lewat id di store. Kekuatan
+     * [amount] jadiopacity grain: 0,1 masih kelihatan, 1 berarti penuh.
+     * Dipisah seperseratus supaya cache keluarga kuas tak meledak saat
+     * slider digeser.
+     */
+    private fun layerFor(t: Texture, amount: Float): BrushPaint.TextureLayer {
         val tiling = t == Texture.HALFTONE || t == Texture.HATCH
         val carve = t == Texture.CRUNCH || t == Texture.ERODED
         return BrushPaint.TextureLayer
@@ -344,18 +353,23 @@ object SfxTextureBrush {
             .setOrigin(BrushPaint.TextureOrigin.STROKE_SPACE_ORIGIN)
             .setWrapX(BrushPaint.TextureWrap.REPEAT)
             .setWrapY(BrushPaint.TextureWrap.REPEAT)
-            .setOpacity(1f)
+            .setOpacity(0.2f + 0.8f * amount.coerceIn(0f, 1f))
             .build()
     }
 
     /**
-     * Kuas siap pakai untuk satu tekstur: warna, lebar, dan toleransi
-     * geometri. [epsilon] 0.1 Titik sesuai anjuran dokumentasi Ink; makin kecil
-     * epsilon, makin dalam zoom sebelum muncul segitiga.
+     * Kuas siap pakai untuk satu tekstur: warna, lebar, kekuatan grain, dan
+     * toleransi geometri. [epsilon] 0.1 piksel sesuai anjuran dokumentasi Ink;
+     * makin kecil epsilon, makin dalam zoom sebelum muncul segitiga.
      */
-    fun brushFor(t: Texture, colorInt: Int, sizePx: Float): androidx.ink.brush.Brush =
+    fun brushFor(
+        t: Texture,
+        colorInt: Int,
+        sizePx: Float,
+        amount: Float
+    ): androidx.ink.brush.Brush =
         androidx.ink.brush.Brush.createWithColorIntArgb(
-            familyFor(t),
+            familyFor(t, amount),
             colorInt,
             sizePx.coerceIn(1f, 4000f),
             0.1f
