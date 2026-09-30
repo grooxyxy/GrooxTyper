@@ -11,6 +11,11 @@ import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.graphics.Shader
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.PI
 import kotlin.math.abs
@@ -67,27 +72,27 @@ object GenreBrushEngine {
      */
     class Settings() {
         /** Pengali lebar (1 = lebar kuas apa adanya). */
-        var widthMul: Float = 1f
+        var widthMul by mutableFloatStateOf(1f)
         /** Isi pakai gradasi; arahnya ditentukan [gradAngle]. */
-        var gradient: Boolean = false
-        var gradStart: Int = Color.BLACK
-        var gradEnd: Int = Color.WHITE
-        var gradAngle: Float = 90f
+        var gradient by mutableStateOf(false)
+        var gradStart by mutableStateOf(Color.BLACK)
+        var gradEnd by mutableStateOf(Color.WHITE)
+        var gradAngle by mutableFloatStateOf(90f)
         /** Opacity 0..1 untuk seluruh goresan. */
-        var opacity: Float = 1f
+        var opacity by mutableFloatStateOf(1f)
         /** Outline di sekeliling goresan (fraksi lebar kuas, 0 = mati). */
-        var outlineWidth: Float = 0f
-        var outlineColor: Int = Color.WHITE
+        var outlineWidth by mutableFloatStateOf(0f)
+        var outlineColor by mutableStateOf(Color.WHITE)
         /** Bayangan: geseran (px kanvas) + radius blur. */
-        var shadowOn: Boolean = false
-        var shadowDx: Float = 3f
-        var shadowDy: Float = 4f
-        var shadowBlur: Float = 6f
-        var shadowColor: Int = 0x66000000
+        var shadowOn by mutableStateOf(false)
+        var shadowDx by mutableFloatStateOf(3f)
+        var shadowDy by mutableFloatStateOf(4f)
+        var shadowBlur by mutableFloatStateOf(6f)
+        var shadowColor by mutableStateOf(0x66000000)
         /** Tekstur 0..1: seberapa bergerigi tepi (0 = licin, 1 = sangat kasar). */
-        var texture: Float = 0.5f
+        var texture by mutableFloatStateOf(0.5f)
         /** Percikan kecil di sekitar goresan. */
-        var spatter: Int = 0
+        var spatter by mutableIntStateOf(0)
 
         fun copyFrom(o: Settings) {
             widthMul = o.widthMul; gradient = o.gradient

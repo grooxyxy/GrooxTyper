@@ -226,6 +226,16 @@ for (const f of ['var gradient', 'var gradStart', 'var gradEnd', 'var gradAngle'
   assert(sfxEng.includes(f), 'GenreBrushEngine: setelan editable ' + f);
 }
 assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 'GenreBrushEngine: preset per genre + salinan setelan');
+// Setelan WAJIB Compose state: kalau var biasa, panel SFX tidak pernah
+// digambar ulang sehingga slider-nya tampak tidak bisa disentuh.
+for (const st of ['var widthMul by mutableFloatStateOf', 'var gradient by mutableStateOf',
+  'var opacity by mutableFloatStateOf', 'var outlineWidth by mutableFloatStateOf',
+  'var shadowOn by mutableStateOf', 'var texture by mutableFloatStateOf',
+  'var spatter by mutableIntStateOf']) {
+  assert(sfxEng.includes(st), 'GenreBrushEngine: setelan jadi Compose state -> ' + st);
+}
+assert(!/var (widthMul|opacity|texture)\s*:\s*Float\s*=/.test(sfxEng),
+  'GenreBrushEngine: tak ada setelan SFX berupa var biasa (UI beku)');
 const sI_shadow = sfxEng.indexOf('c.translate(st.shadowDx, st.shadowDy)');
 const sI_outline = sfxEng.indexOf('if (outline != null) {', sI_shadow);
 const sI_mask = sfxEng.indexOf('PorterDuff.Mode.DST_IN', sI_shadow);
