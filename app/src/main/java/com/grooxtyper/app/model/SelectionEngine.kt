@@ -187,8 +187,10 @@ class SelectionEngine(val width: Int, val height: Int) {
         val target = ordered[idx]
         val idxRaw = bubbleAreaList.indexOf(target)
         if (idxRaw < 0) return false
-        bubbleAreaList = bubbleAreaList.toMutableList().also { it.removeAt(idxRaw) }
-        val keep = bubbleAreaFilled.toMutableList()
+        val nextAreas: MutableList<BubbleAreaPipeline.Area> = bubbleAreaList.toMutableList()
+        nextAreas.removeAt(idxRaw)
+        bubbleAreaList = nextAreas
+        val keep: MutableList<String> = bubbleAreaFilled.toMutableList()
         if (idxRaw < keep.size) keep.removeAt(idxRaw)
         bubbleAreaFilled = keep
         return true
@@ -206,7 +208,9 @@ class SelectionEngine(val width: Int, val height: Int) {
         val ordered = bubbleAreasInReadingOrder()
         val idx = ordered.indexOf(nomor - 1)
         if (idx < 0 || idx >= bubbleAreaFilled.size) return
-        bubbleAreaFilled = bubbleAreaFilled.toMutableList().also { it[idx] = text }
+        val next: MutableList<String> = bubbleAreaFilled.toMutableList()
+        next[idx] = text
+        bubbleAreaFilled = next
     }
 
     /** Area bernomor [nomor] (1..n) dalam urutan baca. */

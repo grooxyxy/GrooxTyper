@@ -140,7 +140,7 @@ fun BubbleAreaPanel(
                             .size(22.dp)
                             .clip(RoundedCornerShape(6.dp))
                             .background(
-                                if (a.kind == BubbleAreaPipeline.KIND_PANEL) Color(0xFF3A5A40) else Accent
+                                if (a.kind == BubbleAreaPipeline.KIND_PANEL) Color(0xFF3A5A40) else bAccent
                             ),
                         contentAlignment = Alignment.Center
                     ) {

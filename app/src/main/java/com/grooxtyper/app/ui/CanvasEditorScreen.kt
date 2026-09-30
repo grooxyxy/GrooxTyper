@@ -2363,106 +2363,6 @@ fun CanvasEditorScreen(
      * state dideklarasi) karena fungsi lokal Kotlin hanya melihat deklarasi
      * di atasnya.
      */
-    fun runWandAt(screenPos: Offset) {
-        if (wandBusy) return
-        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
-        val cx = cp.x.toInt()
-        val cy = cp.y.toInt()
-        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
-        // MODE AREA BUBBLE: satu ketukan = satu area yang terlihat, dan
-        // gelembung bersinggungan otomatis terpisah (pipeline watershed).
-        if (bubbleAreaMode) {
-            addBubbleAreaAt(cp)
-            return
-        }
-        if (wandMode == "auto") {
-            val hit = detectedBubbles
-                .mapIndexedNotNull { idx, b ->
-                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
-                }
-                .minByOrNull { it.second }?.first
-            if (hit != null) {
-                // Ketuk bubble = pecah bubble gabung (kasus webtoon: dua
-                // bubble menyatu terdeteksi satu kotak). Bila ternyata hanya
-                // satu bubble utuh, pilih utuh seperti biasa.
-                splitBubbleAt(detectedBubbles[hit].boundingBox)
-                return
-            }
-        }
-        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
-        // PENTING: kanvas 720x16000 = 11.5 juta piksel (46MB) — membanjiri
-        // semua itu bikin wand berat. Wand cukup presisi di 480px sisi
-        // terpanjang, jadi snapshot diturunkan sekali di sini (rata-rata),
-        // dan Path hasilnya dikembalikan ke koordinat kanvas penuh.
-        val w = compositeBitmap.width
-        val h = compositeBitmap.height
-        if (w <= 0 || h <= 0) return
-        val raw = try {
-            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            healError = "Wand gagal baca kanvas — coba lagi"
-            return
-        } catch (e: OutOfMemoryError) {
-            e.printStackTrace()
-            healError = "Wand OOM — coba area lebih kecil"
-            return
-        }
-        val sample = try {
-            with(SelectionEngine) { downsampleForWand(raw, w, h) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            SelectionEngine.WandSample(raw, w, h, 1f)
-        }
-        val spx = sample.px
-        val sw = sample.w
-        val sh = sample.h
-        val seedX = (cx / sample.scale).toInt().coerceIn(0, sw - 1)
-        val seedY = (cy / sample.scale).toInt().coerceIn(0, sh - 1)
-        wandBusy = true
-        scope.launch(Dispatchers.Default) {
-            var added = false
-            var err: String? = null
-            try {
-                val tol = if (wandMode == "auto") {
-                    selectionEngine.autoTolerance(spx, sw, sh, seedX, seedY)
-                } else {
-                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
-                }
-                added = selectionEngine.selectWand(
-                    spx, sw, sh, seedX, seedY, tol, 1f / sample.scale
-                )
-                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
-            } catch (e: OutOfMemoryError) {
-                e.printStackTrace()
-                err = "Wand OOM — coba toleransi lebih kecil"
-            } catch (e: Exception) {
-                e.printStackTrace()
-                err = "Wand gagal: ${e.message ?: "error"}"
-            } finally {
-                val msg = err
-                val ok = added
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    wandBusy = false
-                    if (msg != null) healError = msg
-                    if (ok) refreshComposite()
-                }
-            }
-        }
-    }
-
-    /**
-     * Satu ketukan wand -> satu area bubble yang terlihat dan bernomor.
-     *
-     * Memakai [BubbleAreaPipeline]: flood dari titik ketuk, tolak kalau
-     * wilayahnya bocor ke tepi kanvas (berarti bukan gelembung), pisahkan
-     * gelembung yang bersinggungan dengan watershed, lalu tumbuhkan area
-     * kembali di dalam outline. Mode "Area Panel" membuat satu area dari
-     * wilayah tempat diketuk tanpa pemecahan.
-     *
-     * Menghapus area bila titik ketuk jatuh pada area yang sudah ada, jadi
-     * satu ketukan lagi membatalkan tanpa perlu tombol khusus.
-     */
     fun addBubbleAreaAt(cp: Offset) {
         if (wandBusy) return
         // Ketuk area yang sudah ada = hapus area itu.
@@ -2563,8 +2463,8 @@ fun CanvasEditorScreen(
                         com.grooxtyper.app.model.BubbleSpec.SHAPE_ELIPS
                     },
                     inset = 0.06f,
-                    bubbleW = area.bounds.width() / probe.scale,
-                    bubbleH = area.bounds.height() / probe.scale
+                    bubbleW = area.bounds.width(),
+                    bubbleH = area.bounds.height()
                 )
             )
             val ir = probe.bubbleInnerRectPx()
@@ -2600,6 +2500,107 @@ fun CanvasEditorScreen(
         }
         return filledCount
     }
+
+    fun runWandAt(screenPos: Offset) {
+        if (wandBusy) return
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        // MODE AREA BUBBLE: satu ketukan = satu area yang terlihat, dan
+        // gelembung bersinggungan otomatis terpisah (pipeline watershed).
+        if (bubbleAreaMode) {
+            addBubbleAreaAt(cp)
+            return
+        }
+        if (wandMode == "auto") {
+            val hit = detectedBubbles
+                .mapIndexedNotNull { idx, b ->
+                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
+                }
+                .minByOrNull { it.second }?.first
+            if (hit != null) {
+                // Ketuk bubble = pecah bubble gabung (kasus webtoon: dua
+                // bubble menyatu terdeteksi satu kotak). Bila ternyata hanya
+                // satu bubble utuh, pilih utuh seperti biasa.
+                splitBubbleAt(detectedBubbles[hit].boundingBox)
+                return
+            }
+        }
+        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
+        // PENTING: kanvas 720x16000 = 11.5 juta piksel (46MB) — membanjiri
+        // semua itu bikin wand berat. Wand cukup presisi di 480px sisi
+        // terpanjang, jadi snapshot diturunkan sekali di sini (rata-rata),
+        // dan Path hasilnya dikembalikan ke koordinat kanvas penuh.
+        val w = compositeBitmap.width
+        val h = compositeBitmap.height
+        if (w <= 0 || h <= 0) return
+        val raw = try {
+            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            healError = "Wand gagal baca kanvas — coba lagi"
+            return
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            healError = "Wand OOM — coba area lebih kecil"
+            return
+        }
+        val sample = try {
+            with(SelectionEngine) { downsampleForWand(raw, w, h) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            SelectionEngine.WandSample(raw, w, h, 1f)
+        }
+        val spx = sample.px
+        val sw = sample.w
+        val sh = sample.h
+        val seedX = (cx / sample.scale).toInt().coerceIn(0, sw - 1)
+        val seedY = (cy / sample.scale).toInt().coerceIn(0, sh - 1)
+        wandBusy = true
+        scope.launch(Dispatchers.Default) {
+            var added = false
+            var err: String? = null
+            try {
+                val tol = if (wandMode == "auto") {
+                    selectionEngine.autoTolerance(spx, sw, sh, seedX, seedY)
+                } else {
+                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                }
+                added = selectionEngine.selectWand(
+                    spx, sw, sh, seedX, seedY, tol, 1f / sample.scale
+                )
+                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Wand OOM — coba toleransi lebih kecil"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Wand gagal: ${e.message ?: "error"}"
+            } finally {
+                val msg = err
+                val ok = added
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) healError = msg
+                    if (ok) refreshComposite()
+                }
+            }
+        }
+    }
+
+    /**
+     * Satu ketukan wand -> satu area bubble yang terlihat dan bernomor.
+     *
+     * Memakai [BubbleAreaPipeline]: flood dari titik ketuk, tolak kalau
+     * wilayahnya bocor ke tepi kanvas (berarti bukan gelembung), pisahkan
+     * gelembung yang bersinggungan dengan watershed, lalu tumbuhkan area
+     * kembali di dalam outline. Mode "Area Panel" membuat satu area dari
+     * wilayah tempat diketuk tanpa pemecahan.
+     *
+     * Menghapus area bila titik ketuk jatuh pada area yang sudah ada, jadi
+     * satu ketukan lagi membatalkan tanpa perlu tombol khusus.
+     */
 
     /** Buka panel gaya per kata (satu langkah undo untuk sesi ini). */
     fun openRichTextPanel() {
@@ -6034,7 +6035,12 @@ fun CanvasEditorScreen(
                     onMode = { wandMode = it },
                     wandTolerance = wandTolerance,
                     onTolerance = { wandTolerance = it },
-                    wandBusy = wandBusy
+                    wandBusy = wandBusy,
+                    bubbleAreaMode = bubbleAreaMode,
+                    onBubbleAreaMode = { bubbleAreaMode = it },
+                    showBubbleAreaPanel = showBubbleAreaPanel,
+                    onToggleAreaPanel = { showBubbleAreaPanel = !showBubbleAreaPanel },
+                    areaCount = selectionEngine.bubbleAreaList.size
                 )
             }
         }
@@ -6057,6 +6063,11 @@ fun CanvasEditorScreen(
                     )
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
+            bubbleAreaMode = bubbleAreaMode,
+            onBubbleAreaMode = { bubbleAreaMode = it },
+            showBubbleAreaPanel = showBubbleAreaPanel,
+            onToggleAreaPanel = { showBubbleAreaPanel = !showBubbleAreaPanel },
+            areaCount = selectionEngine.bubbleAreaList.size
             ) {
                 Text(
                     "${selectionEngine.selectionCount} area — drag tambah, ketuk hapus",
@@ -6874,7 +6885,12 @@ private fun WandSettingsBar(
     onMode: (String) -> Unit,
     wandTolerance: Float,
     onTolerance: (Float) -> Unit,
-    wandBusy: Boolean
+    wandBusy: Boolean,
+    bubbleAreaMode: Boolean,
+    onBubbleAreaMode: (Boolean) -> Unit,
+    showBubbleAreaPanel: Boolean,
+    onToggleAreaPanel: () -> Unit,
+    areaCount: Int
 ) {
     Column(
         modifier = Modifier
@@ -6919,7 +6935,7 @@ private fun WandSettingsBar(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .background(if (bubbleAreaMode) Accent else Color.Transparent)
-                    .clickable { bubbleAreaMode = !bubbleAreaMode }
+                    .clickable { onBubbleAreaMode(!bubbleAreaMode) }
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
@@ -6931,12 +6947,11 @@ private fun WandSettingsBar(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
                     .background(if (showBubbleAreaPanel) Accent else Color.Transparent)
-                    .clickable { showBubbleAreaPanel = !showBubbleAreaPanel }
+                    .clickable { onToggleAreaPanel() }
                     .padding(horizontal = 12.dp, vertical = 6.dp)
             ) {
                 Text(
-                    if (selectionEngine.bubbleAreaList.isEmpty()) "Panel Area"
-                    else "Panel Area (${selectionEngine.bubbleAreaList.size})",
+                    if (areaCount == 0) "Panel Area" else "Panel Area ($areaCount)",
                     color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                 )
             }
