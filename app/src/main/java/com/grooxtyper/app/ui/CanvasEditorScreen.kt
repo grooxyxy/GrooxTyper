@@ -516,6 +516,8 @@ private class EditorUiState {
     var bubbleAreaPanelMode by remember { mutableStateOf(false) }
     /** Sakelar mode area bubble: wand membuat area, bukan seleksi biasa. */
     var bubbleAreaMode by remember { mutableStateOf(true) }
+    /** Panel area bubble tampil. */
+    var showBubbleAreaPanel by remember { mutableStateOf(false) }
     var strokeProgress by mutableStateOf(0f)
     var strokeLength by mutableStateOf(0f)
     var strokeIsHeal by mutableStateOf(false)
@@ -2519,6 +2521,79 @@ fun CanvasEditorScreen(
                 }
             }
         }
+    }
+
+    /**
+     * Isi semua area bubble dari script dialog.
+     *
+     * Baris script ke-1 masuk ke area bernomor 1, dan seterusnya dalam urutan
+     * baca manga. Tiap teks dibuat mengikuti bentuk area (lihat
+     * [com.grooxtyper.app.model.BubbleSpec]) supaya huruf membentuk gelembung,
+     * auto-fit ke persegi terpanjang di dalam area, dan warnanya kontras
+     * terhadap isi area. Semua layer teks yang dibuat bisa di-undo satu kali.
+     *
+     * Mengembalikan jumlah area yang berhasil terisi.
+     */
+    fun fillAreasFromScript(): Int {
+        val ordered = selectionEngine.bubbleAreasInReadingOrder()
+        if (ordered.isEmpty() || multiBubbleLines.isEmpty()) {
+            healError = if (ordered.isEmpty()) "Belum ada area bubble" else "Belum ada script"
+            return 0
+        }
+        val template = selectedTextBox?.copy()
+        val n = minOf(ordered.size, multiBubbleLines.size)
+        var filledCount = 0
+        for (i in 0 until n) {
+            val area = ordered[i]
+            val line = multiBubbleLines[i]
+            if (line.isBlank()) continue
+            val probe = com.grooxtyper.app.model.TextBox(
+                text = line,
+                position = Offset(area.bounds.centerX(), area.bounds.centerY()),
+                color = area.textColor,
+                bubble = com.grooxtyper.app.model.BubbleSpec(
+                    shape = if (area.kind == com.grooxtyper.app.model.BubbleAreaPipeline.KIND_PANEL) {
+                        com.grooxtyper.app.model.BubbleSpec.SHAPE_BULAT
+                    } else {
+                        com.grooxtyper.app.model.BubbleSpec.SHAPE_ELIPS
+                    },
+                    inset = 0.06f,
+                    bubbleW = area.bounds.width() / probe.scale,
+                    bubbleH = area.bounds.height() / probe.scale
+                )
+            )
+            val ir = probe.bubbleInnerRectPx()
+            if (ir.width() < 8f || ir.height() < 8f) continue
+            val box = com.grooxtyper.app.model.TextBox(
+                text = line,
+                position = Offset(ir.centerX(), ir.centerY()),
+                color = area.textColor,
+                bubble = probe.bubble
+            )
+            template?.let { box.applyStyleFrom(it) }
+            applyAllStylesTo(box)
+            box.color = area.textColor
+            val sc = box.scale.coerceAtLeast(0.05f)
+            box.bubble = probe.bubble?.copy(
+                bubbleW = area.bounds.width() / sc,
+                bubbleH = area.bounds.height() / sc
+            )
+            box.boxWidth = (ir.width() / sc).coerceIn(24f, 6000f)
+            box.boxHeight = (ir.height() / sc).coerceIn(18f, 6000f)
+            box.autoFit = true
+            box.fitToRect(ir)
+            val created = layerManager.addTextLayer(box)
+            undoRedoManager.pushLayerAdd(created.id)
+            selectionEngine.setBubbleAreaText(i + 1, line)
+            filledCount++
+        }
+        if (filledCount > 0) {
+            activeTool = ActiveTool.TEXT
+            refreshComposite()
+        } else {
+            healError = "Tak ada area yang bisa diisi"
+        }
+        return filledCount
     }
 
     /** Buka panel gaya per kata (satu langkah undo untuk sesi ini). */
@@ -4823,6 +4898,43 @@ fun CanvasEditorScreen(
                     }
                 }
 
+                // Area bubble hasil ketukan wand: kontur + nomor urutan baca.
+                // Warna berbeda dari bubble terdeteksi supaya keduanya tak tertukar:
+                // area panel hijau, area bubble oranye.
+                val bubbleAreasOrdered = selectionEngine.bubbleAreasInReadingOrder()
+                if (bubbleAreasOrdered.isNotEmpty()) {
+                    val areaStroke = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                    }
+                    val areaLabel = android.graphics.Paint().apply {
+                        color = android.graphics.Color.WHITE
+                        textSize = 30f / viewState.scale
+                        isFakeBoldText = true
+                        setShadowLayer(6f, 0f, 0f, android.graphics.Color.BLACK)
+                    }
+                    val areaFill = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.FILL
+                        alpha = 40
+                    }
+                    val areaCanvas = drawContext.canvas.nativeCanvas
+                    bubbleAreasOrdered.forEachIndexed { i, area ->
+                        val panelKind = area.kind == com.grooxtyper.app.model.BubbleAreaPipeline.KIND_PANEL
+                        val col = if (panelKind) android.graphics.Color.GREEN else android.graphics.Color.parseColor("#FF5722")
+                        areaStroke.color = col
+                        areaFill.color = col
+                        val r = area.bounds
+                        areaCanvas.drawPath(area.path, areaFill)
+                        areaCanvas.drawPath(area.path, areaStroke)
+                        areaCanvas.drawText(
+                            "${i + 1}",
+                            r.left + 8f,
+                            r.top + 38f / viewState.scale,
+                            areaLabel
+                        )
+                    }
+                }
+
                 if (showTextOverlay && detectedTextRegions.isNotEmpty()) {
                     val textBoxPaint = android.graphics.Paint().apply {
                         style = android.graphics.Paint.Style.STROKE
@@ -6391,6 +6503,31 @@ fun CanvasEditorScreen(
             )
         }
 
+        if (showBubbleAreaPanel) {
+            Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
+                BubbleAreaPanel(
+                    areas = selectionEngine.bubbleAreasInReadingOrder(),
+                    filled = selectionEngine.bubbleAreaFilled,
+                    panelMode = bubbleAreaPanelMode,
+                    busy = wandBusy,
+                    onPanelMode = { bubbleAreaPanelMode = it },
+                    onFillFromScript = { fillAreasFromScript() },
+                    onRemoveAt = { idx ->
+                        val ordered = selectionEngine.bubbleAreasInReadingOrder()
+                        ordered.getOrNull(idx)?.let { a ->
+                            selectionEngine.removeBubbleAreaAt(a.bounds.centerX(), a.bounds.centerY())
+                        }
+                        refreshComposite()
+                    },
+                    onClear = {
+                        selectionEngine.clearBubbleAreas()
+                        refreshComposite()
+                    },
+                    onClose = { showBubbleAreaPanel = false }
+                )
+            }
+        }
+
         if (showBrushSettings) {
             Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
                 BrushPanel(brushEngine = brushEngine, onClose = { showBrushSettings = false })
@@ -6762,13 +6899,53 @@ private fun WandSettingsBar(
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 if (wandBusy) "Memproses…"
+                else if (bubbleAreaMode) "Ketuk gelembung = tambah area"
                 else if (wandMode == "auto") "Ketuk bubble gabung = pecah jadi 2"
                 else "Ketuk area warna mirip",
                 color = Color.Gray, fontSize = 11.sp,
                 modifier = Modifier.weight(1f)
             )
         }
-        if (wandMode == "manual") {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (bubbleAreaMode) Accent else Color.Transparent)
+                    .clickable { bubbleAreaMode = !bubbleAreaMode }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    "Area Bubble",
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (showBubbleAreaPanel) Accent else Color.Transparent)
+                    .clickable { showBubbleAreaPanel = !showBubbleAreaPanel }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    if (selectionEngine.bubbleAreaList.isEmpty()) "Panel Area"
+                    else "Panel Area (${selectionEngine.bubbleAreaList.size})",
+                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        if (bubbleAreaMode) {
+            Text(
+                "Ketuk gelembung satu per satu untuk menambah area. Ketuk lagi pada " +
+                    "area yang sama untuk menghapusnya. Area bersinggungan dipisah otomatis.",
+                color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
+            )
+        }
+
+        if (wandMode == "manual" && !bubbleAreaMode) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Toleransi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
                 Slider(

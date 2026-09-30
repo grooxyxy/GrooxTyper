@@ -591,6 +591,26 @@ assert(selEng.includes('WandEngine.flood(') && selEng.includes('WandEngine.Param
 assert(!selEng.includes('ArrayDeque<Int>()') || selEng.includes('WandEngine'), 'seleksi: tak ada lagi stack piksel berbasis Integer di jalur wand');
 assert(!selEng.includes('val thr2 = maxDist * maxDist'), 'seleksi: jarak Euclidean RGB lama dibuang');
 // -- Multi-area bubble: daftar area bernomor di editor ---------------------
+// -- Panel area bubble, overlay nomor, dan isi otomatis dari script ---------
+{
+  const areaPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BubbleAreaPanel.kt'));
+  const o = (areaPanel.match(/{/g) || []).length;
+  const c2 = (areaPanel.match(/}/g) || []).length;
+  assert(o === c2, 'BubbleAreaPanel braces balanced (' + o + '/' + c2 + ')');
+  assert(areaPanel.includes('fun BubbleAreaPanel('), 'panel area: komposable terpisah (jaga batas 64KB)');
+  assert(areaPanel.includes('onFillFromScript') && areaPanel.includes('"Isi Area"'), 'panel area: tombol Isi Area ada');
+  assert(areaPanel.includes('"Area Panel"') && areaPanel.includes('onPanelMode'), 'panel area: sakelar Area Panel ada');
+  assert(areaPanel.includes('"Hapus Semua"') && areaPanel.includes('onClear'), 'panel area: hapus semua ada');
+  assert(areaPanel.includes('onRemoveAt'), 'panel area: bisa menghapus area per ketukan');
+  assert(editor.includes('val bubbleAreasOrdered = selectionEngine.bubbleAreasInReadingOrder()'), 'overlay: daftar area digambar di kanvas');
+  assert(editor.includes('areaCanvas.drawText(') && editor.includes('KIND_PANEL'), 'overlay: nomor area digambar, area panel dibedakan warna');
+  assert(editor.includes('BubbleAreaPanel(') && editor.includes('showBubbleAreaPanel'), 'editor: panel area terpasang');
+  assert(editor.includes('fun fillAreasFromScript('), 'editor: aksi isi area dari script ada');
+  assert(editor.includes('selectionEngine.bubbleAreasInReadingOrder()') && editor.includes('multiBubbleLines'), 'editor: baris script dipetakan ke area bernomor');
+  assert(editor.includes('bubbleInnerRectLocal') || editor.includes('bubbleInnerRectPx'), 'editor: teks area memakai persegi dalam bubble');
+  assert(editor.includes('undoRedoManager.pushLayerAdd('), 'editor: isi area punya satu langkah undo');
+  assert(editor.includes('area.textColor'), 'editor: warna teks diambil dari isi area (kontras)');
+}
 assert(selEng.includes('fun addBubbleArea(') && selEng.includes('fun bubbleAreasInReadingOrder('), 'area bubble: multi-area disimpan di SelectionEngine');
 assert(selEng.includes('fun removeBubbleAreaAt(') && selEng.includes('fun clearBubbleAreas()'), 'area bubble: area bisa dihapus per ketukan dan sekaligus');
 assert(selEng.includes('var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())'), 'area bubble: daftar area adalah state (overlay ikut digambar ulang)');
