@@ -537,6 +537,33 @@ assert(bubbleDet.includes('if (src.hasAlpha()) android.graphics.Color.WHITE'), '
 assert(bubbleDet.includes('if (best < CONF_FLOOR) continue') && bubbleDet.includes('tak ada anchor >'), 'bubble: format koordinat dibaca dari anchor yang lolos ambang');
 assert(bubbleDet.includes('- padX) / scaleX') && bubbleDet.includes('(cx - bw / 2f) / scaleX'), 'bubble: balik koordinat benar untuk format piksel & ternormalisasi');
 const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
+// -- Pipeline area bubble: cermin dari uji numerik wand-check.mjs -------------
+{
+  const areaPipe = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BubbleAreaPipeline.kt'));
+  const wandChk = read(path.join(ROOT, 'scripts/wand-check.mjs'));
+  assert(areaPipe.includes('fun areaAt(') && areaPipe.includes('fun areasFrom('), 'area bubble: API areaAt dan areasFrom ada');
+  assert(areaPipe.includes('WandEngine.flood(') && areaPipe.includes('mask.toBinary()'), 'area bubble: langkah 1 pakai flood span + ambang 50%');
+  assert(areaPipe.includes('touchesBorder(') && areaPipe.includes('allowBorder: Boolean = false'), 'area bubble: langkah 2 menolak yang bocor ke tepi (kecuali mode panel)');
+  assert(areaPipe.includes('if (labels[i] == seedLabel) count++ else bin[i] = false'), 'area bubble: langkah 3 batasi watershed ke komponen seed');
+  assert(areaPipe.includes('WandEngine.distanceTransform(') && areaPipe.includes('const val PEAK_RATIO = 0.7f'), 'area bubble: langkah 4 puncak watershed 0.7 * max (resep OpenCV)');
+  assert(areaPipe.includes('tiny[argMax] = true') || areaPipe.includes('peak[argMax]'), 'area bubble: gelembung kecil punya fallback inti');
+  assert(areaPipe.includes('owner[i - 1] = me; queue[tail++] = i - 1'), 'area bubble: langkah 5 tumbuhkan geodesik di dalam mask asli');
+  assert(areaPipe.includes('fun textColorFor(') && areaPipe.includes('sum / n > 128f'), 'area bubble: warna teks kontras dihitung dari isi area');
+  assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
+  // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.
+  for (const k of ['Kasus 1: satu gelembung', 'Kasus 2: dua gelembung bersinggungan',
+    'Kasus 3: ketuk di luar gelembung', 'Kasus 4: gelembung kecil', 'Kasus 5: area panel',
+    'Kasus 6']) {
+    assert(wandChk.includes(k), 'uji wand: kasus ' + k);
+  }
+  assert(wandChk.includes('function iouSet') && wandChk.includes('a.size + b.size - inter'), 'uji wand: IoU menghitung ukuran Set dengan benar');
+  assert(wandChk.includes('a.size, b.size') || wandChk.includes('Math.min(a.size, b.size)'), 'uji wand: rasio tumpang tindih bukan NaN');
+  // Regresi yang tertangkap uji: seed tidak boleh ditandai sebelum span diproses.
+  assert(!wandChk.includes('cov[seedY * w + seedX] = 255;'), 'uji wand: seed tidak ditandai sebelum diproses (regresi flood)');
+  const wandSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandEngine.kt'));
+  assert(wandSrc.includes('Seed sengaja TIDAK ditandai di sini'), 'WandEngine: span seed diproses lebih dulu (bukan ditandai)');
+}
+
 // -- Tongkat sihir: span flood fill + anti-alias + watershed (riset sumber) ---
 const wandEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandEngine.kt'));
 const selEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SelectionEngine.kt'));

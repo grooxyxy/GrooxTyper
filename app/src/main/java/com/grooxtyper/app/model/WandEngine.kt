@@ -197,7 +197,10 @@ object WandEngine {
             stack[sp++] = to
         }
 
-        mask.mark(seedY * w + seedX, 1f)
+        // Seed sengaja TIDAK ditandai di sini. Kalau ditandai dulu, loop
+        // span melihatnya sudah terisi lalu melompatinya, dan tidak ada satu
+        // piksel pun yang tumbuh: selectionsama sekali. Seed ditandai oleh
+        // loop itu sendiri saat cakupannya dihitung.
         push(seedY, seedX, seedX + 1)
         var steps = 0L
         val guardMax = p.maxPixels * 2 + 4096
