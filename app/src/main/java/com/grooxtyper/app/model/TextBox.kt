@@ -1,6 +1,7 @@
 package com.grooxtyper.app.model
 
 import android.content.Context
+import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
