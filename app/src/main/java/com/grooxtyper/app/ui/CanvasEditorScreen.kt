@@ -146,6 +146,7 @@ import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
+import com.grooxtyper.app.model.WandWindow
 import com.grooxtyper.app.model.TextBox
 import com.grooxtyper.app.model.TextHandle
 import com.grooxtyper.app.model.TextLayer
