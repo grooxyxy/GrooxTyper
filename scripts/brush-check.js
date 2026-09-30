@@ -751,6 +751,17 @@ for (const [potongan, nama] of pasanganPreset) {
 }
 // Tanda kurawal bisa dihitung polos: berbeda dengan kurung, tanda ini
 // hampir tak pernah muncul di dalam string atau komentar pada kode ini.
+const gbPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/GenreBrushPanel.kt'));
+assert(gbPanel.includes('GenreUi.label("Pori bertekstur: ${(st.grain * 100).roundToInt()}%")'), 'panel: ada slider kekuatan pori');
+assert(gbPanel.includes('GenreUi.slider(st.grain, 0f, 1f) { st.grain = it }'), 'panel: slider pori menulis ke setelan kuas');
+assert(gbPanel.includes('if (st.grain > 0.01f)'), 'panel: chip pori hanya muncul saat pori dinyalakan');
+assert(gbPanel.includes('fun textureChips('), 'panel: ada chip untuk enam jenis pori');
+assert(gbPanel.includes('SfxTextureBrush.Texture.entries.chunked(3)'), 'panel: chip ditata tiga per baris agar tidak meluber');
+assert(gbPanel.includes('import com.grooxtyper.app.model.SfxTextureBrush'), 'panel: mengimpor engine pori');
+assert(gbPanel.includes('st.textureKind = it'), 'panel: chip pori menulis ke setelan kuas');
+const oP = (gbPanel.match(/\{/g) || []).length, cP = (gbPanel.match(/\}/g) || []).length;
+assert(oP === cP, 'GenreBrushPanel: tanda kurawal seimbang (' + oP + '/' + cP + ')');
+
 for (const [nama, f] of [['SfxStyle', sfxStyle], ['GenreBrushEngine', genre], ['SfxTextureBrush', sfxTex], ['TextBox', textBox]]) {
   const o = (f.match(/\{/g) || []).length, c = (f.match(/\}/g) || []).length;
   assert(o === c, nama + ': tanda kurawal seimbang (' + o + '/' + c + ')');

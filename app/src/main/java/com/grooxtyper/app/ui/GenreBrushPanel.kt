@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.GenreBrushEngine
+import com.grooxtyper.app.model.SfxTextureBrush
 import kotlin.math.roundToInt
 
 private val gAccent = Color(0xFFFF5722)
@@ -179,6 +180,17 @@ fun GenreBrushPanel(brushEngine: BrushEngine) {
         GenreUi.divider("Tekstur")
         GenreUi.label("Kasar tepi: ${(st.texture * 100).roundToInt()}%")
         GenreUi.slider(st.texture, 0f, 1f) { st.texture = it }
+        GenreUi.label("Pori bertekstur: ${(st.grain * 100).roundToInt()}%")
+        GenreUi.slider(st.grain, 0f, 1f) { st.grain = it }
+        if (st.grain > 0.01f) {
+            // Chip pori baru muncul kalau porinya dipakai, supaya panel tak
+            // penuh saat huruf masih polos.
+            GenreUi.textureChips(st.textureKind) { st.textureKind = it }
+            GenreUi.label(
+                "Pori ${st.textureKind.displayName} dirender Ink API. Tekan " +
+                    "\"Terapkan Gaya SFX\" untuk mengembalikan ke preset genre."
+            )
+        }
         GenreUi.label("Percikan: ${st.spatter}")
         GenreUi.slider(st.spatter.toFloat(), 0f, 40f) { st.spatter = it.roundToInt() }
 
@@ -257,6 +269,43 @@ private object GenreUi {
                         fontSize = 11.sp,
                         fontWeight = if (on) FontWeight.Bold else FontWeight.Normal
                     )
+                }
+            }
+        }
+    }
+
+    /**
+     * Enam chip jenis pori, tiga per baris supaya tidak meluber di layar
+     * sempit. Dipakai hanya saat pori bertekstur dinyalakan.
+     */
+    @Composable
+    fun textureChips(
+        selected: SfxTextureBrush.Texture,
+        onPick: (SfxTextureBrush.Texture) -> Unit
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
+            SfxTextureBrush.Texture.entries.chunked(3).forEach { baris ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    baris.forEach { t ->
+                        val on = t == selected
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (on) gAccent else gPanelBgLight)
+                                .clickable { onPick(t) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Text(
+                                t.displayName,
+                                color = if (on) Color.White else Color.LightGray,
+                                fontSize = 10.sp,
+                                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    }
                 }
             }
         }
