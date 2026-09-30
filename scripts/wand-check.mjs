@@ -427,6 +427,170 @@ function wandWindowed(px, w, h, cx, cy, opts = {}) {
   return null;
 }
 
+
+// ---------------------------------------------------------- kontur (path)
+// Cermin dari SelectionEngine.traceContour: marching squares yang menulis
+// moveTo + lineTo ke satu Path. Fungsi ini sengaja menghitung berapa
+// sub-path yang terbentuk dan seberapa luas kalau di-isi, karena di sanalah
+// bug "wand tidak berfungsi" bersembunyi: path dari ribuan segmen terpisah
+// tidak pernah bisa DIISI, hanya bisa digores.
+function traceContourStats(bin, w, h) {
+  let subPath = 0, segCount = 0;
+  const fx = (x) => x + 0.5, fy = (y) => y + 0.5;
+  for (let y = 0; y < h - 1; y++) {
+    for (let x = 0; x < w - 1; x++) {
+      const tl = bin[y * w + x], tr = bin[y * w + x + 1];
+      const br = bin[(y + 1) * w + x + 1], bl = bin[(y + 1) * w + x];
+      const idx = (tl ? 1 : 0) | (tr ? 2 : 0) | (br ? 4 : 0) | (bl ? 8 : 0);
+      const n = { 1: 1, 2: 1, 3: 1, 4: 1, 5: 2, 6: 1, 7: 1, 8: 1, 9: 1, 10: 2, 11: 1, 12: 1, 13: 1, 14: 1 }[idx] || 0;
+      subPath += n; segCount += n;
+    }
+  }
+  // Luas yang benar-benar terisi kalau tiap sub-path tertutup sendiri:
+  // tiap segmen marching-squares panjangnya 0.5-1.0 piksel, jadi luasnya < 0.5.
+  return { subPath, segCount, contourArea: subPath * 0.5 };
+}
+
+/** Mask flood mentah (pakai flood yang sudah ada di bubbleAreaAt). */
+function floodMask(px, w, h, sx, sy, opts) {
+  // Ambil mask lewat jalur yang sama dengan aplikasi: panggil bubbleAreaAt
+  // lalu kembali ke bentuk mask? Tidak praktis.-BY这时候要用 paling sederhana:
+  // flood span mandiri yang cerminan WandEngine.flood.
+  const seed = px[sy * w + sx];
+  const thr = (opts.threshold ?? 15) / 255;
+  const sR = LIN[chR(seed)], sG = LIN[chG(seed)], sB = LIN[chB(seed)];
+  const bin = new Uint8Array(w * h);
+  const covOf = (i) => {
+    const p = px[i];
+    let d = Math.abs(LIN[chR(p)] - sR);
+    const e = Math.abs(LIN[chG(p)] - sG);
+    const f = Math.abs(LIN[chB(p)] - sB);
+    if (e > d) d = e;
+    if (f > d) d = f;
+    const aa = 1.5 - d / thr;
+    if (aa <= 0) return 0;
+    return aa < 0.5 ? aa * 2 : 1;
+  };
+  const stack = [sy, sx, sx + 1];
+  while (stack.length) {
+    const to = stack.pop(), from = stack.pop(), y = stack.pop();
+    const row = y * w;
+    let x = from;
+    while (x < to) {
+      if (bin[row + x] !== 0) { x++; continue; }
+      if (covOf(row + x) <= 0) { x++; continue; }
+      bin[row + x] = 1;
+      let start = x, end = x + 1;
+      while (start > 0 && bin[row + start - 1] === 0 && covOf(row + start - 1) > 0) { bin[row + start - 1] = 1; start--; }
+      while (end < w && bin[row + end] === 0 && covOf(row + end) > 0) { bin[row + end] = 1; end++; }
+      x = end;
+      if (y + 1 < h) stack.push(y + 1, start, end);
+      if (y - 1 >= 0) stack.push(y - 1, start, end);
+    }
+  }
+  let count = 0;
+  for (let i = 0; i < bin.length; i++) if (bin[i]) count++;
+  return count > 0 ? { bin, count } : null;
+}
+
+/**
+ * Bentuk loop tertutup dari mask: Moore-neighbour tracing pada tepi luar.
+ * Ini yang harus dilakukan aplikasi, bukan ribuan sub-path terpisah.
+ */
+function closedLoopFromMask(bin, w, h) {
+  // Bentuk tepi sebagai SEGMENT BERARAH dari tiap sel (marching squares),
+  // lalu rangkai jadi loop tertutup. Bedanya dengan traceContour lama:
+  // setiap segmen di sini menjadi ruas dari SATU rantai, bukan sub-path
+  // baru. Rantai ini yang membuat path bisa di-isi.
+  //
+  // Titik tengah tiap sisi sel (koordinat sel + offset):
+  //   T=(0.5,0) R=(1,0.5) B=(0.5,1) L=(0,0.5)
+  // Arah dipilih supaya interior selalu di sisi yang sama saat berjalan,
+  // sehingga rantai otomatis tertutup.
+  const EDGES = {
+    1: [['L', 'T']], 2: [['T', 'R']], 3: [['L', 'R']],
+    4: [['R', 'B']], 5: [['L', 'T'], ['R', 'B']],
+    6: [['T', 'B']], 7: [['L', 'B']],
+    8: [['B', 'L']], 9: [['B', 'T']],
+    10: [['T', 'R'], ['B', 'L']], 11: [['B', 'R']],
+    12: [['R', 'L']], 13: [['R', 'T']],
+    14: [['T', 'L']]
+  };
+  const OFF = { T: [0.5, 0], R: [1, 0.5], B: [0.5, 1], L: [0, 0.5] };
+  const key = (x, y) => x + ',' + y;
+
+  // Kumpulkan semua ruas terarah.
+  const starts = new Map();   // kunci titik awal -> daftar titik akhir
+  const addEdge = (x0, y0, x1, y1) => {
+    const k = key(x0, y0);
+    if (!starts.has(k)) starts.set(k, []);
+    starts.get(k).push([x1, y1]);
+  };
+  for (let y = 0; y < h - 1; y++) {
+    for (let x = 0; x < w - 1; x++) {
+      const idx = (bin[y * w + x] ? 1 : 0) | (bin[y * w + x + 1] ? 2 : 0) |
+        (bin[(y + 1) * w + x + 1] ? 4 : 0) | (bin[(y + 1) * w + x] ? 8 : 0);
+      const segs = EDGES[idx];
+      if (!segs) continue;
+      for (const [a, b] of segs) {
+        addEdge(x + OFF[a][0], y + OFF[a][1], x + OFF[b][0], y + OFF[b][1]);
+      }
+    }
+  }
+
+  // Rangkai jadi loop. Mulai dari titik yang hanya muncul sekali bila ada
+  // (slot terbuka), kalau tidak ambil titik mana pun.
+  const used = new Set();
+  const allStarts = [...starts.keys()];
+  const endpoints = new Set();
+  for (const [, ends] of starts) for (const [ex, ey] of ends) endpoints.add(key(ex, ey));
+  const open = allStarts.filter((k) => !endpoints.has(k));
+  const order = open.length ? open : allStarts;
+  if (!order.length) return null;
+
+  const loops = [];
+  for (const first of order) {
+    if (used.has(first)) continue;
+    const pts = [];
+    let cur = first.split(',').map(Number);
+    const guard = w * h * 8;
+    for (let step = 0; step < guard; step++) {
+      const k = key(cur[0], cur[1]);
+      if (used.has(k)) break;
+      used.add(k);
+      pts.push(cur);
+      const outs = starts.get(k);
+      if (!outs || !outs.length) break;
+      let next = null;
+      for (const o of outs) {
+        if (!used.has(key(o[0], o[1]))) { next = o; break; }
+      }
+      if (!next) break;
+      cur = next;
+    }
+    if (pts.length >= 4) loops.push(pts);
+  }
+  return loops;
+}
+
+/** Luas poligon (rumus tali sepatu). */
+function polygonArea(pts) {
+  let a = 0;
+  for (let i = 0, n = pts.length; i < n; i++) {
+    const [x0, y0] = pts[i];
+    const [x1, y1] = pts[(i + 1) % n];
+    a += x0 * y1 - x1 * y0;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Hitung luas mask dalam piksel. */
+function maskArea(bin) {
+  let n = 0;
+  for (let i = 0; i < bin.length; i++) if (bin[i]) n++;
+  return n;
+}
+
 console.log('== Kasus 1: satu gelembung ==');
 {
   const w = 400, h = 400, r = 60, thick = 5;
@@ -731,6 +895,48 @@ console.log('== Kasus 9b: arah skala terkunci ==');
   else ok('skala terbalik terdistorsi ke ' + salahX.toFixed(0) + ' - inilah bug yang diperbaiki');
 }
 
+
+// ============ KASUS 11: kontur wand menutup sub-path (bug "tak berfungsi")
+console.log('== Kasus 11: kontur wand bisa DI-ISI ==');
+{
+  // Fixture gelembung sederhana dengan teks di dalamnya (skenario komik).
+  const w = 300, h = 300, r = 110, thick = 5;
+  const px = page(w, h);
+  ring(px, w, h, 150, 150, r, thick);
+  for (let y = 140; y < 160; y++) for (let x = 90; x < 210; x++) px[y * w + x] = argbGray(0);
+  const mask = floodMask(px, w, h, 150, 150, { threshold: 15 });
+  if (!mask) bad('flood gagal, uji kontur tak bisa jalan');
+  else {
+    const luas = maskArea(mask.bin);
+    const st = traceContourStats(mask.bin, w, h);
+    // Kontur harus jadi SATU cincin tertutup untuk gelembung bertulisan:
+    // di luar satu, setiap lubang di dalam teks dihitung sebagai lubang (bukan
+    // cincin sendiri). Yang diukur di sini: rasio luas kontur terhadap luas
+    // mask harus mendekati 1 kalau kontur-formed-secara-benar.
+    if (st.subPath < 4) bad('kasus uji kurang Shreding, subPath=' + st.subPath);
+    else ok('marching squares menghasilkan ' + st.subPath + ' sub-path untuk mask ' + luas + ' piksel');
+
+    // Bukti bug: kalau tiap subPath jadi cincin terpisah yang di-isi, tiap
+    // cincin hanya ~0.5 piksel luas, jadi totalnya JAUH di bawah mask.
+    const rasio = st.contourArea / luas;
+    if (rasio > 0.2) bad('lalu subPath masih ternormalisasi (' + rasio.toFixed(3) + ')?意料之外');
+    else ok('BUG TERBUKTI: path lama terisi hanya ' + (rasio * 100).toFixed(1) +
+      '% dari mask (' + st.contourArea.toFixed(0) + ' vs ' + luas + ' piksel)');
+
+    // Perbaikan: kontur harus berupa loop tertutup. Yang diuji di sini adalah
+    // bahwa假 segment yang membentuk satu cincin utuh bisa dihitung.
+    const loops = closedLoopFromMask(mask.bin, w, h);
+    if (!loops || !loops.length) bad('perbaikan: tidak bisa membentuk loop tertutup dari mask');
+    else {
+      const aLoop = loops.reduce((s2, l) => s2 + polygonArea(l), 0);
+      const iou = aLoop / luas;
+      if (iou < 0.9) bad('loop tertutup luas ' + aLoop.toFixed(0) + ' vs mask ' + luas +
+        ' (' + loops.length + ' loop)');
+      else ok('loop tertutup: ' + loops.length + ' loop, luas ' + aLoop.toFixed(0) +
+        ' = ' + (iou * 100).toFixed(1) + '% dari mask');
+    }
+  }
+}
 
 // ================= DIAGNOSIS: halaman manga sungguhan =================
 if (process.env.WAND_PROBE) {

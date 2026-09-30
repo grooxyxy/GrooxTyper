@@ -383,7 +383,11 @@ class SelectionEngine(val width: Int, val height: Int) {
         var count = 0
         for (b in solid) if (b) count++
         if (count < 4) return false
-        val path = traceContour(solid, w, h, outScale) ?: return false
+        // [MaskContour], bukan traceContour lama: yang lama menulis tiap ruas
+        // marching squares sebagai moveTo+lineTo sehingga terbentuk ribuan
+        // sub-path terpisah yang tak bisa di-isi. Seleksi jadi praktis kosong
+        // meski flood-nya benar.
+        val path = MaskContour.build(solid, w, h, outScale) ?: return false
         addRegion(path)
         return true
     }
@@ -415,7 +419,11 @@ class SelectionEngine(val width: Int, val height: Int) {
         var count = 0
         for (b in solid) if (b) count++
         if (count < 4) return false
-        val path = traceContourOffset(solid, w, h, outScale, offX, offY) ?: return false
+                // PENTING: path harus dari [MaskContour], bukan traceContour lama.
+        // Yang lama menulis tiap ruas marching squares sebagai moveTo+lineTo
+        // sehingga terbentuk ribuan sub-path terpisah yang tak bisa di-isi;
+        // seleksi jadi praktis kosong meski flood-nya benar.
+        val path = MaskContour.build(solid, w, h, outScale, offX, offY) ?: return false
         addRegion(path)
         return true
     }

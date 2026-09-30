@@ -865,6 +865,37 @@ console.log('\n== Struktur if/else BrushEngine ==');
     'BrushEngine: kanvas besar mengumpulkan titik SFX tanpa gambar langsung');
 }
 
+
+// ================= kontur wand: sub-path terpisah =========================
+console.log('\n== Kontur wand: path harus tertutup ==');
+const maskContour = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/MaskContour.kt'));
+assert(maskContour.includes('object MaskContour'), 'kontur: engine terpisah named MaskContour');
+assert(maskContour.includes('fun build('), 'kontur: builder path tertutup');
+assert(maskContour.includes('path.close()'), 'kontur: setiap loop ditutup');
+assert(maskContour.includes('Path.FillType.EVEN_ODD'), 'kontur: EVEN_ODD supaya lubang tetap lubang');
+assert(maskContour.includes('private val EDGE_TABLE'), 'kontur: tabel ruas marching squares ada');
+assert(maskContour.includes('for (e in 0 until list.size step 2)'), 'kontur: tabel dibaca dua per dua (awal, akhir)');
+assert(maskContour.includes('HashMap<Long, LongArrayList>()'), 'kontur: ruas dikelompokkan per titik awal');
+assert(maskContour.includes('if (!used.add(cur)) break'), 'kontur: titik tak dipakai dua kali');
+assert(maskContour.includes('for (k in from.keys) if (!targets.contains(k)) order.add(k)'),
+  'kontur:-started dari slot terbuka lebih dulu');
+assert(maskContour.includes('var loops = 0') && maskContour.includes('if (loops == 0) return null'),
+  'kontur: path kosong ditolak');
+assert(maskContour.includes('steps < guard'), 'kontur: ada pengaman Against loop tak wajar');
+// traceContour lama HARUS tak dipakai lagi untuk wand (it produces sub-paths).
+assert(!/traceContour\(solid, w, h, outScale\)/.test(selEngine),
+  'kontur: wand tak lagi memakai traceContour lama yang bikin sub-path terpisah');
+assert(selEngine.includes('MaskContour.build('), 'kontur: wand memakai MaskContour.build');
+assert(wandCheck.includes('function closedLoopFromMask('), 'uji: cermin pembentukan loop ada di spec');
+assert(wandCheck.includes('subPath'), 'uji: spec menghitung jumlah sub-path');
+assert(wandCheck.includes('contourArea') && wandCheck.includes('polygonArea'),
+  'uji: spec mengukur luas kontur vs luas mask');
+assert(wandCheck.includes("'== Kasus 11: kontur wand bisa DI-ISI =='"), 'uji: kasus 11 mengunci bug kontur');
+assert(read(path.join(ROOT, 'scripts/fixtures/halaman-manga.png')).length > 1000,
+  'fixture: halaman manga nyata untuk uji kontur');
+const oM = (maskContour.match(/\{/g) || []).length, cM = (maskContour.match(/\}/g) || []).length;
+assert(oM === cM, 'MaskContour: tanda kurawal seimbang (' + oM + '/' + cM + ')');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
