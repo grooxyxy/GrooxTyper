@@ -226,6 +226,26 @@ for (const f of ['var gradient', 'var gradStart', 'var gradEnd', 'var gradAngle'
   assert(sfxEng.includes(f), 'GenreBrushEngine: setelan editable ' + f);
 }
 assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 'GenreBrushEngine: preset per genre + salinan setelan');
+// -- Gaya SFX bersama (sumber angka tunggal untuk teks dan kuas) ----------
+{
+  const sfxStyle = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxStyle.kt'));
+  assert(sfxStyle.includes('data class SfxStyleSpec') && sfxStyle.includes('fun presetOf(genre: SfxGenre)'), 'SFX: satu sumber angka gaya bersama');
+  for (const f of ['gradStart', 'gradEnd', 'gradAngle', 'inkScale', 'outlineScale', 'outlineColor', 'shadowDx', 'shadowDy', 'shadowBlur', 'shadowColor', 'roughness', 'tiltPerWord', 'spatter']) {
+    assert(sfxStyle.includes('val ' + f), 'SFX: preset bersama punya field ' + f);
+  }
+  for (const g of ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY']) {
+    assert(sfxStyle.includes('SfxGenre.' + g), 'SFX: preset untuk genre ' + g);
+  }
+  assert(sfxStyle.includes('enum class SfxGenre') && sfxStyle.includes('fun of(genre: GenreBrushEngine.Genre)'), 'SFX: pemetaan GenreBrushEngine.Genre ke SfxGenre');
+  // Angka preset harus berasal dari riset, bukan tebakan.
+  assert(sfxStyle.includes('docs/sfx-lettering-research.md'), 'SFX: preset menunjuk dokumen riset sebagai sumber angka');
+  // Bayangan SFX tidak boleh lembut (letterer profesional menolak blur).
+  const blurVals = [...sfxStyle.matchAll(/shadowBlur\s*=\s*([0-9.]+)f/g)].map(m => parseFloat(m[1]));
+  assert(blurVals.length > 0 && blurVals.every(v => v === 0), 'SFX: bayangan SFX keras semua (blur 0) sesuai riset');
+  // Outline dua lapis: dalam = setengah luar.
+  assert(sfxStyle.includes('fun outlineInnerScale()') && sfxStyle.includes('outlineScale * 0.5f'), 'SFX: outline dalam setengah luar (rasio 2:1 Comicraft)');
+}
+
 // Setelan WAJIB Compose state: kalau var biasa, panel SFX tidak pernah
 // digambar ulang sehingga slider-nya tampak tidak bisa disentuh.
 for (const st of ['var widthMul by mutableFloatStateOf', 'var gradient by mutableStateOf',
