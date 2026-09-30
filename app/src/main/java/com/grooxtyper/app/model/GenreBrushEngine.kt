@@ -83,6 +83,8 @@ object GenreBrushEngine {
         /** Outline di sekeliling goresan (fraksi lebar kuas, 0 = mati). */
         var outlineWidth by mutableFloatStateOf(0f)
         var outlineColor by mutableStateOf(Color.WHITE)
+        /** Warna outline lapis dalam (terang), setengah lebar lapis luar. */
+        var outlineInnerColor by mutableStateOf(Color.WHITE)
         /** Bayangan: geseran (px kanvas) + radius blur. */
         var shadowOn by mutableStateOf(false)
         var shadowDx by mutableFloatStateOf(3f)
@@ -93,57 +95,70 @@ object GenreBrushEngine {
         var texture by mutableFloatStateOf(0.5f)
         /** Percikan kecil di sekitar goresan. */
         var spatter by mutableIntStateOf(0)
+        /**
+         * Preset gaya yang terakhir dipakai (null = gaya manual penuh).
+         * Disimpan supaya panel bisa menampilkan angka preset asli ketika
+         * pengali lebar berubah, dan tombol "Bawaan" bisa memulihkannya.
+         */
+        var styleRef: SfxStyleSpec? = null
 
         fun copyFrom(o: Settings) {
             widthMul = o.widthMul; gradient = o.gradient
             gradStart = o.gradStart; gradEnd = o.gradEnd; gradAngle = o.gradAngle
             opacity = o.opacity
             outlineWidth = o.outlineWidth; outlineColor = o.outlineColor
+            outlineInnerColor = o.outlineInnerColor
             shadowOn = o.shadowOn; shadowDx = o.shadowDx; shadowDy = o.shadowDy
             shadowBlur = o.shadowBlur; shadowColor = o.shadowColor
             texture = o.texture; spatter = o.spatter
+            styleRef = o.styleRef
         }
 
         /** Bawaan per genre: profil lebar + warna + tekstur sudah beda. */
+        /**
+         * Bawaan tiap genre diambil dari preset bersama [SfxStyleSpec], bukan
+         * angka yang ditulis di sini. Jadi gaya kuas dan gaya TEKS SFX selalu
+         * satu bahasa visual. Angka dan sumbernya ada di
+         * `docs/sfx-lettering-research.md`.
+         *
+         * `outlineWidth` dan `shadowDx/Dy` di Settings adalah fraksi LEBAR
+         * KUAS (bukan tinggi huruf), jadi angka preset dikonversi sekali di
+         * sini lewat [applyStyle]. Bayangan preset sengaja blur 0: soft drop
+         * shadow ditolak oleh letterer profesional, dan rujukan `c2.webp`
+         * memakai geseran keras.
+         */
         fun applyPreset(genre: Genre) {
-            when (genre) {
-                Genre.HORROR -> {
-                    widthMul = 1.15f; gradient = false
-                    gradStart = Color.BLACK; gradEnd = 0xFF2A0A0A.toInt()
-                    gradAngle = 90f; opacity = 1f
-                    outlineWidth = 0.22f; outlineColor = 0xFFD8D2C4.toInt()
-                    shadowOn = true; shadowDx = 2f; shadowDy = 5f
-                    shadowBlur = 7f; shadowColor = 0x99000000.toInt()
-                    texture = 0.85f; spatter = 10
-                }
-                Genre.ROMANCE -> {
-                    widthMul = 1.3f; gradient = true
-                    gradStart = 0xFFFF9EC4.toInt(); gradEnd = 0xFFFF4F81.toInt()
-                    gradAngle = 90f; opacity = 0.95f
-                    outlineWidth = 0.10f; outlineColor = 0xFFFFF3F7.toInt()
-                    shadowOn = true; shadowDx = 0f; shadowDy = 3f
-                    shadowBlur = 9f; shadowColor = 0x66C2185B.toInt()
-                    texture = 0.12f; spatter = 0
-                }
-                Genre.ACTION -> {
-                    widthMul = 0.95f; gradient = false
-                    gradStart = Color.BLACK; gradEnd = 0xFFFF3B30.toInt()
-                    gradAngle = 90f; opacity = 1f
-                    outlineWidth = 0.30f; outlineColor = 0xFFFFD400.toInt()
-                    shadowOn = true; shadowDx = 5f; shadowDy = 0f
-                    shadowBlur = 0f; shadowColor = 0xCC000000.toInt()
-                    texture = 0.30f; spatter = 6
-                }
-                Genre.FANTASY -> {
-                    widthMul = 1.1f; gradient = true
-                    gradStart = 0xFFFFF3B0.toInt(); gradEnd = 0xFF7C4DFF.toInt()
-                    gradAngle = 45f; opacity = 1f
-                    outlineWidth = 0.18f; outlineColor = 0xFFFFFDE7.toInt()
-                    shadowOn = true; shadowDx = 0f; shadowDy = 4f
-                    shadowBlur = 10f; shadowColor = 0x884A148C.toInt()
-                    texture = 0.45f; spatter = 14
-                }
+            applyStyle(SfxStyleSpec.presetOf(SfxGenre.of(genre)))
+            // Lebar sapuan per genre: horror lebar, romance paling lebar,
+            // action ramping supaya ujungnya runcing.
+            widthMul = when (genre) {
+                Genre.HORROR -> 1.15f
+                Genre.ROMANCE -> 1.3f
+                Genre.ACTION -> 0.95f
+                Genre.FANTASY -> 1.1f
             }
+            opacity = if (genre == Genre.ROMANCE) 0.95f else 1f
+        }
+
+        /** Terapkan preset gaya bersama ke setelan kuas ini. */
+        fun applyStyle(spec: SfxStyleSpec) {
+            gradient = true
+            gradStart = spec.gradStart
+            gradEnd = spec.gradEnd
+            gradAngle = spec.gradAngle
+            outlineColor = spec.outlineColor
+            outlineInnerColor = spec.outlineInnerColor
+            shadowOn = spec.shadowBlur == 0f &&
+                (spec.shadowDx != 0f || spec.shadowDy != 0f)
+            shadowColor = spec.shadowColor
+            texture = spec.roughness
+            spatter = spec.spatter
+            // Disimpan sebagai rasio terhadap lebar kuas supaya ikut berubah
+            // saat user menggeser pengali lebar.
+            styleRef = spec
+            outlineWidth = spec.outlineScale / spec.inkScale
+            shadowDx = spec.shadowDx / spec.inkScale
+            shadowDy = spec.shadowDy / spec.inkScale
         }
     }
 
@@ -519,6 +534,21 @@ object GenreBrushEngine {
                             alpha = (st.opacity.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)
                         }
                     )
+                    // Lapis dalam: setengah lebar luar, warna terang. inilah
+                    // outline SFX dua lapis yang lazim (luar gelap sebagai
+                    // pemisah artwork, dalam terang sebagai pemisah gradasi).
+                    val inner = inkPath(outlineW * 0.5f)
+                    if (inner != null) {
+                        val ic = st.outlineInnerColor
+                        c.drawPath(
+                            inner,
+                            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                                style = Paint.Style.FILL
+                                color = ic
+                                alpha = (st.opacity.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)
+                            }
+                        )
+                    }
                 }
                 if (outline != null || shadowOn) {
                     // Lubangi bagian dalam supaya bayangan/outline tak menimpa

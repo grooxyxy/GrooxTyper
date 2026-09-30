@@ -244,6 +244,12 @@ assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 
   assert(blurVals.length > 0 && blurVals.every(v => v === 0), 'SFX: bayangan SFX keras semua (blur 0) sesuai riset');
   // Outline dua lapis: dalam = setengah luar.
   assert(sfxStyle.includes('fun outlineInnerScale()') && sfxStyle.includes('outlineScale * 0.5f'), 'SFX: outline dalam setengah luar (rasio 2:1 Comicraft)');
+  for (const g of ['HORROR','ROMANCE','ACTION','FANTASY']) {
+    const i = sfxStyle.indexOf('SfxGenre.' + g);
+    const seg = sfxStyle.slice(i, i + 700);
+    assert(seg.includes('outlineInnerColor ='), 'SFX: preset ' + g + ' punya warna outline dalam');
+  }
+  assert(sfxEng.includes('outlineInnerColor') && sfxEng.includes('inkPath(outlineW * 0.5f)'), 'SFX: mesin menggambar outline lapis dalam setengah lebar');
 }
 
 // Setelan WAJIB Compose state: kalau var biasa, panel SFX tidak pernah

@@ -57,6 +57,13 @@ data class SfxStyleSpec(
     /** Lebar outline luar relatif H. */
     val outlineScale: Float,
     val outlineColor: Int,
+    /**
+     * Warna outline lapis dalam. Outline SFX asli dua lapis: luar gelap
+     * (pemisah dari artwork) dan dalam terang (pemisah gradasi isi dari
+     * tepi). Tanpa lapis dalam, gradasi meet tepi gelap dan huruf terasa
+     * kotor.
+     */
+    val outlineInnerColor: Int,
     /** Bayangan keras (blur selalu 0), geseran relatif H. */
     val shadowDx: Float,
     val shadowDy: Float,
@@ -77,7 +84,8 @@ data class SfxStyleSpec(
 
     fun copy(): SfxStyleSpec = SfxStyleSpec(
         gradStart, gradEnd, gradAngle, inkScale, outlineScale, outlineColor,
-        shadowDx, shadowDy, shadowBlur, shadowColor, roughness, tiltPerWord, spatter
+        outlineInnerColor, shadowDx, shadowDy, shadowBlur, shadowColor,
+        roughness, tiltPerWord, spatter
     )
 
     companion object {
@@ -103,6 +111,7 @@ data class SfxStyleSpec(
                 inkScale = 0.065f,
                 outlineScale = 0.26f,
                 outlineColor = 0xFFE8DFCE.toInt(),
+                outlineInnerColor = 0xFFFFF6E8.toInt(),
                 shadowDx = 0.0f,
                 shadowDy = 0.07f,
                 shadowBlur = 0f,
@@ -118,6 +127,7 @@ data class SfxStyleSpec(
                 inkScale = 0.065f,
                 outlineScale = 0.16f,
                 outlineColor = 0xFFFFFFFF.toInt(),
+                outlineInnerColor = 0xFFFFFFFF.toInt(),
                 shadowDx = 0.0f,
                 shadowDy = 0.05f,
                 shadowBlur = 0f,
@@ -133,6 +143,7 @@ data class SfxStyleSpec(
                 inkScale = 0.065f,
                 outlineScale = 0.34f,
                 outlineColor = 0xFF141418.toInt(),
+                outlineInnerColor = 0xFFFFF3C4.toInt(),
                 shadowDx = 0.09f,
                 shadowDy = 0.0f,
                 shadowBlur = 0f,
@@ -148,6 +159,7 @@ data class SfxStyleSpec(
                 inkScale = 0.065f,
                 outlineScale = 0.24f,
                 outlineColor = 0xFF2B1140.toInt(),
+                outlineInnerColor = 0xFFEDE4FF.toInt(),
                 shadowDx = 0.0f,
                 shadowDy = 0.06f,
                 shadowBlur = 0f,
@@ -166,6 +178,7 @@ data class SfxStyleSpec(
             inkScale = 0.065f,
             outlineScale = 0.24f,
             outlineColor = Color.BLACK,
+            outlineInnerColor = 0xFFFFF3C4.toInt(),
             shadowDx = 0f,
             shadowDy = 0.06f,
             shadowBlur = 0f,
