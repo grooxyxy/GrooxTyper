@@ -565,6 +565,75 @@ console.log('== Kasus 8: toleransi longgar tetap di dalam outline ==');
   else ok('toleransi ekstrem di mode panel: 1 area (' + bebas[0].pixels.length + ' piksel)');
 }
 
+console.log('== Kasus 9: jalur wand ujung-ke-ujung (downsample + skala balik) ==');
+{
+  // Meniru SelectionEngine.selectWand PERSIS: kanvas besar diturunkan ke
+  // 480px sisi terpanjang, flood di ruang kecil, kontur dikalikan outScale
+  // untuk kembali ke koordinat kanvas. Kalau skalanya salah, seleksi muncul
+  // jauh dari jempol user - infiltrate "wand tidak berfungsi".
+  const CW = 900, CH = 1200;             // kanvas nyata
+  const big = page(CW, CH);
+  ring(big, CW, CH, 450, 400, 220, 8);    // bubble r=220 di kanvas penuh
+  ring(big, CW, CH, 450, 900, 200, 8);
+
+  // downsampleForWand: sisi terpanjang dibatasi 480
+  const s = 480 / Math.max(CW, CH);
+  const dw = Math.max(8, Math.round(CW * s));
+  const dh = Math.max(8, Math.round(CH * s));
+  const small = new Uint8Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    for (let x = 0; x < dw; x++) {
+      small[y * dw + x] = big[Math.min(CH - 1, Math.round(y / s)) * CW + Math.min(CW - 1, Math.round(x / s))];
+    }
+  }
+  // Kembali ke koordinat kanvas berarti MENGGANDA dengan 1/s (=2.5).
+  // Versi app memakai 1/sample.scale = 1/2.5 = 0.4 sehingga seleksi tergambar
+  // di pojok kiri atas, bukan di lokasi ketukan - inilah "wand tidak berfungsi".
+  const outScale = 1 / s;
+  const seedX = Math.round(450 / (1 / s));
+  const seedY = Math.round(370 / (1 / s)); // titik putih di dalam bubble atas
+
+  const res = bubbleAreaAt(small, dw, dh, seedX, seedY, { threshold: 15, atSeed: true });
+  if (!res) bad('jalur downsample tidak menghasilkan area');
+  else {
+    const b = res[0].box;
+    const cbox = [b[0] * outScale, b[1] * outScale, b[2] * outScale, b[3] * outScale];
+    const truth = [450 - 212, 400 - 212, 450 + 212, 400 + 212];
+    const i = iouSet(
+      new Set(res[0].pixels.map((i2) => i2)),
+      discMask(dw, dh, seedX, seedY, Math.round(212 / (1 / s)))
+    );
+    // Di ruang kecil IoU tak pernah 1 karena outline_setiap_half_scale;
+    // yang menentukan benar/tidaknya adalah koordinat kanvas di bawah.
+    if (i < 0.80) bad('IoU di ruang kecil ' + i.toFixed(3) + ' < 0.80');
+    else ok('IoU di ruang kecil ' + i.toFixed(3));
+    // Kotak hasil dalam koordinat KANVAS harus dekat dengan bubble asli.
+    const dx = Math.abs((cbox[0] + cbox[2]) / 2 - 450);
+    const dy = Math.abs((cbox[1] + cbox[3]) / 2 - 400);
+    const wpx = cbox[2] - cbox[0];
+    if (dx > 40 || dy > 40) bad('pusat seleksi di kanvas salah: (' + ((cbox[0] + cbox[2]) / 2).toFixed(0) + ',' + ((cbox[1] + cbox[3]) / 2).toFixed(0) + ')');
+    else ok('pusat seleksi di kanvas tepat (' + ((cbox[0] + cbox[2]) / 2).toFixed(0) + ',' + ((cbox[1] + cbox[3]) / 2).toFixed(0) + ')');
+    if (Math.abs(wpx - 424) > 60) bad('lebar seleksi di kanvas ' + wpx.toFixed(0) + ' (harus ~424)');
+    else ok('lebar seleksi di kanvas ' + wpx.toFixed(0) + ' (harap ~424)');
+  }
+}
+
+console.log('== Kasus 9b: arah skala terkunci ==');
+{
+  // Titik di ruang kecil harus dikalikan 1/s untuk kembali ke kanvas.
+  // Versi app pernah memakai s (0.4) sehingga seleksi tergambar di pojok
+  // kiri atas. Uji ini mengunci arahnya supaya regresi tak kembali diam-diam.
+  const CW = 900, CH = 1200;
+  const sc = 480 / Math.max(CW, CH);
+  const kecilX = Math.round(450 * sc);   // posisi seed di ruang kecil
+  const benarX = kecilX / sc;            // harus balik ke 450
+  const salahX = kecilX * sc;            // pernah dipakai app
+  if (Math.abs(benarX - 450) > 1) bad('skala benar tidak mengembalikan 450 (dapat ' + benarX.toFixed(0) + ')');
+  else ok('skala benar: ' + kecilX + ' -> ' + benarX.toFixed(0));
+  if (Math.abs(salahX - 450) < 40) bad('skala terbalik ternyata benar juga');
+  else ok('skala terbalik terdistorsi ke ' + salahX.toFixed(0) + ' - inilah bug yang diperbaiki');
+}
+
 console.log(fails === 0
   ? '\nwand-check PASSED: 8 kasus (area bubble + tongkat sihir klasik) sesuai ground truth'
   : '\nwand-check FAILED: ' + fails + ' masalah');

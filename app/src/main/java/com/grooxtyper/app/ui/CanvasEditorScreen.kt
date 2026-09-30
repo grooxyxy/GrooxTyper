@@ -2417,7 +2417,7 @@ fun CanvasEditorScreen(
                 )
                 area = BubbleAreaPipeline.areaAt(
                     px, w2, h2, sx, sy, params,
-                    outScale = 1f / sample.scale, offX = 0f, offY = 0f,
+                    outScale = sample.scale, offX = 0f, offY = 0f,
                     allowBorder = bubbleAreaPanelMode,
                     lightSnap = true
                 )
@@ -2592,8 +2592,13 @@ fun CanvasEditorScreen(
                 } else {
                     (wandTolerance * 2.2f).coerceIn(0f, 220f)
                 }
+                // Kembali ke koordinat KANVAS: kontur berada di ruang
+                // ter-downsample, jadi harus dikalikan 1/faktor. Nilai yang
+                // pernah dipakai (1/sample.scale) justru mengalikan s sehingga
+                // seleksi tergambar di pojok kiri atas berukuran 40% - inilah
+                // alasan "wand tidak berfungsi" padahal mask-nya benar.
                 added = selectionEngine.selectWand(
-                    spx, sw, sh, seedX, seedY, tol, 1f / sample.scale
+                    spx, sw, sh, seedX, seedY, tol, sample.scale
                 )
                 if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
             } catch (e: OutOfMemoryError) {
