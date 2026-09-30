@@ -728,10 +728,10 @@ assert(genre.includes('if (!SfxTextureBrush.prepare()) return false'), 'grain: I
 assert(genre.includes('tx[i] = xs[i] - offX'), 'grain: koordinat ikut digeser agar tidak meleset dari kanvas sementara');
 assert(sfxStyle.includes('val grain: Float = 0f'), 'grain: preset gaya punya kolom grain');
 assert(sfxStyle.includes('val texture: SfxTextureBrush.Texture'), 'preset gaya punya jenis grain');
-assert((sfxStyle.match(/grain = 0\.\d+f/g) || []).length === 4, 'grain: keempat genre punya angka grain sendiri');
+assert((sfxStyle.match(/grain = 0\.\d+f/g) || []).length === 8, 'grain: kedelapan genre punya angka grain sendiri');
 assert(/grain = 0f,/.test(sfxStyle), 'grain: teks tanpa genre (NETRAL) tetap polos');
 assert(sfxStyle.includes('roughness, tiltPerWord, spatter, grain, texture'), 'grain: copy() preset menyalin kolom baru');
-for (const t of ['CRUNCH', 'RIBBON', 'SPATTER', 'HALFTONE']) {
+for (const t of ['CRUNCH', 'RIBBON', 'SPATTER', 'HALFTONE', 'HATCH']) {
   assert(sfxStyle.includes('texture = SfxTextureBrush.Texture.' + t), 'grain: preset memakai tekstur ' + t);
 }
 assert(!/[Ѐ-ӿ]/.test(sfxStyle + genre), 'kode grain bebas karakter asing');
@@ -895,6 +895,46 @@ assert(read(path.join(ROOT, 'scripts/fixtures/halaman-manga.png')).length > 1000
   'fixture: halaman manga nyata untuk uji kontur');
 const oM = (maskContour.match(/\{/g) || []).length, cM = (maskContour.match(/\}/g) || []).length;
 assert(oM === cM, 'MaskContour: tanda kurawal seimbang (' + oM + '/' + cM + ')');
+
+
+// ==================== delapan genre SFX + ikon wand ======================
+console.log('\n== Delapan genre SFX dan ikon tongkat sihir ==');
+const genreNames = ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY', 'MECH', 'EXPLOSION', 'SWOOSH', 'CHILL'];
+for (const g of genreNames) {
+  assert(new RegExp('\\b' + g + '\\("SFX').test(genre), 'genre ' + g + ' ada di GenreBrushEngine.Genre');
+  assert(sfxStyle.includes('GenreBrushEngine.Genre.' + g + ' -> ' + g),
+    'genre ' + g + ' dipetakan ke genre gaya');
+  assert(sfxStyle.includes('SfxGenre.' + g + ' -> SfxStyleSpec('), 'gaya ' + g + ' punya preset sendiri');
+  assert(sfxTex.includes('GenreBrushEngine.Genre.' + g + ' ->'), 'pori ' + g + ' punya jenis grain sendiri');
+}
+// BrushType untuk kedelapan genre
+for (const t of ['GENRE_HORROR', 'GENRE_ROMANCE', 'GENRE_ACTION', 'GENRE_FANTASY',
+                 'GENRE_MECH', 'GENRE_EXPLOSION', 'GENRE_SWOOSH', 'GENRE_CHILL']) {
+  assert(brush.includes(t + '("SFX'), 'BrushType ' + t + ' terdaftar di laci kuas');
+  assert(genre.includes('BrushType.' + t + ' ->'), t + ' dipetakan ke genre mesin');
+}
+// Profil yang membuat keempat genre baru benar-benar berbeda dari yang lama
+assert(genre.includes('Genre.MECH -> {') && genre.includes('Genre.EXPLOSION -> {') &&
+  genre.includes('Genre.SWOOSH -> {') && genre.includes('Genre.CHILL -> {'),
+  'lebar pita keempat genre baru punya profil sendiri');
+for (const g of ['MECH', 'EXPLOSION', 'SWOOSH', 'CHILL']) {
+  assert(new RegExp('Genre\\.' + g + ' -> \\d').test(genre) ||
+    new RegExp('Genre\\.' + g + ' -> 0\\.').test(genre), 'kasar tepi ' + g + ' punya angka sendiri');
+}
+// Hiasan khas tiap genre baru
+assert(genre.includes('private fun drawRivets('), 'logam: paku keling sebagai hiasan');
+assert(genre.includes('private fun drawBlastRings('), 'ledakan: cincin hembusan sebagai hiasan');
+assert(genre.includes('private fun drawFrost('), 'dingin: kristal sebagai hiasan');
+assert(genre.includes('Genre.SWOOSH -> drawSpeedLines('), 'hembusan: memakai garis kecepatan');
+// Ikon wand, bukan teks
+assert(!/Text\("Wand"/.test(editor), 'toolbar wand tak lagi memakai teks "Wand"');
+assert(editor.includes('contentDescription = "Tongkat Sihir"'), 'toolbar wand memakai ikon dengan contentDescription');
+assert(/import androidx\.compose\.material\.icons\.filled\.AutoFixHigh/.test(editor), 'ikon wand diimpor');
+assert(editor.includes('Modifier\n                    .size(44.dp)'), 'tombol wand sized seperti IconButton lain');
+assert(/Icons\.Default\.Healing, contentDescription = "Hapus Objek"/.test(editor),
+  'ikon Hapus Objek dipisah agar tak sama dengan wand');
+assert(/Icons\.Default\.AutoAwesome, contentDescription = "Inpaint"/.test(editor),
+  'ikon Inpaint dipisah dari wand');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

@@ -103,6 +103,12 @@ object SfxTextureBrush {
                 GenreBrushEngine.Genre.ROMANCE -> RIBBON
                 GenreBrushEngine.Genre.ACTION -> SPATTER
                 GenreBrushEngine.Genre.FANTASY -> HALFTONE
+                // Logam: arsir rapat. Arsir dibaca sebagai permukaan logam
+                // bergaris, bukan pori cat.
+                GenreBrushEngine.Genre.MECH -> HATCH
+                GenreBrushEngine.Genre.EXPLOSION -> CRUNCH
+                GenreBrushEngine.Genre.SWOOSH -> SPATTER
+                GenreBrushEngine.Genre.CHILL -> RIBBON
             }
         }
     }

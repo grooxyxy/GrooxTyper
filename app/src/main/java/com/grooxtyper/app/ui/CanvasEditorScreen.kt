@@ -38,7 +38,9 @@ import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.automirrored.filled.Rule
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
@@ -6180,7 +6182,7 @@ fun CanvasEditorScreen(
                 brushEngine.brushType = BrushType.OBJECT_ERASER
                 layerManager.ensureDrawingLayer()
             }) {
-                Icon(Icons.Default.AutoFixHigh, contentDescription = "Hapus Objek", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
+                Icon(Icons.Default.Healing, contentDescription = "Hapus Objek", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
             }
 
             // Color circle
@@ -6204,18 +6206,20 @@ fun CanvasEditorScreen(
             }
 
             // Magic Wand: ketuk area warna mirip untuk seleksi (manual/otomatis).
+            // Ikon tongkat sihir (bukan teks "Wand") supaya bar toolbar konsisten
+            // dengan tool lain yang semuanya memakai ikon.
             Box(
                 modifier = Modifier
+                    .size(44.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(if (activeTool == ActiveTool.SELECT_WAND) Accent else PanelBg)
                     .clickable {
                         activeTool = ActiveTool.SELECT_WAND
                         showBrushSettings = false
-                    }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                Text("Wand", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Icon(Icons.Default.AutoFixHigh, contentDescription = "Tongkat Sihir", tint = Color.White)
             }
 
             // Image: pindah/putar/ubah ukuran image layer.
@@ -6238,7 +6242,7 @@ fun CanvasEditorScreen(
             IconButton(
                 onClick = { showMLInpaintDialog = true }
             ) {
-                Icon(Icons.Default.AutoFixHigh, contentDescription = "Inpaint", tint = Color.White)
+                Icon(Icons.Default.AutoAwesome, contentDescription = "Inpaint", tint = Color.White)
             }
 
             // Script: kombo seleksi + bubble (import/ketik -> kolom baris -> jalankan)

@@ -68,7 +68,11 @@ enum class BrushType(val displayName: String, val category: String) {
     GENRE_HORROR("SFX Horror", "SFX"),
     GENRE_ROMANCE("SFX Romance", "SFX"),
     GENRE_ACTION("SFX Action", "SFX"),
-    GENRE_FANTASY("SFX Fantasy", "SFX")
+    GENRE_FANTASY("SFX Fantasy", "SFX"),
+    GENRE_MECH("SFX Logam", "SFX"),
+    GENRE_EXPLOSION("SFX Ledakan", "SFX"),
+    GENRE_SWOOSH("SFX Hembus", "SFX"),
+    GENRE_CHILL("SFX Dingin", "SFX")
 }
 
 enum class RulerType {

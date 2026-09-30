@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.sin
@@ -52,7 +53,14 @@ object GenreBrushEngine {
         HORROR("SFX Horror"),
         ROMANCE("SFX Romance"),
         ACTION("SFX Action"),
-        FANTASY("SFX Fantasy");
+        FANTASY("SFX Fantasy"),
+        // Empat genre tambahan. Nama diambil dari jenis bunyi yang lazim di
+        // lettering SFX, bukan dari warna: masing-masing punya profil lebar,
+        // pori, dan hiasan yang berbeda sehingga terbaca sekilas.
+        MECH("SFX Logam"),      // dentingan logam / robot: sudut keras
+        EXPLOSION("SFX Ledakan"), // hembusan besar: agave melebar
+        SWOOSH("SFX Hembus"),   // kecepatan / angin: pita tipis memanjang
+        CHILL("SFX Dingin")     // kabut / embun: tepi lembut
 
         companion object {
             fun of(brushType: BrushType): Genre? = when (brushType) {
@@ -60,6 +68,10 @@ object GenreBrushEngine {
                 BrushType.GENRE_ROMANCE -> ROMANCE
                 BrushType.GENRE_ACTION -> ACTION
                 BrushType.GENRE_FANTASY -> FANTASY
+                BrushType.GENRE_MECH -> MECH
+                BrushType.GENRE_EXPLOSION -> EXPLOSION
+                BrushType.GENRE_SWOOSH -> SWOOSH
+                BrushType.GENRE_CHILL -> CHILL
                 else -> null
             }
         }
@@ -145,6 +157,10 @@ object GenreBrushEngine {
                 Genre.ROMANCE -> 1.3f
                 Genre.ACTION -> 0.95f
                 Genre.FANTASY -> 1.1f
+                Genre.MECH -> 1.05f
+                Genre.EXPLOSION -> 1.25f
+                Genre.SWOOSH -> 1.2f
+                Genre.CHILL -> 1.0f
             }
             opacity = if (genre == Genre.ROMANCE) 0.95f else 1f
         }
@@ -221,6 +237,28 @@ object GenreBrushEngine {
                 // Gelombang halus + denyut lambat.
                 0.92f + 0.22f * sin(t * 9f + 0.7f) + 0.10f * sin(t * 23f)
             }
+            Genre.MECH -> {
+                // Logam: nyaris kotak dengan sedikit miring, supaya sudutnya
+                // dibaca sebagai logam bukan cat. Denyut tiap 1/7 goresan.
+                val seg = ((t * 7f) % 1f)
+                (if (seg < 0.5f) 1f else 0.78f) + 0.06f * jitter
+            }
+            Genre.EXPLOSION -> {
+                // Ledakan: melebar di tengah lalu kembali sempit di dua ujung,
+                // seperti agave-ledakan sesungguhnya.
+                val u = t * 2f - 1f
+                0.42f + 0.95f * (1f - u * u)
+            }
+            Genre.SWOOSH -> {
+                // Hembusan: menipis monoton di sepanjang goresan, seperti
+                // yang terbentuk dari sapuan kuas.
+                1.05f - 0.62f * t + 0.08f * sin(t * 6f)
+            }
+            Genre.CHILL -> {
+                // Dingin: nyaris lurus, denyut sangat pelan, tepi paling halus
+                // dari semua genre.
+                0.96f + 0.07f * sin(t * 4f + 1.1f)
+            }
         }
 
     /** Kasar tepi per genre dalam fraksi half-width. */
@@ -229,6 +267,10 @@ object GenreBrushEngine {
         Genre.ROMANCE -> 0.02f + 0.08f * texture
         Genre.ACTION -> 0.05f + 0.16f * texture
         Genre.FANTASY -> 0.07f + 0.24f * texture
+        Genre.MECH -> 0.03f + 0.09f * texture
+        Genre.EXPLOSION -> 0.18f + 0.46f * texture
+        Genre.SWOOSH -> 0.04f + 0.12f * texture
+        Genre.CHILL -> 0.01f + 0.05f * texture
     }
 
     /** Jumlah hiasan khas tiap genre (0 = tanpa). */
@@ -237,6 +279,10 @@ object GenreBrushEngine {
         Genre.ACTION -> 3
         Genre.FANTASY -> 2 + (texture * 6f).toInt()
         Genre.ROMANCE -> 0
+        Genre.MECH -> 2
+        Genre.EXPLOSION -> 4 + (texture * 10f).toInt()
+        Genre.SWOOSH -> 2
+        Genre.CHILL -> 1
     }
 
     // ------------------------------------------------------------------
@@ -748,6 +794,15 @@ object GenreBrushEngine {
                     Genre.HORROR -> drawDrips(canvas, rnd, base, col, opa, nEx)
                     Genre.ACTION -> drawSpeedLines(canvas, rnd, base, col, opa, nEx)
                     Genre.FANTASY -> drawSparkles(canvas, rnd, base, col, opa, nEx)
+                    // Logam: paku/paku keling di sisi goresan, seperti
+                    // dentingan logam pada letterer.
+                    Genre.MECH -> drawRivets(canvas, rnd, base, col, opa, nEx)
+                    // Ledakan: cincin muda melingkupi goresan.
+                    Genre.EXPLOSION -> drawBlastRings(canvas, rnd, base, col, opa, nEx)
+                    // Hembusan: garis tipis mengiring goresan.
+                    Genre.SWOOSH -> drawSpeedLines(canvas, rnd, base, col, opa, nEx)
+                    // Dingin: kristal es kecil di tepi.
+                    Genre.CHILL -> drawFrost(canvas, rnd, base, col, opa, nEx)
                     Genre.ROMANCE -> Unit
                 }
             }
@@ -809,6 +864,95 @@ object GenreBrushEngine {
                     if (k == 0) path.moveTo(px, py) else path.lineTo(px, py)
                 }
                 canvas.drawPath(path, p)
+            }
+        }
+
+
+        /**
+         * Logam: paku keling tegak lurus sisi goresan, seperti sendi pada
+         * lembar logam. Bentuknya kotak kecil, bukan lingkaran, supaya
+         * terbaca sebagai logam keras.
+         */
+        private fun drawRivets(
+            canvas: Canvas, rnd: SfxInk.XorShift64,
+            base: Float, col: Int, opa: Float, nEx: Int
+        ) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                color = col
+                alpha = (opa * 210f).toInt().coerceIn(0, 255)
+                if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+            }
+            for (i in 0 until nEx) {
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val side = if (i % 2 == 0) 1f else -1f
+                val off = base * (0.72f + rnd.nextFloat() * 0.5f) * side
+                val cx = xs[idx] + nx(idx) * off
+                val cy = ys[idx] + ny(idx) * off
+                val r = max(1.2f, base * (0.13f + rnd.nextFloat() * 0.09f))
+                canvas.save()
+                canvas.rotate(
+                    Math.toDegrees(atan2(ny(idx).toDouble(), nx(idx).toDouble())).toFloat(),
+                    cx, cy
+                )
+                canvas.drawRect(cx - r, cy - r * 0.7f, cx + r, cy + r * 0.7f, p)
+                canvas.restore()
+            }
+        }
+
+        /**
+         * Ledakan: cincin nipis di sekitar goresan. Cincin memakai STROKE
+         * supaya tidak menutupi tinta.
+         */
+        private fun drawBlastRings(
+            canvas: Canvas, rnd: SfxInk.XorShift64,
+            base: Float, col: Int, opa: Float, nEx: Int
+        ) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                color = col
+                alpha = (opa * 150f).toInt().coerceIn(0, 255)
+                if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+            }
+            for (i in 0 until nEx) {
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val r = base * (0.9f + rnd.nextFloat() * 1.5f)
+                p.strokeWidth = max(1f, base * 0.09f)
+                canvas.drawCircle(xs[idx], ys[idx], r, p)
+            }
+        }
+
+        /**
+         * Dingin: kristal kecil (salju/es) di tepi goresan, tiap kristal
+         * dibentuk dari tiga garis berpotongan sehingga terbaca sebagai
+         * kristal, bukan titik biasa.
+         */
+        private fun drawFrost(
+            canvas: Canvas, rnd: SfxInk.XorShift64,
+            base: Float, col: Int, opa: Float, nEx: Int
+        ) {
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                color = col
+                alpha = (opa * 190f).toInt().coerceIn(0, 255)
+                if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+            }
+            for (i in 0 until nEx) {
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val side = if (i % 2 == 0) 1f else -1f
+                val off = base * (0.95f + rnd.nextFloat() * 0.85f) * side
+                val cx = xs[idx] + nx(idx) * off
+                val cy = ys[idx] + ny(idx) * off
+                val r = max(1f, base * (0.10f + rnd.nextFloat() * 0.10f))
+                val ang = rnd.nextFloat() * PI.toFloat()
+                for (k in 0 until 3) {
+                    val a2 = ang + k * (PI.toFloat() / 3f)
+                    canvas.drawLine(
+                        cx - cos(a2) * r, cy - sin(a2) * r,
+                        cx + cos(a2) * r, cy + sin(a2) * r, p
+                    )
+                }
             }
         }
 

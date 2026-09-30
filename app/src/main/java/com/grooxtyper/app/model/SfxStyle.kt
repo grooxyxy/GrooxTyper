@@ -29,7 +29,11 @@ enum class SfxGenre(val displayName: String) {
     HORROR("SFX Horror"),
     ROMANCE("SFX Romance"),
     ACTION("SFX Action"),
-    FANTASY("SFX Fantasy");
+    FANTASY("SFX Fantasy"),
+    MECH("SFX Logam"),
+    EXPLOSION("SFX Ledakan"),
+    SWOOSH("SFX Hembus"),
+    CHILL("SFX Dingin");
 
     companion object {
         /** Petakan genre mesin kuas ke genre gaya. */
@@ -38,6 +42,10 @@ enum class SfxGenre(val displayName: String) {
             GenreBrushEngine.Genre.ROMANCE -> ROMANCE
             GenreBrushEngine.Genre.ACTION -> ACTION
             GenreBrushEngine.Genre.FANTASY -> FANTASY
+            GenreBrushEngine.Genre.MECH -> MECH
+            GenreBrushEngine.Genre.EXPLOSION -> EXPLOSION
+            GenreBrushEngine.Genre.SWOOSH -> SWOOSH
+            GenreBrushEngine.Genre.CHILL -> CHILL
         }
     }
 }
@@ -199,6 +207,78 @@ data class SfxStyleSpec(
                 spatter = 14,
                 grain = 0.50f,
                 texture = SfxTextureBrush.Texture.HALFTONE
+            )
+            SfxGenre.MECH -> SfxStyleSpec(
+                gradStart = 0xFF2E3138.toInt(),
+                gradEnd = 0xFFB9C4CF.toInt(),
+                gradAngle = 45f,
+                inkScale = 0.060f,
+                outlineScale = 0.30f,
+                outlineColor = 0xFF0E1013.toInt(),
+                outlineInnerColor = 0xFFE6EDF4.toInt(),
+                shadowDx = 0.06f,
+                shadowDy = 0.0f,
+                shadowBlur = 0f,
+                shadowColor = 0xCC000000.toInt(),
+                roughness = 0.14f,
+                tiltPerWord = 0f,
+                spatter = 3,
+                grain = 0.30f,
+                texture = SfxTextureBrush.Texture.HATCH
+            )
+            SfxGenre.EXPLOSION -> SfxStyleSpec(
+                gradStart = 0xFFFFF3B0.toInt(),
+                gradEnd = 0xFFD42A0A.toInt(),
+                gradAngle = 75f,
+                inkScale = 0.070f,
+                outlineScale = 0.36f,
+                outlineColor = 0xFF1A0C08.toInt(),
+                outlineInnerColor = 0xFFFFE9A8.toInt(),
+                shadowDx = 0.0f,
+                shadowDy = 0.08f,
+                shadowBlur = 0f,
+                shadowColor = 0xE6000000.toInt(),
+                roughness = 0.62f,
+                tiltPerWord = -8f,
+                spatter = 16,
+                grain = 0.62f,
+                texture = SfxTextureBrush.Texture.CRUNCH
+            )
+            SfxGenre.SWOOSH -> SfxStyleSpec(
+                gradStart = 0xFFEAF6FF.toInt(),
+                gradEnd = 0xFF6FA8D6.toInt(),
+                gradAngle = 20f,
+                inkScale = 0.055f,
+                outlineScale = 0.18f,
+                outlineColor = 0xFF274A63.toInt(),
+                outlineInnerColor = 0xFFF4FBFF.toInt(),
+                shadowDx = 0.11f,
+                shadowDy = 0.0f,
+                shadowBlur = 0f,
+                shadowColor = 0x992F5F80.toInt(),
+                roughness = 0.20f,
+                tiltPerWord = 6f,
+                spatter = 2,
+                grain = 0.24f,
+                texture = SfxTextureBrush.Texture.SPATTER
+            )
+            SfxGenre.CHILL -> SfxStyleSpec(
+                gradStart = 0xFFFFFFFF.toInt(),
+                gradEnd = 0xFF9FD8E8.toInt(),
+                gradAngle = 100f,
+                inkScale = 0.058f,
+                outlineScale = 0.14f,
+                outlineColor = 0xFF5C8FA6.toInt(),
+                outlineInnerColor = 0xFFFFFFFF.toInt(),
+                shadowDx = 0.0f,
+                shadowDy = 0.04f,
+                shadowBlur = 0f,
+                shadowColor = 0x884E93AD.toInt(),
+                roughness = 0.08f,
+                tiltPerWord = 2f,
+                spatter = 1,
+                grain = 0.16f,
+                texture = SfxTextureBrush.Texture.RIBBON
             )
         }
 
