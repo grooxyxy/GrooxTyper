@@ -223,7 +223,13 @@ class SelectionEngine(val width: Int, val height: Int) {
         val list = bubbleAreaList
         for (i in list.indices.reversed()) {
             val a = list[i]
-            val hit = if (a.bounds.contains(x, y)) a.path.contains(x, y) else false
+            // Path.contains(float,float) tak tersedia di permukaan API yang
+            // dipakai build ini; pakai Region seperti removeRegionAt di atas.
+            val hit = if (a.bounds.contains(x, y)) {
+                val reg = android.graphics.Region()
+                reg.setPath(a.path, fullClip)
+                reg.contains(x.toInt(), y.toInt())
+            } else false
             if (hit) {
                 clearBubbleAreaContent(a)
                 bubbleAreaList = list.toMutableList().also { it.removeAt(i) }

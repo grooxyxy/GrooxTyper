@@ -199,7 +199,7 @@ object BubbleAreaPipeline {
         // wilayah terbesar. Mengembalikan yang terbesar selalu salah: saat dua
         // gelembung bersinggungan, mengetuk gelembung kedua akan mendapat kotak
         // gelembung pertama (persis yang tertangkap uji kasus 2b).
-        val seedIdx = sy * w + sx
+        val seedIdx = seedY * w + seedX
         val ownerSeed = owner[seedIdx]
         val chosenIdx = (0 until boxes.size).firstOrNull { k ->
             masks[k][seedIdx]
