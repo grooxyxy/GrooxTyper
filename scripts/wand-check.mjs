@@ -26,6 +26,17 @@ for (let i = 0; i < 256; i++) {
 // ------------------------------------------------------------------ util
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
+// Piksel masuk sebagai ARGB-packed, sama seperti IntArray dari
+// SelectionEngine.downsampleForWand di aplikasi. Dulu cermin ini memakai
+// satu nilai abu-abu per piksel, padahal aplikasi membandingkan TIGA kanal.
+// Untuk halaman putih-abu itu tak berbeda, tapi untuk halaman berwarna
+// (kulit, rambut, langit) hasilnya jauh berbeda - dan spec tidak boleh
+// menguji perilaku yang tak akan pernah terjadi di aplikasi.
+const chR = (p) => (p >> 16) & 255;
+const chG = (p) => (p >> 8) & 255;
+const chB = (p) => p & 255;
+const chL = (p) => Math.round(0.299 * chR(p) + 0.587 * chG(p) + 0.114 * chB(p));
+
 function distanceTransform(bin, w, h) {
   const BIG = 1e9;
   const d = new Float32Array(w * h);
@@ -90,7 +101,7 @@ function labelComponents(bin, w, h, minPixels) {
 
 // ------------------------------------------------------------------Algoritma
 /**
- * @param px piksel grayscale (0..255, 255 = kertas putih)
+ * @param px piksel ARGB (0xFF000000 or r<<16 or g<<8 or b), 255 = kertas putih
  * @returns {null | Array<{pixels:Set<number>, box:number[]}>}
  */
 function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = false, atSeed = false, lightSnap = false } = {}) {
@@ -98,7 +109,7 @@ function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = fa
   // cari piksel terang terdekat di sekeliling lalu dari situ flood. Tanpa ini
   // ketukan di atas teks memilih teks, bukan bubble.
   if (lightSnap) {
-    const lum = (i) => px[i];
+    const lum = (i) => chL(px[i]);
     if (lum(seedY * w + seedX) <= 200) {
       const maxR = Math.max(6, Math.round(Math.min(w, h) * 0.05));
       outer:
@@ -117,12 +128,12 @@ function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = fa
   const n = w * h;
   const seed = px[seedY * w + seedX];
   const thr = threshold / 255;
-  const sR = LIN[seed], sG = LIN[seed], sB = LIN[seed];
+  const sR = LIN[chR(seed)], sG = LIN[chG(seed)], sB = LIN[chB(seed)];
   const covOf = (i) => {
     const p = px[i];
-    let d = Math.abs(LIN[p] - sR);
-    const e = Math.abs(LIN[p] - sG);
-    const f = Math.abs(LIN[p] - sB);
+    let d = Math.abs(LIN[chR(p)] - sR);
+    const e = Math.abs(LIN[chG(p)] - sG);
+    const f = Math.abs(LIN[chB(p)] - sB);
     if (e > d) d = e;
     if (f > d) d = f;
     const aa = 1.5 - d / thr;
@@ -291,19 +302,22 @@ function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = fa
 }
 
 // ------------------------------------------------------------------ geometri
-function page(w, h) { return new Uint8Array(w * h).fill(255); }
+/** ARGB penuh: 0xFF000000 or v<<16 or v<<8 or v, abu-abu dengan alpha penuh. */
+function argbGray(v) { return -16777216 | (v << 16) | (v << 8) | v; }
+const HITAM = argbGray(0);
+function page(w, h) { return new Int32Array(w * h).fill(argbGray(255)); }
 function ring(px, w, h, cx, cy, r, thick) {
   for (let y = Math.max(0, cy - r - thick - 1); y < Math.min(h, cy + r + thick + 2); y++) {
     for (let x = Math.max(0, cx - r - thick - 1); x < Math.min(w, cx + r + thick + 2); x++) {
       const d = Math.hypot(x - cx, y - cy);
-      if (d <= r && d > r - thick) px[y * w + x] = 0;
+      if (d <= r && d > r - thick) px[y * w + x] = argbGray(0);
     }
   }
 }
 function ringRect(px, w, h, x0, y0, x1, y1, thick) {
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const onEdge = x - x0 < thick || x1 - x < thick || y - y0 < thick || y1 - y < thick;
-    if (onEdge) px[y * w + x] = 0;
+    if (onEdge) px[y * w + x] = argbGray(0);
   }
 }
 function discMask(w, h, cx, cy, r) {
@@ -329,6 +343,89 @@ const overlapRatio = (a, b) => {
 let fails = 0;
 const ok = (m) => console.log('  OK   ' + m);
 const bad = (m) => { fails++; console.log('  FAIL ' + m); };
+
+
+// ------------------------------------------------------------------ jendela
+/**
+ * Jendela piksel di sekitar titik ketuk, TIDAK/downsample seluruh halaman.
+ *
+ * Seluruh halaman dikecilkan ke 480 px sisi terpanjang adalah kesalahan fatal
+ * pada kanvas webtoon: halaman 800x16000 jadi sampel 19x480, sehingga outline
+ * gelembung 3 px berubah jadi 0,07 px, hilang saat dirata-ratakan, dan flood
+ * bocor keluar gelembung. Bukti terukur di kasus 10.
+ *
+ * Jendela memakai resolusi penuh sebanyak mungkin (hanya dikecilkan kalau
+ * jendela sendiri masih lebih lebar dari [maxDim]), jadi struktur gelembung
+ * selalu terbaca.
+ *
+ * @returns {{px:Int32Array,w:number,h:number,x0:number,y0:number,scale:number}}
+ *   scale = faktor pengali koordinat sampel -> koordinat kanvas.
+ */
+function carveWindow(px, w, h, cx, cy, maxDim, pad) {
+  const x0 = Math.max(0, Math.min(cx - pad, w - 1));
+  const y0 = Math.max(0, Math.min(cy - pad, h - 1));
+  const ww = Math.min(w - x0, pad * 2);
+  const wh = Math.min(h - y0, pad * 2);
+  const s = Math.min(1, maxDim / Math.max(ww, wh));
+  if (s >= 1) {
+    const out = new Int32Array(ww * wh);
+    for (let y = 0; y < wh; y++) {
+      for (let x = 0; x < ww; x++) out[y * ww + x] = px[(y0 + y) * w + (x0 + x)];
+    }
+    return { px: out, w: ww, h: wh, x0, y0, scale: 1 };
+  }
+  const dw = Math.max(8, Math.round(ww * s));
+  const dh = Math.max(8, Math.round(wh * s));
+  const out = new Int32Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    const sy0 = y0 + Math.floor((y * wh) / dh);
+    const sy1 = y0 + Math.max(Math.floor(((y + 1) * wh) / dh), Math.floor((y * wh) / dh) + 1);
+    for (let x = 0; x < dw; x++) {
+      const sx0 = x0 + Math.floor((x * ww) / dw);
+      const sx1 = x0 + Math.max(Math.floor(((x + 1) * ww) / dw), Math.floor((x * ww) / dw) + 1);
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let yy = sy0; yy < sy1; yy++) {
+        for (let xx = sx0; xx < sx1; xx++) {
+          const p = px[yy * w + xx];
+          r += chR(p); g += chG(p); b += chB(p); n++;
+        }
+      }
+      const k = Math.max(1, n);
+      out[y * dw + x] = -16777216 | ((r / k) << 16) | ((g / k) << 8) | (b / k);
+    }
+  }
+  return { px: out, w: dw, h: dh, x0, y0, scale: 1 / s };
+}
+
+/**
+ * Wand pada halaman BERAPA SAJA ukuran: potong jendela di sekitar ketukan,
+ * jalankan pipeline di dalamnya, dan perbesar jendela kalau wilayah hasil
+ * menyentuh tepi jendela (indikasi jendela terlalu kecil, bukan ketukan salah).
+ *
+ * Kotak yang dikembalikan sudah dalam koordinat KANVAS.
+ */
+function wandWindowed(px, w, h, cx, cy, opts = {}) {
+  const { threshold = 66, allowBorder = false, atSeed = false, lightSnap = false,
+    maxDim = 640, pads = [300, 700, 1500] } = opts;
+  for (const pad of pads) {
+    const win = carveWindow(px, w, h, cx, cy, maxDim, pad);
+    const lx = Math.round((cx - win.x0) * win.scale);
+    const ly = Math.round((cy - win.y0) * win.scale);
+    if (lx < 0 || ly < 0 || lx >= win.w || ly >= win.h) continue;
+    const res = bubbleAreaAt(win.px, win.w, win.h, lx, ly,
+      { threshold, allowBorder, atSeed, lightSnap });
+    if (!res) continue;
+    return {
+      areas: res,
+      win,
+      boxes: res.map((a) => [
+        win.x0 + a.box[0] * win.scale, win.y0 + a.box[1] * win.scale,
+        win.x0 + a.box[2] * win.scale, win.y0 + a.box[3] * win.scale
+      ])
+    };
+  }
+  return null;
+}
 
 console.log('== Kasus 1: satu gelembung ==');
 {
@@ -359,10 +456,10 @@ console.log('== Kasus 2: dua gelembung bersinggungan (image.webp) ==');
   // akan mengambil KEDUA gelembung, lalu watershed harus memisahkannya.
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (px[y * w + x] !== 0) continue;
+      if (px[y * w + x] !== HITAM) continue;
       const inA = Math.hypot(x - 150, y - 200) < r - thick;
       const inB = Math.hypot(x - (150 + d), y - 200) < r - thick;
-      if (inA || inB) px[y * w + x] = 255;
+      if (inA || inB) px[y * w + x] = argbGray(255);
     }
   }
   const res = bubbleAreaAt(px, w, h, 150, 200, { threshold: 15 });
@@ -396,10 +493,10 @@ console.log('== Kasus 2b: ketuk gelembung kedua (harus area kedua) ==');
   ring(px, w, h, 150 + d, 200, r, thick);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (px[y * w + x] !== 0) continue;
+      if (px[y * w + x] !== HITAM) continue;
       const inA = Math.hypot(x - 150, y - 200) < r - thick;
       const inB = Math.hypot(x - (150 + d), y - 200) < r - thick;
-      if (inA || inB) px[y * w + x] = 255;
+      if (inA || inB) px[y * w + x] = argbGray(255);
     }
   }
   const kiri = bubbleAreaAt(px, w, h, 150, 200, { threshold: 15, atSeed: true });
@@ -493,7 +590,7 @@ console.log('== Kasus 7: tongkat sihir klasik di halaman komik ==');
   ring(px, w, h, 240, 200, 90, 5);
   ring(px, w, h, 240, 420, 80, 5);
   // Teks di dalam bubble (hitam) tidak boleh memecah seleksi.
-  for (let y = 190; y < 210; y++) for (let x = 190; x < 290; x++) px[y * w + x] = 0;
+  for (let y = 190; y < 210; y++) for (let x = 190; x < 290; x++) px[y * w + x] = argbGray(0);
 
   const res = bubbleAreaAt(px, w, h, 240, 170, { threshold: 15 });
   if (!res || res.length !== 1) bad('wanMarsh klasik: hope-nya tepat 1 area, dapat ' + (res ? res.length : 0));
@@ -519,7 +616,7 @@ console.log('== Kasus 7b: menyentuh TEKS hitam di dalam bubble ==');
   const w = 300, h = 300;
   const px = page(w, h);
   ring(px, w, h, 150, 150, 70, 5);
-  for (let y = 140; y < 160; y++) for (let x = 110; x < 190; x++) px[y * w + x] = 0;
+  for (let y = 140; y < 160; y++) for (let x = 110; x < 190; x++) px[y * w + x] = argbGray(0);
 
   // Tanpa snap: flood dari teks memilih TEKS itu sendiri (benar secara
   // algoritma flood, salah untuk kebutuhan user). Isi lubang tidak menolong
@@ -580,7 +677,7 @@ console.log('== Kasus 9: jalur wand ujung-ke-ujung (downsample + skala balik) ==
   const s = 480 / Math.max(CW, CH);
   const dw = Math.max(8, Math.round(CW * s));
   const dh = Math.max(8, Math.round(CH * s));
-  const small = new Uint8Array(dw * dh);
+  const small = new Int32Array(dw * dh);
   for (let y = 0; y < dh; y++) {
     for (let x = 0; x < dw; x++) {
       small[y * dw + x] = big[Math.min(CH - 1, Math.round(y / s)) * CW + Math.min(CW - 1, Math.round(x / s))];
@@ -634,7 +731,101 @@ console.log('== Kasus 9b: arah skala terkunci ==');
   else ok('skala terbalik terdistorsi ke ' + salahX.toFixed(0) + ' - inilah bug yang diperbaiki');
 }
 
+
+// ================= DIAGNOSIS: halaman manga sungguhan =================
+if (process.env.WAND_PROBE) {
+  const { readPng } = await import('./png.mjs');
+  const g = readPng(new URL('./fixtures/halaman-manga.png', import.meta.url).pathname);
+  console.log('== DIAGNOSIS halaman asli ' + g.w + 'x' + g.h + ' ==');
+  const longSide = Math.max(g.w, g.h);
+  const sc = Math.min(1, 480 / longSide);
+  const dw = Math.max(8, Math.round(g.w * sc)), dh = Math.max(8, Math.round(g.h * sc));
+  const sp = new Int32Array(dw * dh);
+  for (let y = 0; y < dh; y++) {
+    const sy0 = Math.floor((y * g.h) / dh), sy1 = Math.max(Math.floor(((y + 1) * g.h) / dh), sy0 + 1);
+    for (let x = 0; x < dw; x++) {
+      const sx0 = Math.floor((x * g.w) / dw), sx1 = Math.max(Math.floor(((x + 1) * g.w) / dw), sx0 + 1);
+      let r = 0, gg = 0, b = 0, n = 0;
+      for (let yy = sy0; yy < sy1; yy++) for (let xx = sx0; xx < sx1; xx++) {
+        const i = (yy * g.w + xx) * 3;
+        r += g.rgb[i]; gg += g.rgb[i + 1]; b += g.rgb[i + 2]; n++;
+      }
+      const k = Math.max(1, n);
+      sp[y * dw + x] = -16777216 | ((r / k) << 16) | ((gg / k) << 8) | (b / k);
+    }
+  }
+  console.log('sampel ' + dw + 'x' + dh + ' (faktor balik ' + (1 / sc).toFixed(3) + ')');
+  const seed = [Math.round(370 * sc), Math.round(250 * sc)];
+  for (const ambang of [15, 66, 131]) {
+    const res = bubbleAreaAt(sp, dw, dh, seed[0], seed[1], { threshold: ambang, atSeed: true, lightSnap: true });
+    if (!res) console.log('  ambang ' + ambang + ' -> NULL (ditolak)');
+    else console.log('  ambang ' + ambang + ' -> ' + res.length + ' area, kotak ' + JSON.stringify(res.map(a => a.box)) + ', px ' + res.map(a => a.pixels.size).join('/'));
+  }
+}
+
+
+// ============ KASUS 10: halaman webtoon tinggi (bukti dari tangkapan layar) ==
+console.log('== Kasus 10: kanvas webtoon tinggi ==');
+{
+  const { readPng } = await import('./png.mjs');
+  const g = readPng(new URL('./fixtures/halaman-manga.png', import.meta.url).pathname);
+
+  // Kanvas webtoon: halaman asli ditempel di atas, sisanya kertas putih. Margin
+  // putih seperti ini memang lazim pada halaman webtoon panjang.
+  const PANJANG = 16000;
+  const webtoon = new Int32Array(g.w * PANJANG).fill(argbGray(255));
+  for (let y = 0; y < g.h; y++) {
+    for (let x = 0; x < g.w; x++) {
+      const i = (y * g.w + x) * 3;
+      webtoon[y * g.w + x] = -16777216 | (g.rgb[i] << 16) | (g.rgb[i + 1] << 8) | g.rgb[i + 2];
+    }
+  }
+  const ketuk = [370, 250];   // titik tengah gelembung di kanvas panjang
+
+  // Bukti kegagalan cara lama, diterapkan ke kanvas yang SAMA: seluruh
+  // halaman 663x16000 dikecilkan ke 480 sisi terpanjang. Lebar sampel
+  // tersisa hanya 20px, sehingga outline gelembung hilang dan flood bocor.
+  const lamaLong = Math.max(g.w, PANJANG);
+  const sl = Math.min(1, 480 / lamaLong);
+  const lw = Math.max(8, Math.round(g.w * sl)), lh = Math.max(8, Math.round(PANJANG * sl));
+  const lama = new Int32Array(lw * lh);
+  for (let y = 0; y < lh; y++) {
+    for (let x = 0; x < lw; x++) {
+      lama[y * lw + x] = webtoon[Math.min(PANJANG - 1, Math.floor((y * PANJANG) / lh)) * g.w +
+        Math.min(g.w - 1, Math.floor((x * g.w) / lw))];
+    }
+  }
+  const lamaRes = bubbleAreaAt(lama, lw, lh,
+    Math.round(ketuk[0] * sl), Math.round(ketuk[1] * sl),
+    { threshold: 66, atSeed: true, lightSnap: true });
+  if (lamaRes) bad('cara lama seharusnya gagal di kanvas tinggi, tapi mendapat ' + lamaRes.length + ' area');
+  else ok('cara lama (480px sisi terpanjang) GAGAL di kanvas ' + g.w + 'x' + PANJANG +
+    ' (lebar sampel cuma ' + lw + 'px) - inilah bug yang dilaporkan');
+
+  // Cara baru: jendela di sekitar ketukan, resolusi penuh.
+  const baru = wandWindowed(webtoon, g.w, PANJANG, ketuk[0], ketuk[1],
+    { threshold: 66, atSeed: true, lightSnap: true });
+  if (!baru) bad('cara baru: jendela adaptif tak menghasilkan area');
+  else {
+    const truth = [ketuk[0] - 155, ketuk[1] - 170, ketuk[0] + 165, ketuk[1] + 240];
+    const b = baru.boxes[0];
+    const lebar = b[2] - b[0], tinggi = b[3] - b[1];
+    const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
+    if (Math.abs(cx - ketuk[0]) > 60 || Math.abs(cy - ketuk[1]) > 60) {
+      bad('pusat area meleset dari ketukan: (' + cx.toFixed(0) + ',' + cy.toFixed(0) + ')');
+    } else ok('pusat area tepat di ketukan (' + cx.toFixed(0) + ',' + cy.toFixed(0) + ')');
+    if (lebar < 150 || lebar > 460) bad('lebar area ' + lebar.toFixed(0) + ' tak sesuai gelembung (~320)');
+    else ok('lebar area ' + lebar.toFixed(0) + ' px sesuai gelembung');
+    if (tinggi < 200 || tinggi > 620) bad('tinggi area ' + tinggi.toFixed(0) + ' tak sesuai gelembung (~410)');
+    else ok('tinggi area ' + tinggi.toFixed(0) + ' px sesuai gelembung');
+    if (baru.areas.length !== 1) bad('harus tepat 1 area, dapat ' + baru.areas.length);
+    else ok('tepat 1 area di kanvas ' + g.w + 'x' + PANJANG);
+    if (baru.win.scale !== 1) ok('jendelanya dikecilkan ' + baru.win.scale.toFixed(2) + 'x (masih terbaca)');
+    else ok('jendela dipakai pada resolusi penuh (skala 1)');
+  }
+}
+
 console.log(fails === 0
-  ? '\nwand-check PASSED: 8 kasus (area bubble + tongkat sihir klasik) sesuai ground truth'
+  ? '\nwand-check PASSED: 9 kasus (area bubble + tongkat sihir klasik + kanvas webtoon) sesuai ground truth'
   : '\nwand-check FAILED: ' + fails + ' masalah');
 process.exit(fails === 0 ? 0 : 1);

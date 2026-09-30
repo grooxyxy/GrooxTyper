@@ -389,6 +389,38 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
+     * Tongkat sihir klasik pada SUATU JENDELA (lihat [WandWindow]).
+     *
+     * Sama dengan [selectWand] tetapi piksel yang diberi sudah potongan
+     * jendela, bukan seluruh halaman, dan ada offset supaya Path hasilnya
+     * kembali ke koordinat kanvas penuh. Beda ini yang memperbaiki kanvas
+     * webtoon:_downsample_ 480px wrecked gelembung di halaman 16000px.
+     */
+    fun selectWandWindowed(
+        px: IntArray,
+        w: Int,
+        h: Int,
+        sx: Int,
+        sy: Int,
+        params: WandEngine.Params,
+        outScale: Float = 1f,
+        offX: Float = 0f,
+        offY: Float = 0f
+    ): Boolean {
+        if (sx !in 0 until w || sy !in 0 until h) return false
+        if (px.size < w * h) return false
+        val mask = WandEngine.flood(px, w, h, sx, sy, params) ?: return false
+        if (mask.pixels < 4) return false
+        val solid = mask.toBinary()
+        var count = 0
+        for (b in solid) if (b) count++
+        if (count < 4) return false
+        val path = traceContourOffset(solid, w, h, outScale, offX, offY) ?: return false
+        addRegion(path)
+        return true
+    }
+
+    /**
      * Pecah bubble GABUNG jadi dua via WATERSHED (mode Otomatis tongkat sihir).
      *
      * Kasus webtoon: dua bubble menyatu (overlap/berbagi dinding) terdeteksi
@@ -530,12 +562,26 @@ class SelectionEngine(val width: Int, val height: Int) {
         w: Int,
         h: Int,
         scale: Float = 1f
+    ): Path? = traceContourOffset(mask, w, h, scale, 0f, 0f)
+
+    /**
+     * Kontur dengan offset. Offset diperlukan untuk wand berjendela: piksel
+     * berasal dari potongan jendela, jadi koordinatnya harus digeser lagi
+     * sebelum jadi Path di kanvas penuh.
+     */
+    private fun traceContourOffset(
+        mask: BooleanArray,
+        w: Int,
+        h: Int,
+        scale: Float = 1f,
+        offX: Float = 0f,
+        offY: Float = 0f
     ): Path? {
         val path = Path()
         var segs = 0
         fun seg(x1: Float, y1: Float, x2: Float, y2: Float) {
-            path.moveTo(x1 * scale, y1 * scale)
-            path.lineTo(x2 * scale, y2 * scale)
+            path.moveTo(offX + x1 * scale, offY + y1 * scale)
+            path.lineTo(offX + x2 * scale, offY + y2 * scale)
             segs++
         }
         for (y in 0 until h - 1) {

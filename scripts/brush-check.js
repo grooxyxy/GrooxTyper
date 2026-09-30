@@ -556,7 +556,8 @@ const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
   assert(areaPipe.includes('fun nearestLightPixel(') && areaPipe.includes('lightSnap: Boolean = false'), 'area bubble: ketukan di atas teks bisa disnap ke kertas (mode bubble)');
   assert(editor.includes('lightSnap = true'), 'editor: snap diaktifkan untuk mode area bubble');
   assert(/var bubbleAreaMode by mutableStateOf\(false\)/.test(editor), 'editor: wand bawaannya seleksi klasik (bukan mode area bubble)');
-  assert(editor.includes('downsampleForWand(raw, w, h)'), 'editor: jalur area bubble memakai downsample 480px (tak OOM di kanvas besar)');
+  assert(editor.includes('WandWindow.areaAt('), 'editor: area bubble memakai jendela adaptif, bukan downsample 480px');
+  assert(!/downsampleForWand\(raw, w, h\)[\s\S]{0,400}BubbleAreaPipeline\.areaAt/.test(editor), 'editor: jalur area bubble tak lagi membaca seluruh kanvas');
   assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
   // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.
   for (const k of ['Kasus 1: satu gelembung', 'Kasus 2: dua gelembung bersinggungan',
@@ -624,7 +625,8 @@ assert(selEng.includes('fun removeBubbleAreaAt(') && selEng.includes('fun clearB
 assert(selEng.includes('var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())'), 'area bubble: daftar area adalah state (overlay ikut digambar ulang)');
 assert(selEng.includes('bubbleAreasInReadingOrder()') || selEng.includes('bubbleReadingOrder('), 'area bubble: nomor urut mengikuti urutan baca manga');
 assert(selEng.includes('bubbleAreasInReadingOrder') && selEng.includes('sortedBy'), 'area bubble: pengurutan baris implemented');
-assert(editor.includes('BubbleAreaPipeline.areaAt('), 'editor: ketukan wand memakai pipeline area bubble');
+assert(editor.includes('WandWindow.areaAt(') || editor.includes('WandWindow.selectWand('), 'editor: ketukan wand memakai jendela adaptif');
+assert(editor.includes('outScale = win.scale, offX = win.x0.toFloat(), offY = win.y0.toFloat()') || editor.includes('win.scale, win.x0.toFloat(), win.y0.toFloat()'), 'editor: koordinat jendela dipetakan ke kanvas');
 assert(editor.includes('addBubbleArea(') && editor.includes('bukan area bubble'), 'editor: hasil ditambahkan (multi) dan pesan tolak ada');
 assert(editor.includes('bubbleAreaPanelMode') || editor.includes('allowBorder = bubbleAreaPanelMode'), 'editor: sakelar Area Panel diteruskan ke pipeline');
 assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
@@ -652,7 +654,9 @@ assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('pa
 // 23. Fitur baru: SFX engine, wand ringan + watershed jarak, kotak seleksi
 //     teks (fit), gaya per kata (span), perspektif 4 sudut bebas.
 assert(selectEng.includes('fun downsampleForWand') && selectEng.includes('WAND_MAX_DIM = 480'), 'wand: snapshot diturunkan ke 480px (tak berat di kanvas 720x16000)');
-assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('spx, sw, sh, seedX, seedY, tol, sample.scale'), 'wand: koordinat seed + Path dikembalikan ke kanvas penuh (skala 1/faktor)');
+assert(editor.includes('selectionEngine.selectWandWindowed('), 'wand klasik memakai jendela adaptif');
+assert(editor.includes('win.scale, win.x0.toFloat(), win.y0.toFloat()'), 'wand klasik memetakan koordinat jendela ke kanvas');
+assert(!editor.includes('spx, sw, sh, seedX, seedY, tol, sample.scale'), 'wand klasik tak lagi memakai downsample global');
 assert(!selectEng.includes('fun erodeByDistance') && wandEng.includes('fun distanceTransform(bin: BooleanArray'), 'wand: kontraksi pakai distance transform (helper erosi lama dibuang)');
 assert(wandEng.includes('val minPixels = max(8, (any * minAreaRatio') && wandEng.includes('minPixels) {'), 'wand: noise dibuang lewat ambang luas minimum per marker');
 assert(wandEng.includes('private fun claim(') && wandEng.includes('(mask.cov[j].toInt() and 0xFF) < 128'), 'wand: watershed tumbuh 4-arah dan tak keluar dari mask (tak bocor diagonal)');
@@ -776,6 +780,36 @@ for (const [nama, f] of [['SfxStyle', sfxStyle], ['SfxTextureBrush', sfxTex]]) {
 
 
 
+
+
+// -------------------------------------------- wand jendela adaptif (kasus 10)
+console.log('\n== Wand: jendela adaptif (bukti kanvas webtoon) ==');
+const selEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SelectionEngine.kt'));
+const wandWin = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandWindow.kt'));
+const wandCheck = read(path.join(ROOT, 'scripts/wand-check.mjs'));
+assert(wandWin.includes('object WandWindow'), 'jendela: engine terpisah named WandWindow');
+assert(wandWin.includes('fun carve(bmp: Bitmap'), 'jendela: membaca hanya persegi di sekitar ketukan');
+assert(wandWin.includes('bmp.getPixels(buf, 0, rw, rx, ry, rw, rh)'), 'jendela: piksel dibaca per persegi, bukan seluruh kanvas');
+assert(wandWin.includes('val DEFAULT_PADS = intArrayOf(300, 700, 1500)'), 'jendela: tiga ukuran jendela untuk memperbesar saat perlu');
+assert(wandWin.includes('const val MAX_DIM = 640'), 'jendela: sisi maksimum 640px menjaga memori tetap kecil');
+// downsampleForWand hanya disebut di KDoc (menjelaskan kenapa ditinggalkan),
+// bukan dipanggil. Yang禁止 adalah pemanggilan, bukan penyebutan.
+assert(!/downsampleForWand\(/.test(wandWin), 'jendela: downsample 480px global tak dipanggil (sekadar disebut di KDoc)');
+assert(selEngine.includes('fun selectWandWindowed('), 'SelectionEngine: jalur wand经典 lewat jendela');
+assert(selEngine.includes('traceContourOffset('), 'SelectionEngine: kontur bisa digeser offset jendela');
+assert(selEngine.includes('path.moveTo(offX + x1 * scale, offY + y1 * scale)'), 'kontur jendela: offset diterapkan ke tiap titik');
+assert(wandCheck.includes('wandWindowed('), 'uji: ada jalur wand berbasis jendela');
+assert(wandCheck.includes('halaman-manga.png'), 'uji: memakai halaman manga nyata sebagai fixture');
+assert(read(path.join(ROOT, 'scripts/png.mjs')).includes('function readPng'), 'uji: decoder PNG kecil supaya fixture bisa dibaca tanpa dependensi');
+assert(wandCheck.includes("'== Kasus 10: kanvas webtoon tinggi =='"), 'uji: kasus 10 mengunci bug kanvas tinggi');
+assert(wandCheck.includes('const chR = (p) => (p >> 16) & 255'), 'uji: spec memakai ARGB tiga kanal, sama seperti aplikasi');
+assert(wandCheck.includes('function argbGray(v)'), 'uji: fixture abu-abu memakai ARGB, bukan nilai mentah');
+assert(wandCheck.includes('function carveWindow('), 'uji: cermin jendela carveWindow ada');
+assert(wandCheck.includes("'./fixtures/halaman-manga.png'"), 'uji: nama file fixture PNG konsisten');
+assert(read(path.join(ROOT, 'scripts/fixtures/halaman-manga.png')).length > 1000, 'fixture: halaman manga nyata ikut ter-commit untuk mengunci regresi');
+assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(wandWin), 'kode jendela bebas karakter asing');
+const oW = (wandWin.match(/\{/g) || []).length, cW = (wandWin.match(/\}/g) || []).length;
+assert(oW === cW, 'WandWindow: tanda kurawal seimbang (' + oW + '/' + cW + ')');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

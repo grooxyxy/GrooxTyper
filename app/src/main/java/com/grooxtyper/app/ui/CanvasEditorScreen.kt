@@ -2375,49 +2375,32 @@ fun CanvasEditorScreen(
             refreshComposite()
             return
         }
-        val w = compositeBitmap.width
-        val h = compositeBitmap.height
-        if (w <= 0 || h <= 0) return
-        // Snapshot piksel SELALU diturunkan dulu (480 px sisi terpanjang).
-        // Kanvas 720x16000 = 11.5 juta piksel; membaca utuh di Main thread
-        // butuh 46MB integer dan membekukan UI, dan pipeline sendiri butuh
-        // beberapa array sebesar itu lagi -> OOM.
-        val raw = try {
-            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
-        } catch (e: OutOfMemoryError) {
-            e.printStackTrace()
-            healError = "Area bubble OOM - kanvas terlalu besar"
-            return
-        } catch (e: Exception) {
-            e.printStackTrace()
-            healError = "Area bubble gagal baca kanvas"
-            return
-        }
-        val sample = try {
-            with(com.grooxtyper.app.model.SelectionEngine) {
-                com.grooxtyper.app.model.SelectionEngine.downsampleForWand(raw, w, h)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            com.grooxtyper.app.model.SelectionEngine.WandSample(raw, w, h, 1f)
-        }
-        val px = sample.px
-        val w2 = sample.w
-        val h2 = sample.h
-        val sx = (cp.x / sample.scale).toInt().coerceIn(0, w2 - 1)
-        val sy = (cp.y / sample.scale).toInt().coerceIn(0, h2 - 1)
+        if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
+        // Snapshot piksel TIDAK lagi dibaca utuh. Jendela di sekitar ketukan
+        // (lihat WandWindow) membaca hanya ~640x640 piksel, jadi kanvas
+        // 720x16000 tak pernah allocates 46MB integer. Selain hemat memori,
+        // ini juga yang membuat wand benar pada kanvas webtoon: downsample
+        // global 480px membuat outline gelembung hilang di halaman 16000px.
         wandBusy = true
         scope.launch(Dispatchers.Default) {
             var area: BubbleAreaPipeline.Area? = null
             var err: String? = null
             try {
+                // Jendela di sekitar ketukan, bukan downsample seluruh
+                // halaman. Pada kanvas webtoon 16000px, downsample 480px
+                // menyisakan lebar 20px sehingga outline gelembung hilang
+                // dan wand selalu gagal. Bukti: scripts/wand-check.mjs
+                // kasus 10 memakai halaman manga asli.
+                val seedPx = compositeBitmap.getPixel(
+                    cp.x.toInt().coerceIn(0, compositeBitmap.width - 1),
+                    cp.y.toInt().coerceIn(0, compositeBitmap.height - 1)
+                )
                 val thr = (wandTolerance * 2.2f).coerceIn(4f, 160f)
                 val params = WandEngine.Params(
-                    threshold = WandEngine.thresholdForSrgb(thr, px[sy * w2 + sx])
+                    threshold = WandEngine.thresholdForSrgb(thr, seedPx)
                 )
-                area = BubbleAreaPipeline.areaAt(
-                    px, w2, h2, sx, sy, params,
-                    outScale = sample.scale, offX = 0f, offY = 0f,
+                area = WandWindow.areaAt(
+                    compositeBitmap, cp.x.toInt(), cp.y.toInt(), params,
                     allowBorder = bubbleAreaPanelMode,
                     lightSnap = true
                 )
@@ -2552,55 +2535,42 @@ fun CanvasEditorScreen(
                 return
             }
         }
-        // Snapshot piksel di Main (aman dari race tulis), lalu isi di Default.
-        // PENTING: kanvas 720x16000 = 11.5 juta piksel (46MB) — membanjiri
-        // semua itu bikin wand berat. Wand cukup presisi di 480px sisi
-        // terpanjang, jadi snapshot diturunkan sekali di sini (rata-rata),
-        // dan Path hasilnya dikembalikan ke koordinat kanvas penuh.
-        val w = compositeBitmap.width
-        val h = compositeBitmap.height
-        if (w <= 0 || h <= 0) return
-        val raw = try {
-            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            healError = "Wand gagal baca kanvas — coba lagi"
-            return
-        } catch (e: OutOfMemoryError) {
-            e.printStackTrace()
-            healError = "Wand OOM — coba area lebih kecil"
-            return
-        }
-        val sample = try {
-            with(SelectionEngine) { downsampleForWand(raw, w, h) }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            SelectionEngine.WandSample(raw, w, h, 1f)
-        }
-        val spx = sample.px
-        val sw = sample.w
-        val sh = sample.h
-        val seedX = (cx / sample.scale).toInt().coerceIn(0, sw - 1)
-        val seedY = (cy / sample.scale).toInt().coerceIn(0, sh - 1)
+        if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
+        // Piksel dibaca di dalam coroutine (bukan di Main) dan HANYA untuk
+        // jendela di sekitar ketukan. Versi lama membaca seluruh kanvas di
+        // Main: 720x16000 = 11,5 juta piksel = 46MB tiap ketukan.
         wandBusy = true
         scope.launch(Dispatchers.Default) {
             var added = false
             var err: String? = null
             try {
-                val tol = if (wandMode == "auto") {
-                    selectionEngine.autoTolerance(spx, sw, sh, seedX, seedY)
+                // Jendela di sekitar ketukan. Lihat WandWindow untuk bukti
+                // kenapa downsample 480px seluruh halaman merusak wand di kanvas webtoon.
+                val win = WandWindow.carve(compositeBitmap, cx, cy, 700)
+                    ?: WandWindow.carve(compositeBitmap, cx, cy, 300)
+                if (win == null) {
+                    err = "Wand: tak bisa membaca kanvas di titik itu"
                 } else {
-                    (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                    val sx = ((cx - win.x0) * win.scale).toInt()
+                        .coerceIn(0, win.w - 1)
+                    val sy = ((cy - win.y0) * win.scale).toInt()
+                        .coerceIn(0, win.h - 1)
+                    val tol = if (wandMode == "auto") {
+                        selectionEngine.autoTolerance(win.px, win.w, win.h, sx, sy)
+                    } else {
+                        (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                    }
+                    val params = WandEngine.Params(
+                        threshold = WandEngine.thresholdForSrgb(tol, win.px[sy * win.w + sx])
+                    )
+                    // Path dihitung dari jendela, lalu digeser Offset supaya
+                    // kembali ke koordinat kanvas penuh.
+                    added = selectionEngine.selectWandWindowed(
+                        win.px, win.w, win.h, sx, sy, params,
+                        win.scale, win.x0.toFloat(), win.y0.toFloat()
+                    )
+                    if (!added) err = "Wand: tak ada area cocok - naikkan toleransi / ketuk area lain"
                 }
-                // Kembali ke koordinat KANVAS: kontur berada di ruang
-                // ter-downsample, jadi harus dikalikan 1/faktor. Nilai yang
-                // pernah dipakai (1/sample.scale) justru mengalikan s sehingga
-                // seleksi tergambar di pojok kiri atas berukuran 40% - inilah
-                // alasan "wand tidak berfungsi" padahal hasil flood-nya benar.
-                added = selectionEngine.selectWand(
-                    spx, sw, sh, seedX, seedY, tol, sample.scale
-                )
-                if (!added) err = "Wand: tak ada area cocok — naikkan toleransi / ketuk area lain"
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
                 err = "Wand OOM — coba toleransi lebih kecil"
