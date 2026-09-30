@@ -111,6 +111,20 @@ dependencies {
     // DITOLAK ORT 1.20 (maks opset 21) dengan ORT_INVALID_ARGUMENT.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 
+    // Ink API (androidx.ink) 1.0.0 -versi stabil pertama. Dipakai untuk kuas
+    // bertekstur: shape + grain + dynamics ala brush pack SFX/webtoon.
+    //   - ink-brush     : Brush, BrushFamily, BrushPaint.TextureLayer (tekstur)
+    //   - ink-strokes   : InProgressStroke -> Stroke dari titik sentuh
+    //   - ink-rendering : CanvasStrokeRenderer menggambar Stroke ke android.graphics.Canvas
+    //   - ink-nativeloader: libink.so (butuh ABI arm64-v8a/x86_64, sudah di abiFilters)
+    // Versi 1.0.0 dipakai, bukan alpha 1.1.0: API factory-nya
+    // createWithColorIntArgb, sementara createWithComposeColor baru ada di alpha.
+    val inkVersion = "1.0.0"
+    implementation("androidx.ink:ink-brush:$inkVersion")
+    implementation("androidx.ink:ink-strokes:$inkVersion")
+    implementation("androidx.ink:ink-rendering:$inkVersion")
+    implementation("androidx.ink:ink-nativeloader:$inkVersion")
+
     // Coroutines
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 

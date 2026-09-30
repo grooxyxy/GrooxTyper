@@ -31,6 +31,8 @@ const rulesDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/S
 const perspPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/PerspectivePanel.kt'));
 const richPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/RichTextPanel.kt'));
 const richLayout = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/RichTextLayout.kt'));
+const sfxTex = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxTextureBrush.kt'));
+const gradle = read(path.join(ROOT, 'app/build.gradle.kts'));
 const genreEngineSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/GenreBrushEngine.kt'));
 for (const [nm, tx] of [['PerspectiveGrid', perspGrid], ['PerspectivePanel', perspPanel], ['RichTextPanel', richPanel], ['RichTextLayout', richLayout], ['EditorOverlays', overlays], ['OverlayGestures', ovGest], ['BubbleDetectorDialog', bubDlg], ['StyleRulesDialog', rulesDlg]]) {
   const o = (tx.match(/\{/g) || []).length;
@@ -677,6 +679,38 @@ assert(overlays.includes('Icons.Default.FormatSize') && overlays.includes('conte
 }
 assert(bulkDlg.includes('bulkChecked') && bulkDlg.includes('"Edit Teks Massal"'), 'bulk: dialog pilih multi-teks (checkbox per kotak)');
 assert(editor.includes('BulkTextDialog(') && editor.includes('pushTextBox(tl.id, tl.box.copy())'), 'bulk: terapkan ukuran/tebal/warna + undo per kotak');
+
+
+// ------------------------------------------------- kuas SFX bertekstur (Ink API)
+console.log('\n== Kuas SFX bertekstur (Ink API) ==');
+assert(/androidx\.ink:ink-brush:\$inkVersion/.test(gradle), 'Ink API: dependensi ink-brush memakai variabel inkVersion');
+assert(gradle.includes('androidx.ink:ink-strokes:$inkVersion'), 'Ink API: ink-strokes untuk membentuk Stroke dari titik');
+assert(gradle.includes('androidx.ink:ink-rendering:$inkVersion'), 'Ink API: ink-rendering untuk menggambar ke Canvas');
+assert(gradle.includes('androidx.ink:ink-nativeloader:$inkVersion'), 'Ink API: native loader untuk libink.so');
+assert(sfxTex.startsWith('@file:OptIn(ExperimentalInkCustomBrushApi::class)'), 'Ink API: OptIn penanda eksperimental ada di baris pertama');
+assert(sfxTex.includes('import androidx.compose.ui.graphics.Brush'), 'tekstur: grain digambar dengan androidx.compose.ui.graphics.Brush');
+assert(sfxTex.includes('import androidx.compose.ui.graphics.Canvas as composeCanvas'), 'tekstur: digambar di ImageBitmap lewat Canvas Compose');
+assert(sfxTex.includes('Brush.radialGradient'), 'tekstur: titik dan stempel memakai radial gradient Compose');
+assert(sfxTex.includes('Brush.linearGradient'), 'tekstur: arsir dan retak memakai linear gradient Compose');
+assert(sfxTex.includes('StockTextureBitmapStore(Resources.getSystem())'), 'Ink API: grain didaftarkan ke TextureBitmapStore resmi');
+assert(sfxTex.includes('for (t in Texture.entries) s.addTexture(textureId(t), buildTile(t))'), 'Ink API: keenam tekstur terdaftar sebagai grain');
+assert(sfxTex.includes('BrushPaint.TextureMapping.TILING') && sfxTex.includes('BrushPaint.TextureMapping.STAMPING'), 'tekstur: mode TILING dan STAMPING (enum resmi Ink) dipakai');
+assert(sfxTex.includes('BrushPaint.BlendMode.DST_OUT'), 'tekstur: retak dan robek memakai DST_OUT sehingga ada celah putih');
+assert(sfxTex.includes('BrushPaint.BlendMode.MODULATE'), 'tekstur: halftone dan arsir memakai MODULATE agar warna kuas tetap');
+assert(sfxTex.includes('BrushPaint.TextureWrap.REPEAT'), 'tekstur: grain diulang (wrap REPEAT) seperti grain Procreate');
+assert(sfxTex.includes('BrushFamily(tip, paint)'), 'Ink API: BrushFamily dibangun dari tip dan paint');
+assert(sfxTex.includes('Brush.createWithColorIntArgb('), 'Ink API: Brush dibuat lewat createWithColorIntArgb (API 1.0.0)');
+assert(!sfxTex.includes('createWithComposeColor'), 'Ink API: createWithComposeColor tidak dipakai karena baru ada di alpha 1.1');
+assert(sfxTex.includes('CanvasStrokeRenderer.create(s)'), 'Ink API: renderer resmi yang menggambar ke Canvas');
+assert(sfxTex.includes('r.draw(canvas, ips.toImmutable(), Matrix())'), 'Ink API: Stroke digambar ke android.graphics.Canvas milik layer');
+assert(sfxTex.includes('InProgressStroke()') && sfxTex.includes('ips.start(brush)') && sfxTex.includes('ips.finishInput()'), 'Ink API: alur stroke start lalu input lalu finish lalu toImmutable');
+assert(sfxTex.includes('if (!prepare()) return false'), 'Ink API: gagal native berarti jatuh ke kuas polos, bukan crash');
+assert((sfxTex.match(/catch \(t: Throwable\)/g) || []).length >= 2, 'Ink API: prepare dan drawStroke sama-sama dilindungi');
+assert(sfxTex.includes('fun forGenre('), 'tekstur: tiap genre SFX punya tekstur bawaan');
+for (const t of ['HALFTONE', 'HATCH', 'CRUNCH', 'SPATTER', 'RIBBON', 'ERODED']) {
+  assert(sfxTex.includes(t + '('), 'tekstur: ' + t + ' ada di daftar enum');
+}
+assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(sfxTex), 'kode kuas bertekstur bebas karakter asing');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');
