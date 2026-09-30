@@ -160,10 +160,10 @@ fun GenreBrushPanel(brushEngine: BrushEngine) {
             )
         }
         if (st.shadowOn) {
-            GenreUi.label("Geser mendatar: ${st.shadowDx.roundToInt()}")
-            GenreUi.slider(st.shadowDx, -40f, 40f) { st.shadowDx = it }
-            GenreUi.label("Geser tegak: ${st.shadowDy.roundToInt()}")
-            GenreUi.slider(st.shadowDy, -40f, 40f) { st.shadowDy = it }
+            GenreUi.label("Geser mendatar: ${(st.shadowDx * 100).roundToInt()}% lebar kuas")
+            GenreUi.slider(st.shadowDx, -0.3f, 0.3f) { st.shadowDx = it }
+            GenreUi.label("Geser tegak: ${(st.shadowDy * 100).roundToInt()}% lebar kuas")
+            GenreUi.slider(st.shadowDy, -0.3f, 0.3f) { st.shadowDy = it }
             GenreUi.label("Kabut: ${st.shadowBlur.roundToInt()}")
             GenreUi.slider(st.shadowBlur, 0f, 40f) { st.shadowBlur = it }
             Row(

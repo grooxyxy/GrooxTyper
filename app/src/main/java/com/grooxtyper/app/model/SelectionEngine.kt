@@ -153,14 +153,47 @@ class SelectionEngine(val width: Int, val height: Int) {
     var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())
         private set
 
-    /** Jumlah area yang sudah terisi teks (untuk panel). */
-    var bubbleAreaFilled by mutableStateOf(listOf<String>())
-        private set
+    /**
+     * Teks dan layer tiap area, dikunci dengan "kunci area" (kotak batas
+     * dibulatkan). memakai daftar paralel memakai indeks urutan penambahan,
+     * sedangkan penomoran memakai urutan baca: begitu user mengetuk area bawah
+     * dulu lalu area atas, isinya tidak lagi sejajar. Kunci kotak tidak
+     * berubah saat urutan dihitung ulang.
+     */
+    private val bubbleAreaTexts = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val bubbleAreaLayers = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Kunci stabil sebuah area (kotak batas dalam piksel bulat). */
+    fun bubbleAreaKey(area: BubbleAreaPipeline.Area): String {
+        val r = area.bounds
+        return "${r.left.toInt()},${r.top.toInt()},${r.right.toInt()},${r.bottom.toInt()}"
+    }
+
+    /** Teks tiap area dalam urutan baca manga (kosong bila belum terisi). */
+    fun bubbleAreaTextsInReadingOrder(): List<String> =
+        bubbleAreasInReadingOrder().map { bubbleAreaTexts[bubbleAreaKey(it)] ?: "" }
+
+    /** ID layer teks yang dibuat untuk sebuah area ("" bila belum diisi). */
+    fun bubbleAreaLayerId(area: BubbleAreaPipeline.Area): String =
+        bubbleAreaLayers[bubbleAreaKey(area)] ?: ""
+
+    /** Catat teks + layer untuk sebuah area (dipanggil setelah layer dibuat). */
+    fun setBubbleAreaContent(area: BubbleAreaPipeline.Area, text: String, layerId: String) {
+        val k = bubbleAreaKey(area)
+        bubbleAreaTexts[k] = text
+        bubbleAreaLayers[k] = layerId
+    }
+
+    /** Kosongkan catatan sebuah area (dipakai sebelum isi ulang). */
+    fun clearBubbleAreaContent(area: BubbleAreaPipeline.Area) {
+        val k = bubbleAreaKey(area)
+        bubbleAreaTexts.remove(k)
+        bubbleAreaLayers.remove(k)
+    }
 
     /** Tambah satu area hasil ketukan wand; mengembalikan nomor urut (1..n). */
     fun addBubbleArea(area: BubbleAreaPipeline.Area): Int {
         bubbleAreaList = bubbleAreaList + area
-        bubbleAreaFilled = bubbleAreaFilled + ""
         return bubbleAreasInReadingOrder().indexOf(area) + 1
     }
 
@@ -179,46 +212,36 @@ class SelectionEngine(val width: Int, val height: Int) {
         return rows.flatMap { it.sortedByDescending { area -> area.bounds.centerX() } }
     }
 
-    /** Hapus area yang tertimpa titik (x, y). True bila ada yang terhapus. */
+    /**
+     * Hapus area yang tertimpa titik (x, y).
+     *
+     * Memakai PATH, bukan kotak pembatas: area gelembung bisa berupa L-shape
+     * atau diagonal, dan ketuk di pojok kotak yang berada di luar bentuk tak
+     * boleh menghapus area.
+     */
     fun removeBubbleAreaAt(x: Float, y: Float): Boolean {
-        val ordered = bubbleAreasInReadingOrder()
-        val idx = ordered.indexOfLast { it.bounds.contains(x, y) }
-        if (idx < 0) return false
-        val target = ordered[idx]
-        val idxRaw = bubbleAreaList.indexOf(target)
-        if (idxRaw < 0) return false
-        val nextAreas: MutableList<BubbleAreaPipeline.Area> = bubbleAreaList.toMutableList()
-        nextAreas.removeAt(idxRaw)
-        bubbleAreaList = nextAreas
-        val keep: MutableList<String> = bubbleAreaFilled.toMutableList()
-        if (idxRaw < keep.size) keep.removeAt(idxRaw)
-        bubbleAreaFilled = keep
-        return true
+        val list = bubbleAreaList
+        for (i in list.indices.reversed()) {
+            val a = list[i]
+            val hit = if (a.bounds.contains(x, y)) a.path.contains(x, y) else false
+            if (hit) {
+                clearBubbleAreaContent(a)
+                bubbleAreaList = list.toMutableList().also { it.removeAt(i) }
+                return true
+            }
+        }
+        return false
     }
 
     /** Buang semua area bubble (bukan seleksi klasik). */
     fun clearBubbleAreas() {
         bubbleAreaList = emptyList()
-        bubbleAreaFilled = emptyList()
+        bubbleAreaTexts.clear()
+        bubbleAreaLayers.clear()
     }
 
-    /** Tandai teks pada area bernomor [nomor] (1..n). */
-    fun setBubbleAreaText(nomor: Int, text: String) {
-        if (nomor <= 0) return
-        val ordered = bubbleAreasInReadingOrder()
-        val idx = nomor - 1
-        if (idx >= ordered.size || idx >= bubbleAreaFilled.size) return
-        val next: MutableList<String> = bubbleAreaFilled.toMutableList()
-        next[idx] = text
-        bubbleAreaFilled = next
-    }
-
-    /** Area bernomor [nomor] (1..n) dalam urutan baca. */
-    fun bubbleAreaAt(nomor: Int): BubbleAreaPipeline.Area? {
-        val ordered = bubbleAreasInReadingOrder()
-        return if (nomor in 1..ordered.size) ordered[nomor - 1] else null
-    }
-
+    
+    
     /** Tambah oval sebagai SATU area baru (tap bubble menumpuk, multi-seleksi). */
     fun selectOval(rect: RectF) {
         val oval = Path()

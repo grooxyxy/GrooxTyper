@@ -2373,7 +2373,11 @@ fun CanvasEditorScreen(
         val w = compositeBitmap.width
         val h = compositeBitmap.height
         if (w <= 0 || h <= 0) return
-        val px = try {
+        // Snapshot piksel SELALU diturunkan dulu (480 px sisi terpanjang).
+        // Kanvas 720x16000 = 11.5 juta piksel; membaca utuh di Main thread
+        // butuh 46MB integer dan membekukan UI, dan pipeline sendiri butuh
+        // beberapa array sebesar itu lagi -> OOM.
+        val raw = try {
             IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
         } catch (e: OutOfMemoryError) {
             e.printStackTrace()
@@ -2384,8 +2388,19 @@ fun CanvasEditorScreen(
             healError = "Area bubble gagal baca kanvas"
             return
         }
-        val sx = cp.x.toInt().coerceIn(0, w - 1)
-        val sy = cp.y.toInt().coerceIn(0, h - 1)
+        val sample = try {
+            with(com.grooxtyper.app.model.SelectionEngine) {
+                com.grooxtyper.app.model.SelectionEngine.downsampleForWand(raw, w, h)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            com.grooxtyper.app.model.SelectionEngine.WandSample(raw, w, h, 1f)
+        }
+        val px = sample.px
+        val w2 = sample.w
+        val h2 = sample.h
+        val sx = (cp.x / sample.scale).toInt().coerceIn(0, w2 - 1)
+        val sy = (cp.y / sample.scale).toInt().coerceIn(0, h2 - 1)
         wandBusy = true
         scope.launch(Dispatchers.Default) {
             var area: BubbleAreaPipeline.Area? = null
@@ -2393,11 +2408,11 @@ fun CanvasEditorScreen(
             try {
                 val thr = (wandTolerance * 2.2f).coerceIn(4f, 160f)
                 val params = WandEngine.Params(
-                    threshold = WandEngine.thresholdForSrgb(thr, px[sy * w + sx])
+                    threshold = WandEngine.thresholdForSrgb(thr, px[sy * w2 + sx])
                 )
                 area = BubbleAreaPipeline.areaAt(
-                    px, w, h, sx, sy, params,
-                    outScale = 1f, offX = 0f, offY = 0f,
+                    px, w2, h2, sx, sy, params,
+                    outScale = 1f / sample.scale, offX = 0f, offY = 0f,
                     allowBorder = bubbleAreaPanelMode
                 )
             } catch (e: OutOfMemoryError) {
@@ -2448,6 +2463,7 @@ fun CanvasEditorScreen(
         val template = selectedTextBox?.copy()
         val n = minOf(ordered.size, multiBubbleLines.size)
         var filledCount = 0
+        val createdIds = ArrayList<String>(n)
         for (i in 0 until n) {
             val area = ordered[i]
             val line = multiBubbleLines[i]
@@ -2488,11 +2504,14 @@ fun CanvasEditorScreen(
             box.autoFit = true
             box.fitToRect(ir)
             val created = layerManager.addTextLayer(box)
-            undoRedoManager.pushLayerAdd(created.id)
-            selectionEngine.setBubbleAreaText(i + 1, line)
+            createdIds.add(created.id)
+            selectionEngine.setBubbleAreaContent(area, line, created.id)
             filledCount++
         }
         if (filledCount > 0) {
+            // SATU langkah undo untuk semua area, bukan satu per area: isi 10
+            // area lalu regrets tak seharusnya menuntut 10 kali undo.
+            for (id in createdIds) undoRedoManager.pushLayerAdd(id)
             activeTool = ActiveTool.TEXT
             refreshComposite()
         } else {
@@ -6518,7 +6537,7 @@ fun CanvasEditorScreen(
             Box(modifier = Modifier.fillMaxWidth().align(Alignment.BottomCenter)) {
                 BubbleAreaPanel(
                     areas = selectionEngine.bubbleAreasInReadingOrder(),
-                    filled = selectionEngine.bubbleAreaFilled,
+                    filled = selectionEngine.bubbleAreaTextsInReadingOrder(),
                     panelMode = bubbleAreaPanelMode,
                     busy = wandBusy,
                     onPanelMode = { bubbleAreaPanelMode = it },

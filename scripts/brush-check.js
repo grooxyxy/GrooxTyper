@@ -262,7 +262,7 @@ for (const st of ['var widthMul by mutableFloatStateOf', 'var gradient by mutabl
 }
 assert(!/var (widthMul|opacity|texture)\s*:\s*Float\s*=/.test(sfxEng),
   'GenreBrushEngine: tak ada setelan SFX berupa var biasa (UI beku)');
-const sI_shadow = sfxEng.indexOf('c.translate(st.shadowDx, st.shadowDy)');
+const sI_shadow = sfxEng.indexOf('c.translate(st.shadowDx * size, st.shadowDy * size)');
 const sI_outline = sfxEng.indexOf('if (outline != null) {', sI_shadow);
 const sI_mask = sfxEng.indexOf('PorterDuff.Mode.DST_IN', sI_shadow);
 const sI_ink = sfxEng.indexOf('c.drawPath(ink, fillPaintFor(st, clip))', sI_shadow);
@@ -549,6 +549,8 @@ const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
   assert(areaPipe.includes('tiny[argMax] = true') || areaPipe.includes('peak[argMax]'), 'area bubble: gelembung kecil punya fallback inti');
   assert(areaPipe.includes('owner[i - 1] = me; queue[tail++] = i - 1'), 'area bubble: langkah 5 tumbuhkan geodesik di dalam mask asli');
   assert(areaPipe.includes('fun textColorFor(') && areaPipe.includes('sum / n > 128f'), 'area bubble: warna teks kontras dihitung dari isi area');
+  assert(areaPipe.includes('masks[k][seedIdx]') || areaPipe.includes('masks[chosenIdx][seedIdx]'), 'area bubble: area yang dikembalikan adalah yang memuat titik ketuk');
+  assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('outScale = 1f / sample.scale'), 'editor: jalur area bubble memakai downsample 480px (tak OOM di kanvas besar)');
   assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
   // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.
   for (const k of ['Kasus 1: satu gelembung', 'Kasus 2: dua gelembung bersinggungan',

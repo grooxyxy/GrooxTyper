@@ -250,16 +250,17 @@ object TextRenderer {
                 val s = canvas.save()
                 canvas.translate(sx + w / 2f, baseline)
                 if (tilt != 0f) canvas.rotate(tilt)
+                var hx = 0f
                 for (ci in words[wi].indices) {
                     val ch = words[wi][ci].toString()
                     val cw = basePaint.measureText(ch)
                     val gp = Path()
-                    basePaint.getTextPath(ch, 0, 1, -cw / 2f, 0f, gp)
+                    basePaint.getTextPath(ch, 0, 1, hx - cw / 2f, 0f, gp)
                     SfxInk.hardShadowGlyph(
                         canvas, gp, shadowColor, shadowDx, shadowDy,
                         outerW, box.textOpacity
                     )
-                    sx += 0f
+                    hx += cw
                 }
                 canvas.restoreToCount(s)
                 sx += w + gap

@@ -153,12 +153,16 @@ object GenreBrushEngine {
             shadowColor = spec.shadowColor
             texture = spec.roughness
             spatter = spec.spatter
-            // Disimpan sebagai rasio terhadap lebar kuas supaya ikut berubah
-            // saat user menggeser pengali lebar.
+            // Semua ukuran disimpan sebagai RASIO terhadap ukuran kuas (sama
+            // seperti outlineWidth), lalu dikalikan ukuran kuas saat render.
+            // Dulu outlineWidth dibagi inkScale sehingga jadi 0.34/0.065 = 5.2
+            // (outline 17x lebih tebal dari seharusnya) dan bayangan yang
+            // disimpan sebagai fraksi justru digambar sebagai piksel mentah
+            // (geserannya jadi tak terlihat).
             styleRef = spec
-            outlineWidth = spec.outlineScale / spec.inkScale
-            shadowDx = spec.shadowDx / spec.inkScale
-            shadowDy = spec.shadowDy / spec.inkScale
+            outlineWidth = spec.outlineScale
+            shadowDx = spec.shadowDx
+            shadowDy = spec.shadowDy
         }
     }
 
@@ -472,7 +476,7 @@ object GenreBrushEngine {
             val ink = inkPath(0f) ?: return
             val outline = if (outlineW > 0.5f) inkPath(outlineW) else null
             val shadowOn = st.shadowOn &&
-                (st.shadowBlur > 0.5f || abs(st.shadowDx) > 0.5f || abs(st.shadowDy) > 0.5f)
+                (st.shadowBlur > 0.5f || abs(st.shadowDx) > 0.001f || abs(st.shadowDy) > 0.001f)
             val extras = extrasCount(genre, st.texture.coerceIn(0f, 1f)) > 0 || st.spatter > 0
             if (!shadowOn && outline == null && !st.gradient && !extras) {
                 // Kasus sederhana: tanpa layering -> gambar langsung (cepat).
@@ -481,7 +485,7 @@ object GenreBrushEngine {
             }
             val clip = boundsOf(
                 size * st.widthMul.coerceIn(0.2f, 4f) * 1.3f + outlineW * 2f +
-                    st.shadowBlur * 2f + abs(st.shadowDx) + abs(st.shadowDy) + 8f
+                    st.shadowBlur * 2f + abs(st.shadowDx * size) + abs(st.shadowDy * size) + 8f
             )
             val l = clip.left.toInt().coerceAtLeast(0)
             val t = clip.top.toInt().coerceAtLeast(0)
@@ -520,7 +524,7 @@ object GenreBrushEngine {
                         }
                     }
                     c.save()
-                    c.translate(st.shadowDx, st.shadowDy)
+                    c.translate(st.shadowDx * size, st.shadowDy * size)
                     c.drawPath(if (outline != null) outline else ink, sp)
                     c.restore()
                 }
@@ -603,7 +607,7 @@ object GenreBrushEngine {
                     }
                 }
                 val saved = canvas.save()
-                canvas.translate(st.shadowDx, st.shadowDy)
+                canvas.translate(st.shadowDx * size, st.shadowDy * size)
                 canvas.drawPath(if (outline != null) outline else ink, sp)
                 canvas.restoreToCount(saved)
             }

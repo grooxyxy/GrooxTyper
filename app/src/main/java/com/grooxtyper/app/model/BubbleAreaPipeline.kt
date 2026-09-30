@@ -179,6 +179,9 @@ object BubbleAreaPipeline {
         for (id in groups.keys) {
             if ((sizes[id] ?: 0) < minArea) continue
             val b = groups.getValue(id)
+            // Mask per wilayah dibangun hanya untuk wilayah yang lolos
+            // ambang luas; pada kanvas 720x16000 satu BooleanArray 11.5 MB
+            // per wilayah bisa menghabiskan heap bila semua wilayah disimpan.
             val m = BooleanArray(w * h)
             for (i in owner.indices) if (owner[i] == id) m[i] = true
             boxes.add(
@@ -192,13 +195,20 @@ object BubbleAreaPipeline {
             masks.add(m)
         }
         if (boxes.isEmpty()) return null
-        val order = boxes.indices.sortedByDescending { boxes[it].width() * boxes[it].height() }
-        val first = order.first()
+        // Yang dikembalikan adalah wilayah yang MEMUAT TITIK KETUK, bukan
+        // wilayah terbesar. Mengembalikan yang terbesar selalu salah: saat dua
+        // gelembung bersinggungan, mengetuk gelembung kedua akan mendapat kotak
+        // gelembung pertama (persis yang tertangkap uji kasus 2b).
+        val seedIdx = sy * w + sx
+        val ownerSeed = owner[seedIdx]
+        val chosenIdx = (0 until boxes.size).firstOrNull { k ->
+            masks[k][seedIdx]
+        } ?: 0
         return Area(
-            boxes[first],
-            traceContour(masks[first], w, h, outScale, offX, offY)
-                ?: Path().apply { addRect(boxes[first], Path.Direction.CW) },
-            textColorFor(px, masks[first], w, h),
+            boxes[chosenIdx],
+            traceContour(masks[chosenIdx], w, h, outScale, offX, offY)
+                ?: Path().apply { addRect(boxes[chosenIdx], Path.Direction.CW) },
+            textColorFor(px, masks[chosenIdx], w, h),
             if (allowBorder) KIND_PANEL else KIND_BUBBLE
         )
     }

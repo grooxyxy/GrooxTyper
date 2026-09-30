@@ -93,7 +93,7 @@ function labelComponents(bin, w, h, minPixels) {
  * @param px piksel grayscale (0..255, 255 = kertas putih)
  * @returns {null | Array<{pixels:Set<number>, box:number[]}>}
  */
-function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = false } = {}) {
+function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = false, atSeed = false } = {}) {
   const n = w * h;
   const seed = px[seedY * w + seedX];
   const thr = threshold / 255;
@@ -228,7 +228,16 @@ function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = fa
   const out = [...groups.values()].filter((g) => g.pixels.length >= minPix);
   if (out.length === 0) return null;
   out.sort((a, b) => b.pixels.length - a.pixels.length);
-  return out.map((g) => ({ pixels: g.pixels, box: [g.x1, g.y1, g.x2 + 1, g.y2 + 1] }));
+  const list = out.map((g) => ({ pixels: g.pixels, box: [g.x1, g.y1, g.x2 + 1, g.y2 + 1] }));
+  if (atSeed) {
+    // API produksi (BubbleAreaPipeline.areaAt) mengembalikan SATU area: yang
+    // memuat titik ketuk. Mengembalikan kelompok terbesar selalu salah, karena
+    // mengetuk gelembung kedua akan mendapat gelembung pertama.
+    const seedIdx = seedY * w + seedX;
+    const own = list.find((g) => g.pixels.indexOf(seedIdx) >= 0);
+    if (own) return [own];
+  }
+  return list;
 }
 
 // ------------------------------------------------------------------ geometri
@@ -326,6 +335,35 @@ console.log('== Kasus 2: dua gelembung bersinggungan (image.webp) ==');
       if (sep < -thick) bad('garis pemisah di luar kedua lingkaran (tumpang tindih kotak)');
       else ok('garis pemisah di antara kedua lingkaran');
     }
+  }
+}
+
+console.log('== Kasus 2b: ketuk gelembung kedua (harus area kedua) ==');
+{
+  const w = 400, h = 400, r = 60, thick = 5, d = 100;
+  const px = page(w, h);
+  ring(px, w, h, 150, 200, r, thick);
+  ring(px, w, h, 150 + d, 200, r, thick);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (px[y * w + x] !== 0) continue;
+      const inA = Math.hypot(x - 150, y - 200) < r - thick;
+      const inB = Math.hypot(x - (150 + d), y - 200) < r - thick;
+      if (inA || inB) px[y * w + x] = 255;
+    }
+  }
+  const kiri = bubbleAreaAt(px, w, h, 150, 200, { threshold: 15, atSeed: true });
+  const kanan = bubbleAreaAt(px, w, h, 150 + d, 200, { threshold: 15, atSeed: true });
+  if (!kiri || !kanan) bad('salah satu ketukan tidak menghasilkan area');
+  else {
+    if (kiri[0].box[0] === kanan[0].box[0]) bad('kedua ketukan mengembalikan kotak yang SAMA ' + JSON.stringify(kiri[0].box));
+    else ok('kotak berbeda: ' + JSON.stringify(kiri[0].box) + ' vs ' + JSON.stringify(kanan[0].box));
+    const tKiri = discMask(w, h, 150, 200, r - thick);
+    const tKanan = discMask(w, h, 150 + d, 200, r - thick);
+    const iKiri = iouSet(new Set(kiri[0].pixels), tKiri);
+    const iKanan = iouSet(new Set(kanan[0].pixels), tKanan);
+    if (iKiri < 0.9 || iKanan < 0.9) bad('IoU kiri ' + iKiri.toFixed(2) + ' kanan ' + iKanan.toFixed(2) + ' (harus >= 0.90 masing-masing)');
+    else ok('IoU kiri ' + iKiri.toFixed(2) + ' / kanan ' + iKanan.toFixed(2));
   }
 }
 

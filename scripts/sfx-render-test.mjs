@@ -78,6 +78,20 @@ const hardCoded = /gradStart\s*=\s*Color\./.test(engineSrc) || /widthMul = 1\.15
 if (hardCoded) fail('masih ada angka preset hard-coded di GenreBrushEngine');
 else ok('tak ada angka preset hard-coded di GenreBrushEngine');
 
+// applyStyle harus menyimpan RASIO, bukan membagi dengan inkScale. Dulu
+// outlineWidth = outlineScale / inkScale (0.34/0.065 = 5.2) sehingga outline
+// 17x lebih tebal, dan bayangan disimpan fraksi tapi digambar sebagai piksel.
+const applyStart = engineSrc.indexOf('fun applyStyle');
+const apply = engineSrc.slice(applyStart, applyStart + 1800);
+if (/outlineWidth\s*=\s*spec\.outlineScale[\s\r\n]/.test(apply)) ok('outlineWidth disimpan sebagai rasio (bukan dibagi inkScale)');
+else fail('outlineWidth bukan rasio spec.outlineScale: ' + (apply.match(/outlineWidth\s*=\s*[^\n]*/) || [''])[0]);
+if (/shadowDx\s*=\s*spec\.shadowDx[\s\r\n]/.test(apply)) ok('shadowDx disimpan sebagai rasio');
+else fail('shadowDx bukan rasio spec.shadowDx: ' + (apply.match(/shadowDx\s*=\s*[^\n]*/) || [''])[0]);
+if (/c\.translate\(st\.shadowDx \* size, st\.shadowDy \* size\)/.test(engineSrc)) ok('bayangan dikalikan ukuran kuas saat render');
+else fail('bayangan digambar tanpa dikalikan ukuran kuas');
+if (engineSrc.includes('abs(st.shadowDx) +') ) fail('clip area masih memakai bayangan tanpa ukuran kuas');
+else ok('clip area memakai bayangan dalam satuan piksel');
+
 console.log('== 2. Kelayakan tiap preset ==');
 const seenOutline = new Set();
 for (const [g, p] of Object.entries(presets)) {
