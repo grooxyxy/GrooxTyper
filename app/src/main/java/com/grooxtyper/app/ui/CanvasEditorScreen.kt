@@ -2596,7 +2596,7 @@ fun CanvasEditorScreen(
                 // ter-downsample, jadi harus dikalikan 1/faktor. Nilai yang
                 // pernah dipakai (1/sample.scale) justru mengalikan s sehingga
                 // seleksi tergambar di pojok kiri atas berukuran 40% - inilah
-                // alasan "wand tidak berfungsi" padahal mask-nya benar.
+                // alasan "wand tidak berfungsi" padahal hasil flood-nya benar.
                 added = selectionEngine.selectWand(
                     spx, sw, sh, seedX, seedY, tol, sample.scale
                 )

@@ -554,7 +554,7 @@ const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
   assert(areaPipe.includes('fun nearestLightPixel(') && areaPipe.includes('lightSnap: Boolean = false'), 'area bubble: ketukan di atas teks bisa disnap ke kertas (mode bubble)');
   assert(editor.includes('lightSnap = true'), 'editor: snap diaktifkan untuk mode area bubble');
   assert(/var bubbleAreaMode by mutableStateOf\(false\)/.test(editor), 'editor: wand bawaannya seleksi klasik (bukan mode area bubble)');
-  assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('outScale = 1f / sample.scale'), 'editor: jalur area bubble memakai downsample 480px (tak OOM di kanvas besar)');
+  assert(editor.includes('downsampleForWand(raw, w, h)'), 'editor: jalur area bubble memakai downsample 480px (tak OOM di kanvas besar)');
   assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
   // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.
   for (const k of ['Kasus 1: satu gelembung', 'Kasus 2: dua gelembung bersinggungan',
@@ -650,7 +650,7 @@ assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('pa
 // 23. Fitur baru: SFX engine, wand ringan + watershed jarak, kotak seleksi
 //     teks (fit), gaya per kata (span), perspektif 4 sudut bebas.
 assert(selectEng.includes('fun downsampleForWand') && selectEng.includes('WAND_MAX_DIM = 480'), 'wand: snapshot diturunkan ke 480px (tak berat di kanvas 720x16000)');
-assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('1f / sample.scale'), 'wand: koordinat seed + Path dikembalikan ke kanvas penuh');
+assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('spx, sw, sh, seedX, seedY, tol, sample.scale'), 'wand: koordinat seed + Path dikembalikan ke kanvas penuh (skala 1/faktor)');
 assert(!selectEng.includes('fun erodeByDistance') && wandEng.includes('fun distanceTransform(bin: BooleanArray'), 'wand: kontraksi pakai distance transform (helper erosi lama dibuang)');
 assert(wandEng.includes('val minPixels = max(8, (any * minAreaRatio') && wandEng.includes('minPixels) {'), 'wand: noise dibuang lewat ambang luas minimum per marker');
 assert(wandEng.includes('private fun claim(') && wandEng.includes('(mask.cov[j].toInt() and 0xFF) < 128'), 'wand: watershed tumbuh 4-arah dan tak keluar dari mask (tak bocor diagonal)');
