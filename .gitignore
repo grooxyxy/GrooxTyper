@@ -38,3 +38,6 @@ koharu-yolo26s-seg/
 
 # Kotlin daemon logs (lokal, jangan di-commit)
 .kotlin/
+
+# keluaran uji render lokal
+scripts/out/
