@@ -562,6 +562,15 @@ fun TextEditorPanel(
                             push()
                         }
                     )
+                    // Gaya SFX bersama: preset yang sama dengan kuas SFX.
+                    SfxStyleRow(
+                        style = box.sfxStyle,
+                        onStyle = { newStyle ->
+                            box.sfxStyle = newStyle
+                            if (newStyle != null) box.inkSfx = box.inkSfx ?: com.grooxtyper.app.model.SfxInkSpec()
+                            push()
+                        }
+                    )
                     // Bentuk bubble yang harus diikuti teks (elips/bulat/bebas).
                     val fr = box.frameRectPx()
                     val sc = box.scale.coerceAtLeast(0.05f)

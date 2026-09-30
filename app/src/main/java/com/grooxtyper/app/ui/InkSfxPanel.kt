@@ -1,6 +1,9 @@
 package com.grooxtyper.app.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -12,14 +15,22 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grooxtyper.app.model.SfxGenre
 import com.grooxtyper.app.model.SfxInkSpec
+import com.grooxtyper.app.model.SfxStyleSpec
 import kotlin.math.roundToInt
 
 /** Warna aksen oranye (sama dengan warna tombol utama editor). */
@@ -36,7 +47,9 @@ private val Accent = Color(0xFFFF5722)
 @Composable
 fun InkSfxSection(
     spec: SfxInkSpec?,
-    onSpec: (SfxInkSpec?) -> Unit
+    onSpec: (SfxInkSpec?) -> Unit,
+    style: SfxStyleSpec? = null,
+    onStyle: (SfxStyleSpec?) -> Unit = {}
 ) {
     val on = spec != null
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -123,5 +136,95 @@ private fun InkSlider(
                 activeTrackColor = Accent
             )
         )
+    }
+}
+
+/**
+ * Pemilih gaya SFX bersama: empat genre (horror, romance, action, fantasy)
+ * memakai angka yang sama dengan kuas SFX, sumbernya
+ * `docs/sfx-lettering-research.md`. Tombol "Bawaan" mengembalikan genre terpilih
+ * ke presetnya, jadi user selalu bisa kembali ke tampilan yang paling mirip
+ * referensi tanpa mengingat angkanya.
+ */
+@Composable
+fun SfxStyleRow(
+    style: SfxStyleSpec?,
+    onStyle: (SfxStyleSpec?) -> Unit
+) {
+    var picked by remember { mutableStateOf(SfxGenre.HORROR) }
+    val st = style
+    Column(modifier = Modifier.padding(top = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Gaya SFX",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
+                Text(
+                    if (st == null) "Belum dipakai: teks Tinta SFX masih gaya manual"
+                    else "Aktif: gradasi + outline dua lapis + bayangan keras",
+                    color = Color.Gray,
+                    fontSize = 11.sp
+                )
+            }
+            Switch(
+                checked = st != null,
+                onCheckedChange = { on -> onStyle(if (on) SfxStyleSpec.presetOf(picked) else null) },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Accent,
+                    checkedTrackColor = Accent.copy(alpha = 0.5f)
+                )
+            )
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            SfxGenre.values().forEach { g ->
+                val on = g == picked
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (on) Accent else Color(0xFF2C2C2E))
+                        .clickable { picked = g }
+                        .padding(horizontal = 9.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        g.displayName.removePrefix("SFX "),
+                        color = if (on) Color.White else Color.LightGray,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { onStyle(SfxStyleSpec.presetOf(picked)) },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2C2C2E)
+                )
+            ) { Text("Bawaan", fontSize = 12.sp, color = Color.White) }
+            Button(
+                onClick = { onStyle(null) },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF2C2C2E)
+                )
+            ) { Text("Matikan", fontSize = 12.sp, color = Color.White) }
+        }
+        if (st != null) {
+            Text(
+                "Miring ${st.tiltPerWord.toInt()} derajat, kasar ${(st.roughness * 100).toInt()}%, " +
+                    "outline ${(st.outlineScale * 100).toInt()}% H, " +
+                    "bayangan ${if (st.shadowBlur == 0f) "keras" else "lembut"}",
+                color = Color.Gray, fontSize = 11.sp
+            )
+        }
     }
 }

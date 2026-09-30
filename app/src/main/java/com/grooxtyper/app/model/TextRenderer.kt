@@ -182,9 +182,17 @@ object TextRenderer {
      * solid/gradasi -> spatter). Noise tepi di-sample pada PANJANG BUSUR
      * sehingga tidak "berenang" saat huruf dimiringkan.
      */
+    /**
+     * Teks SFX. Bila kotak punya [TextBox.sfxStyle] (preset gaya bersama),
+     * semua angka diambil dari situ: gradasi isi dua warna, outline DUA lapis
+     * (luar gelap sebagai pemisah artwork, dalam terang sebagai pemisah
+     * gradasi), bayangan keras tanpa kabut, dan kemiringan PER KATA.
+     * Bila tidak ada, memakai [SfxInkSpec] seperti sebelumnya.
+     */
     private fun renderInkSfx(canvas: Canvas, box: TextBox, spec: SfxInkSpec) {
-        val text = box.displayText().replace("\n", "")
-        if (text.isEmpty()) return
+        val raw = box.displayText().replace("\n", " ")
+        if (raw.isBlank()) return
+        val style = box.sfxStyle
         val basePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = box.fontSize * box.scale
             typeface = box.effectiveTypeface()
@@ -192,49 +200,93 @@ object TextRenderer {
         }
         val fm = basePaint.fontMetrics
         val capH = kotlin.math.max(4f, fm.descent - fm.ascent)
-        val strokeW = (spec.strokeRatio * capH).coerceAtLeast(1.2f)
+        val strokeRatio = style?.inkScale ?: spec.strokeRatio
+        val strokeW = (strokeRatio * capH).coerceAtLeast(1.2f)
+        val outerW = style?.let { (it.outlineScale * capH) } ?: (strokeW * spec.outlineRatio)
+        val innerW = style?.let { (it.outlineInnerScale() * capH) }
+            ?: (strokeW * spec.outlineRatio * 0.5f)
         val inkSpec = SfxInk.InkSpec(
             strokeWidth = strokeW,
-            outlineWidth = strokeW * spec.outlineRatio,
-            outlineColor = spec.outlineColor,
-            keylineWidth = strokeW * spec.keylineRatio,
-            keylineColor = spec.keylineColor,
+            outlineWidth = innerW,
+            outlineColor = style?.outlineInnerColor ?: spec.outlineColor,
+            keylineWidth = (outerW - innerW).coerceAtLeast(0f),
+            keylineColor = style?.outlineColor ?: spec.keylineColor,
             inkColor = box.color,
-            roughOutline = spec.roughOutline,
+            roughOutline = style?.roughness ?: spec.roughOutline,
             roughInk = 0.06f,
             teeth = kotlin.math.max(2f, spec.teethRatio * capH),
             spacing = 0.10f,
-            gradient = spec.gradient,
+            gradient = style != null || spec.gradient,
             gradientDarken = spec.gradientDarken,
-            spatter = spec.spatter,
+            gradStart = style?.gradStart,
+            gradEnd = style?.gradEnd,
+            gradAngle = style?.gradAngle ?: 90f,
+            spatter = style?.spatter ?: spec.spatter,
             alpha = box.textOpacity
         )
-        // Lebar total tiap huruf + posisi (huruf digambar berurutan).
-        val chars = text.map { it.toString() }.filter { it != " " }
-        val widths = chars.map { basePaint.measureText(it) }
-        val total = widths.sum()
+        val shadowDx = (style?.shadowDx ?: 0f) * capH
+        val shadowDy = (style?.shadowDy ?: 0f) * capH
+        val shadowColor = style?.shadowColor ?: 0
+        val tilt = style?.tiltPerWord ?: spec.tiltDeg
         val seedBase = (spec.seed * 7919L + box.text.hashCode().toLong()) or 1L
+
+        // Kata =runs non-spasi yang berurutan; tiap kata dimiringkan sendiri.
+        val words = raw.split(' ', '\u3000').filter { it.isNotEmpty() }
+        val gap = basePaint.measureText(" ")
+        val wordW = words.map { w -> basePaint.measureText(w) }
+        val total = wordW.sum() + gap * (words.size - 1).coerceAtLeast(0)
+
         canvas.save()
         canvas.translate(box.position.x, box.position.y)
         if (box.rotation != 0f) canvas.rotate(box.rotation)
         PerspectiveGrid.matrix(box, total, capH)?.let { canvas.concat(it) }
         val baseline = -fm.ascent
+
+        // 1) Bayangan keras dulu (paling belakang), lalu isi+outlineHuruf.
+        if (shadowDx != 0f || shadowDy != 0f) {
+            var sx = -total / 2f
+            for (wi in words.indices) {
+                val w = wordW[wi]
+                val s = canvas.save()
+                canvas.translate(sx + w / 2f, baseline)
+                if (tilt != 0f) canvas.rotate(tilt)
+                for (ci in words[wi].indices) {
+                    val ch = words[wi][ci].toString()
+                    val cw = basePaint.measureText(ch)
+                    val gp = Path()
+                    basePaint.getTextPath(ch, 0, 1, -cw / 2f, 0f, gp)
+                    SfxInk.hardShadowGlyph(
+                        canvas, gp, shadowColor, shadowDx, shadowDy,
+                        outerW, box.textOpacity
+                    )
+                    sx += 0f
+                }
+                canvas.restoreToCount(s)
+                sx += w + gap
+            }
+        }
         var x = -total / 2f
-        for (i in chars.indices) {
-            val ch = chars[i]
-            val w = widths[i]
-            val cx = x + w / 2f
-            val glyph = Path()
-            basePaint.getTextPath(ch, 0, 1, -w / 2f, 0f, glyph)
-            val b = RectF()
-            glyph.computeBounds(b, true)
+        for (wi in words.indices) {
+            val w = wordW[wi]
             canvas.save()
-            canvas.translate(cx, baseline)
-            // Miring ala brush script (video: -15..-25 derajat).
-            if (spec.tiltDeg != 0f) canvas.rotate(spec.tiltDeg)
-            SfxInk.drawGlyph(canvas, glyph, inkSpec, seedBase + i * 7919L, b)
+            canvas.translate(x + w / 2f, baseline)
+            if (tilt != 0f) canvas.rotate(tilt)
+            var cx = 0f
+            for (ci in words[wi].indices) {
+                val ch = words[wi][ci].toString()
+                val cw = basePaint.measureText(ch)
+                val glyph = Path()
+                basePaint.getTextPath(ch, 0, 1, cx - cw / 2f, 0f, glyph)
+                val b = RectF()
+                glyph.computeBounds(b, true)
+                SfxInk.drawGlyph(
+                    canvas, glyph, inkSpec,
+                    seedBase + (wi * 97 + ci * 31).toLong() * 7919L, b
+                )
+                cx += cw
+            }
             canvas.restore()
-            x += w
+            x += w + gap
         }
         canvas.restore()
     }

@@ -337,6 +337,12 @@ class TextBox(
     // outline putih yang mengikuti cekungan huruf (lihat SfxInk). null = pakai
     // gaya huruf biasa.
     var inkSfx: SfxInkSpec? = null,
+    /**
+     * Gaya SFX bersama (lihat [SfxStyleSpec]): gradasi isi, outline dua
+     * lapis, bayangan keras, dan kemiringan per kata. Bila null, teks SFX
+     * memakai [SfxInkSpec] seperti sebelumnya.
+     */
+    var sfxStyle: SfxStyleSpec? = null,
     // Bentuk bubble yang diikuti teks (lihat BubbleSpec). null = teks bebas
     // mengikuti kotak biasa (persegi/seleksi).
     var bubble: BubbleSpec? = null
@@ -1065,6 +1071,7 @@ class TextBox(
         spans = spans?.map { TextSpan(it.start, it.end, it.style.copy()) },
         sfx = sfx?.copy(),
         inkSfx = inkSfx?.copy(),
+        sfxStyle = sfxStyle?.copy(),
         bubble = bubble?.copy()
     )
 
@@ -1107,6 +1114,7 @@ class TextBox(
         spans = o.spans?.map { TextSpan(it.start, it.end, it.style.copy()) }
         sfx = o.sfx?.copy()
         inkSfx = o.inkSfx?.copy()
+        sfxStyle = o.sfxStyle?.copy()
         bubble = o.bubble?.copy()
     }
 
@@ -1148,6 +1156,7 @@ class TextBox(
             spans == o.spans &&
             sfx == o.sfx &&
             inkSfx == o.inkSfx &&
+            sfxStyle == o.sfxStyle &&
             bubble == o.bubble
     }
 
@@ -1332,6 +1341,24 @@ class TextBox(
                     put("seed", ik.seed)
                 })
             }
+            sfxStyle?.let { st ->
+                put("sfxStyle", org.json.JSONObject().apply {
+                    put("gradStart", st.gradStart)
+                    put("gradEnd", st.gradEnd)
+                    put("gradAngle", st.gradAngle.toDouble())
+                    put("inkScale", st.inkScale.toDouble())
+                    put("outlineScale", st.outlineScale.toDouble())
+                    put("outlineColor", st.outlineColor)
+                    put("outlineInnerColor", st.outlineInnerColor)
+                    put("shadowDx", st.shadowDx.toDouble())
+                    put("shadowDy", st.shadowDy.toDouble())
+                    put("shadowBlur", st.shadowBlur.toDouble())
+                    put("shadowColor", st.shadowColor)
+                    put("roughness", st.roughness.toDouble())
+                    put("tiltPerWord", st.tiltPerWord.toDouble())
+                    put("spatter", st.spatter)
+                })
+            }
             bubble?.let { b ->
                 put("bubble", org.json.JSONObject().apply {
                     put("shape", b.shape)
@@ -1454,6 +1481,24 @@ class TextBox(
                         gradientDarken = ik.optDouble("gradientDarken", 0.42).toFloat(),
                         spatter = ik.optInt("spatter", 0),
                         seed = ik.optInt("seed", 1)
+                    )
+                },
+                sfxStyle = o.optJSONObject("sfxStyle")?.let { st ->
+                    SfxStyleSpec(
+                        gradStart = st.optInt("gradStart", Color.WHITE),
+                        gradEnd = st.optInt("gradEnd", Color.LTGRAY),
+                        gradAngle = st.optDouble("gradAngle", 90.0).toFloat(),
+                        inkScale = st.optDouble("inkScale", 0.065).toFloat(),
+                        outlineScale = st.optDouble("outlineScale", 0.24).toFloat(),
+                        outlineColor = st.optInt("outlineColor", Color.BLACK),
+                        outlineInnerColor = st.optInt("outlineInnerColor", 0xFFFFF3C4.toInt()),
+                        shadowDx = st.optDouble("shadowDx", 0.0).toFloat(),
+                        shadowDy = st.optDouble("shadowDy", 0.06).toFloat(),
+                        shadowBlur = st.optDouble("shadowBlur", 0.0).toFloat(),
+                        shadowColor = st.optInt("shadowColor", 0x80000000.toInt()),
+                        roughness = st.optDouble("roughness", 0.25).toFloat(),
+                        tiltPerWord = st.optDouble("tiltPerWord", 0.0).toFloat(),
+                        spatter = st.optInt("spatter", 0)
                     )
                 },
                 bubble = o.optJSONObject("bubble")?.let { b ->

@@ -283,6 +283,26 @@ assert(brush.includes('tailLayer?.let { syncTiles(it) }'), 'SFX: render akhir ma
 assert(brush.includes('if (isSfxBrush()) size * 2f else 0f'), 'SFX: clip region dilebarkan agar render akhir tidak terpotong');
 assert(brush.includes('sfxSpeedFactor(distance)'), 'SFX: kecepatan dihitung per-segmen dari jarak event');
 assert(textBoxSrc.includes('data class SfxInkSpec') && textBoxSrc.includes('var inkSfx: SfxInkSpec?'), 'teks: gaya tinta SFX (SfxInkSpec) tersimpan di kotak');
+// -- Teks SFX memakai preset gaya bersama (SfxStyleSpec) ---------------------
+assert(textBoxSrc.includes('var sfxStyle: SfxStyleSpec?'), 'teks: gaya SFX bersama (sfxStyle) tersimpan di kotak');
+assert(textBoxSrc.includes('sfxStyle = sfxStyle?.copy()') && textBoxSrc.includes('sfxStyle = o.sfxStyle?.copy()') && textBoxSrc.includes('sfxStyle == o.sfxStyle'), 'teks: sfxStyle ikut copy/setFrom/contentEquals');
+assert(textBoxSrc.includes('put("sfxStyle"') && textBoxSrc.includes('optJSONObject("sfxStyle")'), 'teks: sfxStyle ikut JSON project');
+assert(textBoxSrc.includes('BubbleSpec') && textBoxSrc.includes('var bubble: BubbleSpec?'), 'teks: bentuk bubble tetap ada (tidak ditimpa gaya SFX)');
+assert(textRenderer.includes('box.sfxStyle') && textRenderer.includes('SfxStyleSpec.presetOf(') === false, 'renderer: jalur SFX membaca gaya dari kotak, bukan preset langsung');
+{
+  const st = textRenderer.slice(textRenderer.indexOf('fun renderInkSfx'), textRenderer.indexOf('fun renderInkSfx') + 4000);
+  assert(st.includes('gradStart') && st.includes('gradEnd') && st.includes('gradAngle'), 'renderer: gradasi isi SFX dari preset bersama');
+  assert(st.includes('outlineInnerColor') || st.includes('keylineColor'), 'renderer: outline lapis dalam dipakai dari preset');
+  assert(st.includes('tiltPerWord'), 'renderer: kemiringan per kata dari preset');
+  assert(st.includes('shadowBlur == 0f') || !st.includes('BlurMaskFilter'), 'renderer: bayangan SFX keras (tanpa blur) sesuai riset');
+}
+{
+  const inkPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/InkSfxPanel.kt'));
+  assert(inkPanel.includes('SfxStyleSpec.presetOf(') && inkPanel.includes('"Bawaan"'), 'panel teks: tombol Bawaan diisi dari preset bersama');
+  assert(inkPanel.includes('SfxGenre.values()') && inkPanel.includes('fun SfxStyleRow('), 'panel teks: keempat genre bisa dipilih lewat daftar');
+  assert(textEditor.includes('SfxStyleRow('), 'panel teks: baris gaya SFX terpasang di tab Tulis');
+  assert(inkPanel.includes('presetOf(picked)') && inkPanel.includes('SfxStyleSpec'), 'panel teks: preset diambil dari sumber gaya bersama');
+}
 {
   const inkPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/InkSfxPanel.kt'));
   const textPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/TextEditorPanel.kt'));

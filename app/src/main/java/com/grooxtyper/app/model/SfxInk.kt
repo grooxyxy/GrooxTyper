@@ -132,6 +132,16 @@ object SfxInk {
         /** Isi pakai gradien vertikal (Gradient Overlay di video). */
         val gradient: Boolean = false,
         val gradientDarken: Float = 0.42f,
+        /**
+         * Warna atas dan bawah gradasi isi. Bila null, gradasi diturunkan dari
+         * [inkColor] dengan [gradientDarken] (perilaku lama). Dipakai preset
+         * SFX bersama yang warnanya datang dari riset, bukan dari gelapkan
+         * warna teks.
+         */
+        val gradStart: Int? = null,
+        val gradEnd: Int? = null,
+        /** Sudut gradasi (derajat); 90 = atas ke bawah. */
+        val gradAngle: Float = 90f,
         /** Jumlah percikan (spatter); 0 = mati. */
         val spatter: Int = 0,
         val alpha: Float = 1f
@@ -275,10 +285,25 @@ object SfxInk {
             color = spec.inkColor
             this.alpha = a
             if (spec.gradient && bounds.height() > 1f) {
+                val top: Int
+                val bottom: Int
+                if (spec.gradStart != null && spec.gradEnd != null) {
+                    top = spec.gradStart
+                    bottom = spec.gradEnd
+                } else {
+                    top = darken(spec.inkColor, spec.gradientDarken)
+                    bottom = spec.inkColor
+                }
+                val rad = Math.toRadians(spec.gradAngle.toDouble())
+                val cx = bounds.centerX()
+                val cy = bounds.centerY()
+                val r = kotlin.math.max(bounds.width(), bounds.height()) * 0.6f
                 shader = LinearGradient(
-                    bounds.left, bounds.top, bounds.left, bounds.bottom,
-                    darken(spec.inkColor, spec.gradientDarken), spec.inkColor,
-                    Shader.TileMode.CLAMP
+                    cx - (Math.cos(rad) * r).toFloat(),
+                    cy - (Math.sin(rad) * r).toFloat(),
+                    cx + (Math.cos(rad) * r).toFloat(),
+                    cy + (Math.sin(rad) * r).toFloat(),
+                    top, bottom, Shader.TileMode.CLAMP
                 )
             }
         }
@@ -287,6 +312,36 @@ object SfxInk {
         if (spec.spatter > 0) {
             drawSpatter(canvas, glyph, spec, seed, bounds, a)
         }
+    }
+
+    /**
+     * Bayangan keras untuk glyph: siluet digeser (dx, dy) tanpa kabut.
+     *
+     * Soft drop shadow sengaja TIDAK dipakai untuk SFX. Letterer komik
+     * profesional menolaknya eksplisit ("just don't"): bayangan lembut
+     *SEHINGGA bayangan di satu bidang datar, dan SFX adalah bunyi, bukan benda
+     * fisik. Referensi `c2.webp` juga memakai geseran keras.
+     */
+    fun hardShadowGlyph(
+        canvas: Canvas,
+        glyph: Path,
+        color: Int,
+        dx: Float,
+        dy: Float,
+        outerWidth: Float,
+        alpha: Float
+    ) {
+        if (dx == 0f && dy == 0f) return
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL_AND_STROKE
+            this.color = color
+            this.alpha = (alpha * 255f).toInt().coerceIn(0, 255)
+            strokeWidth = (outerWidth * 2f).coerceAtLeast(1f)
+        }
+        val saved = canvas.save()
+        canvas.translate(dx, dy)
+        canvas.drawPath(glyph, p)
+        canvas.restoreToCount(saved)
     }
 
     /** Percikan tinta di sekitar glyph, center-biased (ala Krita Spray). */
