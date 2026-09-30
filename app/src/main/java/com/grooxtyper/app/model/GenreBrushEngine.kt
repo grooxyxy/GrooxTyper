@@ -48,7 +48,7 @@ import kotlin.math.sqrt
  */
 object GenreBrushEngine {
 
-    /** Empat genre SFX. Nama ditampilkan apa adanya di daftar kuas. */
+    /** Delapan genre SFX. Nama ditampilkan apa adanya di daftar kuas. */
     enum class Genre(val displayName: String) {
         HORROR("SFX Horror"),
         ROMANCE("SFX Romance"),
@@ -60,7 +60,7 @@ object GenreBrushEngine {
         MECH("SFX Logam"),      // dentingan logam / robot: sudut keras
         EXPLOSION("SFX Ledakan"), // hembusan besar: agave melebar
         SWOOSH("SFX Hembus"),   // kecepatan / angin: pita tipis memanjang
-        CHILL("SFX Dingin")     // kabut / embun: tepi lembut
+        CHILL("SFX Dingin");     // kabut / embun: tepi lembut
 
         companion object {
             fun of(brushType: BrushType): Genre? = when (brushType) {

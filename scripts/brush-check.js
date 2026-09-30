@@ -936,6 +936,34 @@ assert(/Icons\.Default\.Healing, contentDescription = "Hapus Objek"/.test(editor
 assert(/Icons\.Default\.AutoAwesome, contentDescription = "Inpaint"/.test(editor),
   'ikon Inpaint dipisah dari wand');
 
+
+// Struktur enum: titik koma setelah entri terakhir Kotlin wajib ada.
+// Missing di sini hanya ketahuan setelah build penuh di CI, padahal
+// bentuknya bisa dicek lokal dalam milidetik.
+console.log('\n== Struktur enum Genre ==');
+{
+  const m = genre.match(/enum class Genre\(val displayName: String\) \{([\s\S]*?)\n\n        companion object/);
+  assert(m, 'Genre: blok enum ditemukan');
+  const isi = m[1];
+  const baris = isi.split('\n').map((l) => l.trim())
+    .filter((l) => /^[A-Z_]+\("SFX/.test(l));
+  assert(baris.length === 8, 'Genre: delapan entri SFX di enum (' + baris.length + ')');
+  const terakhir = baris[baris.length - 1];
+  assert(/;\s*(\/\/.*)?$/.test(terakhir),
+    'Genre: entri terakhir diakhiri titik koma (ditemukan: ' + terakhir + ')');
+  for (const b of baris.slice(0, -1)) {
+    assert(/,\s*(\/\/.*)?$/.test(b), 'Genre: entri diakhiri koma: ' + b);
+  }
+  const sfxM = sfxStyle.match(/enum class SfxGenre\(val displayName: String\) \{([\s\S]*?);/);
+  assert(sfxM, 'SfxGenre: blok enum ditemukan');
+  const sfxBaris = sfxM[1].split('\n').map((l) => l.trim())
+    .filter((l) => /^[A-Z_]+\("SFX/.test(l));
+  assert(sfxBaris.length === 8, 'SfxGenre: delapan entri (' + sfxBaris.length + ')');
+  for (const b of sfxBaris.slice(0, -1)) {
+    assert(/,\s*(\/\/.*)?$/.test(b), 'SfxGenre: entri diakhiri koma: ' + b);
+  }
+}
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
