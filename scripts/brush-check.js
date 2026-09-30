@@ -690,6 +690,8 @@ assert(gradle.includes('androidx.ink:ink-nativeloader:$inkVersion'), 'Ink API: n
 assert(sfxTex.startsWith('@file:OptIn(ExperimentalInkCustomBrushApi::class)'), 'Ink API: OptIn penanda eksperimental ada di baris pertama');
 assert(sfxTex.includes('import androidx.compose.ui.graphics.Brush'), 'tekstur: grain digambar dengan androidx.compose.ui.graphics.Brush');
 assert(sfxTex.includes('import androidx.compose.ui.graphics.Canvas as composeCanvas'), 'tekstur: digambar di ImageBitmap lewat Canvas Compose');
+assert(sfxTex.includes('CanvasDrawScope().draw('), 'tekstur: DrawScope dibangun lewat CanvasDrawScope (Compose 1.7 tidak punya Canvas(image){})');
+assert(sfxTex.includes('Density(1f)') && sfxTex.includes('LayoutDirection.Ltr'), 'tekstur: density dan arah layout diberikan saat menggambar tile');
 assert(sfxTex.includes('Brush.radialGradient'), 'tekstur: titik dan stempel memakai radial gradient Compose');
 assert(sfxTex.includes('Brush.linearGradient'), 'tekstur: arsir dan retak memakai linear gradient Compose');
 assert(sfxTex.includes('StockTextureBitmapStore(Resources.getSystem())'), 'Ink API: grain didaftarkan ke TextureBitmapStore resmi');

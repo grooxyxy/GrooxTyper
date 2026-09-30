@@ -6,11 +6,16 @@ import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Canvas as composeCanvas
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
+import androidx.compose.ui.graphics.drawscope.draw
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.ink.brush.BrushFamily
 import androidx.ink.brush.BrushPaint
 import androidx.ink.brush.BrushTip
@@ -168,7 +173,15 @@ object SfxTextureBrush {
      */
     private fun buildTile(t: Texture): Bitmap {
         val img = ImageBitmap(TILE, TILE)
-        composeCanvas(img) {
+        // Compose 1.7 tidak punya fungsi Canvas(image) { DrawScope } seperti
+        // pada versi Compose yang lebih baru. Jalur resmi yang tersedia di
+        // 1.7.6 adalah CanvasDrawScope().draw(density, arah, canvas, size).
+        CanvasDrawScope().draw(
+            Density(1f),
+            LayoutDirection.Ltr,
+            composeCanvas(img),
+            Size(TILE.toFloat(), TILE.toFloat())
+        ) {
             when (t) {
                 Texture.SPATTER -> drawDab(0.42f, 1f, 0.85f)
                 Texture.RIBBON -> drawDab(0.50f, 0.55f, 0.95f)
