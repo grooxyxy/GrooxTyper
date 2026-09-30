@@ -508,6 +508,14 @@ private class EditorUiState {
     var isLoadingReference by mutableStateOf(false)
     var wandTolerance by mutableFloatStateOf(32f)
     var wandBusy by mutableStateOf(false)
+    /**
+     * Mode "Area Panel": ketukan wand membuat SATU area dari wilayah tempat
+     *user mengetuk (tanpa pemecahan watershed). Default false = mode bubble:
+     * yang bukan gelembung ditolak.
+     */
+    var bubbleAreaPanelMode by remember { mutableStateOf(false) }
+    /** Sakelar mode area bubble: wand membuat area, bukan seleksi biasa. */
+    var bubbleAreaMode by remember { mutableStateOf(true) }
     var strokeProgress by mutableStateOf(0f)
     var strokeLength by mutableStateOf(0f)
     var strokeIsHeal by mutableStateOf(false)
@@ -2354,6 +2362,12 @@ fun CanvasEditorScreen(
         val cx = cp.x.toInt()
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        // MODE AREA BUBBLE: satu ketukan = satu area yang terlihat, dan
+        // gelembung bersinggungan otomatis terpisah (pipeline watershed).
+        if (bubbleAreaMode) {
+            addBubbleAreaAt(cp)
+            return
+        }
         if (wandMode == "auto") {
             val hit = detectedBubbles
                 .mapIndexedNotNull { idx, b ->
@@ -2425,6 +2439,83 @@ fun CanvasEditorScreen(
                     wandBusy = false
                     if (msg != null) healError = msg
                     if (ok) refreshComposite()
+                }
+            }
+        }
+    }
+
+    /**
+     * Satu ketukan wand -> satu area bubble yang terlihat dan bernomor.
+     *
+     * Memakai [BubbleAreaPipeline]: flood dari titik ketuk, tolak kalau
+     * wilayahnya bocor ke tepi kanvas (berarti bukan gelembung), pisahkan
+     * gelembung yang bersinggungan dengan watershed, lalu tumbuhkan area
+     * kembali di dalam outline. Mode "Area Panel" membuat satu area dari
+     * wilayah tempat diketuk tanpa pemecahan.
+     *
+     * Menghapus area bila titik ketuk jatuh pada area yang sudah ada, jadi
+     * satu ketukan lagi membatalkan tanpa perlu tombol khusus.
+     */
+    fun addBubbleAreaAt(cp: Offset) {
+        if (wandBusy) return
+        // Ketuk area yang sudah ada = hapus area itu.
+        if (selectionEngine.removeBubbleAreaAt(cp.x, cp.y)) {
+            refreshComposite()
+            return
+        }
+        val w = compositeBitmap.width
+        val h = compositeBitmap.height
+        if (w <= 0 || h <= 0) return
+        val px = try {
+            IntArray(w * h).also { compositeBitmap.getPixels(it, 0, w, 0, 0, w, h) }
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            healError = "Area bubble OOM - kanvas terlalu besar"
+            return
+        } catch (e: Exception) {
+            e.printStackTrace()
+            healError = "Area bubble gagal baca kanvas"
+            return
+        }
+        val sx = cp.x.toInt().coerceIn(0, w - 1)
+        val sy = cp.y.toInt().coerceIn(0, h - 1)
+        wandBusy = true
+        scope.launch(Dispatchers.Default) {
+            var area: BubbleAreaPipeline.Area? = null
+            var err: String? = null
+            try {
+                val thr = (wandTolerance * 2.2f).coerceIn(4f, 160f)
+                val params = WandEngine.Params(
+                    threshold = WandEngine.thresholdForSrgb(thr, px[sy * w + sx])
+                )
+                area = BubbleAreaPipeline.areaAt(
+                    px, w, h, sx, sy, params,
+                    outScale = 1f, offX = 0f, offY = 0f,
+                    allowBorder = bubbleAreaPanelMode
+                )
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Area bubble OOM - area terlalu besar"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Area bubble gagal: ${e.message ?: "error"}"
+            } finally {
+                val done = area
+                val msg = err
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) {
+                        healError = msg
+                    } else if (done == null) {
+                        healError = if (bubbleAreaPanelMode) {
+                            "Tidak ada area di titik itu"
+                        } else {
+                            "bukan area bubble - ketuk di dalam gelembung"
+                        }
+                    } else {
+                        selectionEngine.addBubbleArea(done)
+                        refreshComposite()
+                    }
                 }
             }
         }

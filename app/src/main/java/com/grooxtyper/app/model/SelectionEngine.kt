@@ -143,6 +143,78 @@ class SelectionEngine(val width: Int, val height: Int) {
      */
     fun regionBoundsList(): List<RectF> = regionBounds.map { RectF(it) }
 
+    // ------------------------------------------------------------------
+    // Area bubble (hasil pipeline wand). Dipisahkan dari seleksi klasik
+    // (Oval/Rectangle/Lasso) supaya yang satu tak merusak yang lain: area
+    // bubble punya nomor, boleh banyak, dan punya jenis (bubble atau panel).
+    // ------------------------------------------------------------------
+
+    /** Daftar area bubble; state supaya overlay ikut digambar ulang. */
+    var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())
+        private set
+
+    /** Jumlah area yang sudah terisi teks (untuk panel). */
+    var bubbleAreaFilled by mutableStateOf(listOf<String>())
+        private set
+
+    /** Tambah satu area hasil ketukan wand; mengembalikan nomor urut (1..n). */
+    fun addBubbleArea(area: BubbleAreaPipeline.Area): Int {
+        bubbleAreaList = bubbleAreaList + area
+        bubbleAreaFilled = bubbleAreaFilled + ""
+        return bubbleAreasInReadingOrder().indexOf(area) + 1
+    }
+
+    /** Area dalam urutan baca manga: baris atas lebih dulu, kiri ke kanan. */
+    fun bubbleAreasInReadingOrder(): List<BubbleAreaPipeline.Area> {
+        val list = bubbleAreaList
+        if (list.size <= 1) return list
+        val rows = mutableListOf<MutableList<BubbleAreaPipeline.Area>>()
+        for (a in list.sortedBy { it.bounds.centerY() }) {
+            val row = rows.find { r ->
+                val h = kotlin.math.min(r[0].bounds.height(), a.bounds.height())
+                kotlin.math.abs(r[0].bounds.centerY() - a.bounds.centerY()) < h * 0.6f
+            }
+            if (row != null) row.add(a) else rows.add(mutableListOf(a))
+        }
+        return rows.flatMap { it.sortedByDescending { area -> area.bounds.centerX() } }
+    }
+
+    /** Hapus area yang tertimpa titik (x, y). True bila ada yang terhapus. */
+    fun removeBubbleAreaAt(x: Float, y: Float): Boolean {
+        val ordered = bubbleAreasInReadingOrder()
+        val idx = ordered.indexOfLast { it.bounds.contains(x, y) }
+        if (idx < 0) return false
+        val target = ordered[idx]
+        val list = bubbleAreaList.toMutableList()
+        list.remove(target)
+        bubbleAreaList = list
+        bubbleAreaFilled = bubbleAreaFilled.mapIndexed { i, _ ->
+            if (i < list.size) bubbleAreaFilled.getOrElse(i) { "" } else ""
+        }
+        return true
+    }
+
+    /** Buang semua area bubble (bukan seleksi klasik). */
+    fun clearBubbleAreas() {
+        bubbleAreaList = emptyList()
+        bubbleAreaFilled = emptyList()
+    }
+
+    /** Tandai teks pada area bernomor [nomor] (1..n). */
+    fun setBubbleAreaText(nomor: Int, text: String) {
+        if (nomor <= 0) return
+        val ordered = bubbleAreasInReadingOrder()
+        val idx = ordered.indexOf(nomor - 1)
+        if (idx < 0 || idx >= bubbleAreaFilled.size) return
+        bubbleAreaFilled = bubbleAreaFilled.toMutableList().also { it[idx] = text }
+    }
+
+    /** Area bernomor [nomor] (1..n) dalam urutan baca. */
+    fun bubbleAreaAt(nomor: Int): BubbleAreaPipeline.Area? {
+        val ordered = bubbleAreasInReadingOrder()
+        return if (nomor in 1..ordered.size) ordered[nomor - 1] else null
+    }
+
     /** Tambah oval sebagai SATU area baru (tap bubble menumpuk, multi-seleksi). */
     fun selectOval(rect: RectF) {
         val oval = Path()

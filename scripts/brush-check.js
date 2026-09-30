@@ -590,6 +590,15 @@ assert(wandEng.includes('fun maskFromBinary(') && wandEng.includes('fun threshol
 assert(selEng.includes('WandEngine.flood(') && selEng.includes('WandEngine.Params('), 'seleksi: selectWand memakai mesin baru');
 assert(!selEng.includes('ArrayDeque<Int>()') || selEng.includes('WandEngine'), 'seleksi: tak ada lagi stack piksel berbasis Integer di jalur wand');
 assert(!selEng.includes('val thr2 = maxDist * maxDist'), 'seleksi: jarak Euclidean RGB lama dibuang');
+// -- Multi-area bubble: daftar area bernomor di editor ---------------------
+assert(selEng.includes('fun addBubbleArea(') && selEng.includes('fun bubbleAreasInReadingOrder('), 'area bubble: multi-area disimpan di SelectionEngine');
+assert(selEng.includes('fun removeBubbleAreaAt(') && selEng.includes('fun clearBubbleAreas()'), 'area bubble: area bisa dihapus per ketukan dan sekaligus');
+assert(selEng.includes('var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())'), 'area bubble: daftar area adalah state (overlay ikut digambar ulang)');
+assert(selEng.includes('bubbleAreasInReadingOrder()') || selEng.includes('bubbleReadingOrder('), 'area bubble: nomor urut mengikuti urutan baca manga');
+assert(selEng.includes('bubbleAreasInReadingOrder') && selEng.includes('sortedBy'), 'area bubble: pengurutan baris implemented');
+assert(editor.includes('BubbleAreaPipeline.areaAt('), 'editor: ketukan wand memakai pipeline area bubble');
+assert(editor.includes('addBubbleArea(') && editor.includes('bukan area bubble'), 'editor: hasil ditambahkan (multi) dan pesan tolak ada');
+assert(editor.includes('bubbleAreaPanelMode') || editor.includes('allowBorder = bubbleAreaPanelMode'), 'editor: sakelar Area Panel diteruskan ke pipeline');
 assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
 assert(!selEng.includes('fun erodeByDistance(') && !selEng.includes('fun topLabels('), 'seleksi: helper erosi/label lama yang sudah tak dipakai dibuang');
 assert(wf.includes('XOR satu byte 0x5A') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range) lalu di-dekode XOR');
