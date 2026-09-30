@@ -127,6 +127,8 @@ import com.grooxtyper.app.ml.BubbleModel
 import com.grooxtyper.app.ml.AgnesKeyStore
 import com.grooxtyper.app.ml.readingOrder
 import com.grooxtyper.app.model.BrushEngine
+import com.grooxtyper.app.model.BubbleAreaPipeline
+import com.grooxtyper.app.model.WandEngine
 import com.grooxtyper.app.model.BrushHugeGuide
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
@@ -513,11 +515,11 @@ private class EditorUiState {
      *user mengetuk (tanpa pemecahan watershed). Default false = mode bubble:
      * yang bukan gelembung ditolak.
      */
-    var bubbleAreaPanelMode by remember { mutableStateOf(false) }
+    var bubbleAreaPanelMode by mutableStateOf(false)
     /** Sakelar mode area bubble: wand membuat area, bukan seleksi biasa. */
-    var bubbleAreaMode by remember { mutableStateOf(true) }
+    var bubbleAreaMode by mutableStateOf(true)
     /** Panel area bubble tampil. */
-    var showBubbleAreaPanel by remember { mutableStateOf(false) }
+    var showBubbleAreaPanel by mutableStateOf(false)
     var strokeProgress by mutableStateOf(0f)
     var strokeLength by mutableStateOf(0f)
     var strokeIsHeal by mutableStateOf(false)
@@ -2285,6 +2287,9 @@ fun CanvasEditorScreen(
     var wandMode by remember { mutableStateOf("manual") }
     var wandTolerance by uiState::wandTolerance
     var wandBusy by uiState::wandBusy
+    var bubbleAreaPanelMode by uiState::bubbleAreaPanelMode
+    var bubbleAreaMode by uiState::bubbleAreaMode
+    var showBubbleAreaPanel by uiState::showBubbleAreaPanel
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
 
     /**

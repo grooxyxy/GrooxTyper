@@ -30,6 +30,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.grooxtyper.app.model.BubbleAreaPipeline
 
+/** Warna panel dan aksen (Accent/PanelBg milik file lain, jadi didefinisikan
+ *  sendiri di sini agar file ini mandiri). */
+private val bAccent = Color(0xFFFF5722)
+private val bPanelBg = Color(0xFF1E1E1E)
+
 /**
  * Panel area bubble: daftar area bernomor hasil ketukan wand.
  *
@@ -56,7 +61,7 @@ fun BubbleAreaPanel(
             .fillMaxWidth()
             .height(260.dp)
             .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
-            .background(PanelBg)
+            .background(bPanelBg)
             .clickable(
                 interactionSource = androidx.compose.foundation.interaction.MutableInteractionSource(),
                 indication = null,
@@ -96,7 +101,7 @@ fun BubbleAreaPanel(
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(12.dp))
-                    .background(if (panelMode) Accent else Color(0xFF2C2C2E))
+                    .background(if (panelMode) bAccent else Color(0xFF2C2C2E))
                     .clickable { onPanelMode(!panelMode) }
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
@@ -183,7 +188,7 @@ fun BubbleAreaPanel(
                 onClick = onFillFromScript,
                 enabled = areas.isNotEmpty() && !busy,
                 modifier = Modifier.weight(1f),
-                colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                colors = ButtonDefaults.buttonColors(containerColor = bAccent)
             ) {
                 Text(
                     if (busy) "Memproses..." else "Isi Area",

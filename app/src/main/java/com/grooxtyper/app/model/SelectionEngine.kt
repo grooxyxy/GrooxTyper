@@ -185,12 +185,12 @@ class SelectionEngine(val width: Int, val height: Int) {
         val idx = ordered.indexOfLast { it.bounds.contains(x, y) }
         if (idx < 0) return false
         val target = ordered[idx]
-        val list = bubbleAreaList.toMutableList()
-        list.remove(target)
-        bubbleAreaList = list
-        bubbleAreaFilled = bubbleAreaFilled.mapIndexed { i, _ ->
-            if (i < list.size) bubbleAreaFilled.getOrElse(i) { "" } else ""
-        }
+        val idxRaw = bubbleAreaList.indexOf(target)
+        if (idxRaw < 0) return false
+        bubbleAreaList = bubbleAreaList.toMutableList().also { it.removeAt(idxRaw) }
+        val keep = bubbleAreaFilled.toMutableList()
+        if (idxRaw < keep.size) keep.removeAt(idxRaw)
+        bubbleAreaFilled = keep
         return true
     }
 
