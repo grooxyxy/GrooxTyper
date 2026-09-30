@@ -206,8 +206,8 @@ class SelectionEngine(val width: Int, val height: Int) {
     fun setBubbleAreaText(nomor: Int, text: String) {
         if (nomor <= 0) return
         val ordered = bubbleAreasInReadingOrder()
-        val idx = ordered.indexOf(nomor - 1)
-        if (idx < 0 || idx >= bubbleAreaFilled.size) return
+        val idx = nomor - 1
+        if (idx >= ordered.size || idx >= bubbleAreaFilled.size) return
         val next: MutableList<String> = bubbleAreaFilled.toMutableList()
         next[idx] = text
         bubbleAreaFilled = next
