@@ -6063,11 +6063,6 @@ fun CanvasEditorScreen(
                     )
                     .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
-            bubbleAreaMode = bubbleAreaMode,
-            onBubbleAreaMode = { bubbleAreaMode = it },
-            showBubbleAreaPanel = showBubbleAreaPanel,
-            onToggleAreaPanel = { showBubbleAreaPanel = !showBubbleAreaPanel },
-            areaCount = selectionEngine.bubbleAreaList.size
             ) {
                 Text(
                     "${selectionEngine.selectionCount} area — drag tambah, ketuk hapus",
