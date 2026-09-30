@@ -832,6 +832,39 @@ assert(genre.includes('private fun drawGrain('), 'jalur pori (drawGrain) ada di 
 assert(genre.includes('&& !grainOn) {'), 'renderFinal: jalur cepat tidak lagi menelan langkah pori');
 assert((genre.match(/drawGrain\(/g) || []).length >= 3, 'renderFinal: pori digambar di jalur bitmap sementara, jalur langsung, dan lewat helper');
 
+
+// ================== struktur if/else BrushEngine (kesalahan mahal) =====
+//
+// Kesalahan "saya coba 4 brush hasilnya sama" berasal dari satu baris
+// `} else {` yang berarti, dan tidak ada alat yang mengetahuinya. Gate
+// struktural ini menghitung kedalaman kurung kurawal supaya kurung
+// yang tak seimbang ketahuan sebelum CI.
+console.log('\n== Struktur if/else BrushEngine ==');
+{
+  const tanpaKomentar = brush
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ');
+  let depth = 0, minDepth = 0;
+  for (const c of tanpaKomentar) {
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth < minDepth) minDepth = depth; }
+  }
+  assert(depth === 0, 'BrushEngine: kurung kurawal seimbang (sisa ' + depth + ')');
+  assert(minDepth === 0, 'BrushEngine: tak ada kurung tutup berlebih (min ' + minDepth + ')');
+  // Hitung juga jumlah cabang if/else-if pada fungsi strokeSegmentOnLayer
+  // supaya cabang yang menggambar tak bisa hilang diam-diam.
+  const m = brush.match(/strokeSegmentOnLayer/g);
+  assert(m && m.length >= 1, 'BrushEngine: fungsi strokeSegmentOnLayer ada');
+  assert((brush.match(/sfxStroke\.push\(/g) || []).length === 1,
+    'BrushEngine: tepat satu pemanggilan sfxStroke.push (tak ada cabang kembar)');
+  assert((brush.match(/} else if \(sfxGenre != null\) \{/g) || []).length === 0,
+    'BrushEngine: tak ada lagi else-if SFX (SFX jadi cabang pertama)');
+  assert((brush.match(/if \(sfxGenre != null\) \{/g) || []).length === 1,
+    'BrushEngine: tepat satu cabang SFX');
+  assert(brush.includes('if (isHuge) {\n                sfxStroke.pushNoLive(sfxPts)'),
+    'BrushEngine: kanvas besar mengumpulkan titik SFX tanpa gambar langsung');
+}
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {

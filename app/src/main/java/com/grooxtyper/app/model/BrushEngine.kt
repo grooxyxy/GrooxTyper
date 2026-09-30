@@ -885,28 +885,6 @@ class BrushEngine {
             }
             canvas.drawPath(strokePath, paint)
         } else {
-            // ── Jalur SFX genre: pita (ribbon) dengan profil half-width
-            // per titik menurut genre, di-sample pada panjang busur supaya
-            // tekstur tidak berenang. Isi digambar langsung biar responsif;
-            // outline/bayangan/gradasi dirender utuh saat stroke selesai.
-            val sfxPts = ArrayList<Offset>(steps + 1)
-            sfxPts.add(curveStart)
-            for (i in 1..steps) {
-                val t = i / steps.toFloat()
-                val px: Float
-                val py: Float
-                if (ctrl != null) {
-                    val u = 1f - t
-                    px = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
-                    py = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
-                } else {
-                    px = curveStart.x + (curveEnd.x - curveStart.x) * t
-                    py = curveStart.y + (curveEnd.y - curveStart.y) * t
-                }
-                sfxPts.add(Offset(px, py))
-            }
-            sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))
-        } else {
             // Kuas ber-cap KOTAK (Marker/Flat): garis per-segmen terpisah
             // menyisakan takik/celah di tikungan (sambungan miter dihitung
             // per garis, bukan per path). Satu path kontinu = sambungan
