@@ -3,6 +3,7 @@ package com.grooxtyper.app.model
 import android.graphics.Path
 import android.graphics.RectF
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Pipeline "area bubble": satu ketukan wand di dalam gelembung menghasilkan SATU
