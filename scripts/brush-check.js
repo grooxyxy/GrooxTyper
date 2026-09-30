@@ -549,7 +549,11 @@ const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
   assert(areaPipe.includes('tiny[argMax] = true') || areaPipe.includes('peak[argMax]'), 'area bubble: gelembung kecil punya fallback inti');
   assert(areaPipe.includes('owner[i - 1] = me; queue[tail++] = i - 1'), 'area bubble: langkah 5 tumbuhkan geodesik di dalam mask asli');
   assert(areaPipe.includes('fun textColorFor(') && areaPipe.includes('sum / n > 128f'), 'area bubble: warna teks kontras dihitung dari isi area');
-  assert(areaPipe.includes('masks[k][seedIdx]') || areaPipe.includes('masks[chosenIdx][seedIdx]'), 'area bubble: area yang dikembalikan adalah yang memuat titik ketuk');
+  assert(/masks\[k\]\[seedIdx\]/.test(areaPipe), 'area bubble: area yang dikembalikan adalah yang memuat titik ketuk');
+  assert(areaPipe.includes('fun fillHoles(') && areaPipe.includes('WandEngine.labelComponents(bg, w, h, 1)'), 'area bubble: lubang (teks di dalam bubble) diisi agar satu gelembung = satu area');
+  assert(areaPipe.includes('fun nearestLightPixel(') && areaPipe.includes('lightSnap: Boolean = false'), 'area bubble: ketukan di atas teks bisa disnap ke kertas (mode bubble)');
+  assert(editor.includes('lightSnap = true'), 'editor: snap diaktifkan untuk mode area bubble');
+  assert(/var bubbleAreaMode by mutableStateOf\(false\)/.test(editor), 'editor: wand bawaannya seleksi klasik (bukan mode area bubble)');
   assert(editor.includes('downsampleForWand(raw, w, h)') && editor.includes('outScale = 1f / sample.scale'), 'editor: jalur area bubble memakai downsample 480px (tak OOM di kanvas besar)');
   assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
   // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.

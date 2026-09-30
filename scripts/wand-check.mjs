@@ -93,7 +93,27 @@ function labelComponents(bin, w, h, minPixels) {
  * @param px piksel grayscale (0..255, 255 = kertas putih)
  * @returns {null | Array<{pixels:Set<number>, box:number[]}>}
  */
-function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = false, atSeed = false } = {}) {
+function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = false, atSeed = false, lightSnap = false } = {}) {
+  // Snap ke kertas putih: kalau yang diketuk gelap (teks/garis dalam bubble),
+  // cari piksel terang terdekat di sekeliling lalu dari situ flood. Tanpa ini
+  // ketukan di atas teks memilih teks, bukan bubble.
+  if (lightSnap) {
+    const lum = (i) => px[i];
+    if (lum(seedY * w + seedX) <= 200) {
+      const maxR = Math.max(6, Math.round(Math.min(w, h) * 0.05));
+      outer:
+      for (let r = 1; r <= maxR; r++) {
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const nx = seedX + dx, ny = seedY + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            if (lum(ny * w + nx) > 200) { seedX = nx; seedY = ny; break outer; }
+          }
+        }
+      }
+    }
+  }
   const n = w * h;
   const seed = px[seedY * w + seedX];
   const thr = threshold / 255;
@@ -148,7 +168,37 @@ function bubbleAreaAt(px, w, h, seedX, seedY, { threshold = 15, allowBorder = fa
   }
   if (count < 20) return null;
 
+  // 2a) Isi lubang: teks dan garis di dalam gelembung memecah interior jadi
+  // beberapa wilayah, padahal user meminta SATU area bubble. Cara benar:
+  // labeli LATAR (komplemen mask); komponen latar yang tak menyentuh tepi
+  // kanvas adalah lubang, jadi isikan dengan true. Menglabeli mask itu
+  // sendiri (seperti percobaan pertama) tidak mengisi apa pun.
+  {
+    const bg = new Uint8Array(n);
+    for (let i = 0; i < n; i++) bg[i] = bin[i] ? 0 : 1;
+    const labBg = labelComponents(bg, w, h, 1).lab;
+    let labelCount = 0;
+    for (const l of labBg) if (l > labelCount) labelCount = l;
+    const isBackground = new Uint8Array(labelCount + 1);
+    for (let x = 0; x < w; x++) {
+      isBackground[labBg[x]] = 1;
+      isBackground[labBg[(h - 1) * w + x]] = 1;
+    }
+    for (let y = 0; y < h; y++) {
+      isBackground[labBg[y * w]] = 1;
+      isBackground[labBg[y * w + w - 1]] = 1;
+    }
+    let added = 0;
+    for (let i = 0; i < n; i++) {
+      const l = labBg[i];
+      if (l !== 0 && !isBackground[l] && bin[i] === 0) { bin[i] = 1; added++; }
+    }
+    if (added > 0) count += added;
+  }
+
   // 2) Komponen seed + cek tepi (menolak "bukan area bubble").
+  //    Dilakukan SESUDAH pengisian lubang: label yang dihitung sebelum itu basi
+  //    dan akan membuang piksel yang baru saja diisi.
   const { lab, count: labCount } = labelComponents(bin, w, h, 4);
   if (labCount < 1) return null;
   const seedLabel = lab[seedY * w + seedX];
@@ -428,7 +478,94 @@ console.log('== Kasus 6 (tambahan): halaman tanpa gelembung ==');
   else bad('kertas polos seharusnya ditolak');
 }
 
+console.log('== Kasus 7: tongkat sihir klasik di halaman komik ==');
+{
+  // Cermin SelectionEngine.selectWand + WandEngine.flood: flood toleransi tetap
+  // di dalam outline hitam, lalu kontur jadi SATU area seleksi.
+  const w = 480, h = 640;
+  const px = page(w, h);
+  // Dinding panel (hitam) + bubble di dalamnya: tanpa dinding, kertas putih
+  // semua tersambung dan wand akan mengambil separuh halaman.
+  for (let y = 40; y < 600; y++) for (let x = 40; x < 440; x++) {
+    const onEdge = x < 46 || x > 433 || y < 46 || y > 593;
+    if (onEdge) px[y * w + x] = 0;
+  }
+  ring(px, w, h, 240, 200, 90, 5);
+  ring(px, w, h, 240, 420, 80, 5);
+  // Teks di dalam bubble (hitam) tidak boleh memecah seleksi.
+  for (let y = 190; y < 210; y++) for (let x = 190; x < 290; x++) px[y * w + x] = 0;
+
+  const res = bubbleAreaAt(px, w, h, 240, 170, { threshold: 15 });
+  if (!res || res.length !== 1) bad('wanMarsh klasik: hope-nya tepat 1 area, dapat ' + (res ? res.length : 0));
+  else {
+    const truth = discMask(w, h, 240, 200, 85);
+    const got = new Set(res[0].pixels);
+    const i = iouSet(got, truth);
+    if (i < 0.85) bad('IoU ' + i.toFixed(3) + ' < 0.85 (kotak ' + JSON.stringify(res[0].box) + ')');
+    else ok('IoU ' + i.toFixed(3) + ' (kotak ' + JSON.stringify(res[0].box) + ')');
+    if (res[0].box[2] - res[0].box[0] > 220) bad('seleksi meluber keluar bubble (lebar ' + (res[0].box[2] - res[0].box[0]) + ')');
+    else ok('seleksi tetap di dalam outline');
+  }
+  // Ketuk gelembung kedua pada halaman yang sama: area terpisah.
+  const res2 = bubbleAreaAt(px, w, h, 240, 400, { threshold: 15, atSeed: true });
+  if (!res2 || res2[0].box[0] > 320) bad('ketuk gelembung bawah menghasilkan ' + (res2 ? JSON.stringify(res2[0].box) : 'null'));
+  else ok('ketuk gelembung kedua -> ' + JSON.stringify(res2[0].box));
+}
+
+console.log('== Kasus 7b: menyentuh TEKS hitam di dalam bubble ==');
+{
+  // Ini yang diketuk user di aplikasi: jarinya jatuh di atas teks/garis, bukan
+  // di kertas putih. Tanpa snap, seleksi jadi teks (hitam) yang tak berguna.
+  const w = 300, h = 300;
+  const px = page(w, h);
+  ring(px, w, h, 150, 150, 70, 5);
+  for (let y = 140; y < 160; y++) for (let x = 110; x < 190; x++) px[y * w + x] = 0;
+
+  // Tanpa snap: flood dari teks memilih TEKS itu sendiri (benar secara
+  // algoritma flood, salah untuk kebutuhan user). Isi lubang tidak menolong
+  // karena interior bubble tersambung ke luar lewat outline yang tak terpilih.
+  const truth = discMask(w, h, 150, 150, 65);
+  const tanpa = bubbleAreaAt(px, w, h, 150, 150, { threshold: 15, atSeed: true });
+  if (!tanpa) bad('tanpa snap: tidak menghasilkan area');
+  else {
+    const lebar = tanpa[0].box[2] - tanpa[0].box[0];
+    if (lebar > 130) bad('tanpa snap seharusnya memilih teks (lebar ' + lebar + '), bukan bubble');
+    else ok('tanpa snap memilih teks (lebar ' + lebar + ')');
+  }
+  // Dengan snap (mode bubble): seed pindah ke kertas putih terdekat, hasilnya
+  // bubble utuh termasuk teksnya.
+  const dengan = bubbleAreaAt(px, w, h, 150, 150, { threshold: 15, atSeed: true, lightSnap: true });
+  if (!dengan) bad('dengan snap: tidak menghasilkan area');
+  else {
+    const i = iouSet(new Set(dengan[0].pixels), truth);
+    if (i < 0.85) bad('IoU dengan snap ' + i.toFixed(3) + ' < 0.85 (kotak ' + JSON.stringify(dengan[0].box) + ')');
+    else ok('snap ke kertas putih memberi bubble utuh (IoU ' + i.toFixed(3) + ')');
+  }
+}
+
+console.log('== Kasus 8: toleransi longgar tetap di dalam outline ==');
+{
+  const w = 300, h = 300;
+  const px = page(w, h);
+  ring(px, w, h, 150, 150, 60, 4);
+  // Toleransi 60/255 pada metrik linear: longgar, tapi outline hitam 4px tetap
+  // jadi batas. Inilah yang membuat wand berguna di halaman komik.
+  const res = bubbleAreaAt(px, w, h, 150, 150, { threshold: 60, atSeed: true });
+  if (!res) bad('toleransi 60 membuat area hilang');
+  else {
+    const bw = res[0].box[2] - res[0].box[0];
+    const bh = res[0].box[3] - res[0].box[1];
+    if (bw > 125 || bh > 125) bad('toleransi 60 menembus outline (kotak ' + bw + 'x' + bh + ')');
+    else ok('toleransi 60 tetap di dalam outline (' + bw + 'x' + bh + ')');
+  }
+  // Toleransi ekstrem = seluruh halaman terpilih lalu DITOLAK mode bubble
+  // (menyentuh tepi kanvas). Ini perilaku flood yang benar, bukan bug.
+  const bebas = bubbleAreaAt(px, w, h, 150, 150, { threshold: 250, allowBorder: true, atSeed: true });
+  if (!bebas) bad('mode panel dengan toleransi ekstrem harus menerima area');
+  else ok('toleransi ekstrem di mode panel: 1 area (' + bebas[0].pixels.length + ' piksel)');
+}
+
 console.log(fails === 0
-  ? '\nwand-check PASSED: 6 kasus pipeline area bubble sesuai ground truth'
+  ? '\nwand-check PASSED: 8 kasus (area bubble + tongkat sihir klasik) sesuai ground truth'
   : '\nwand-check FAILED: ' + fails + ' masalah');
 process.exit(fails === 0 ? 0 : 1);

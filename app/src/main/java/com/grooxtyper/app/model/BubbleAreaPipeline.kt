@@ -77,27 +77,40 @@ object BubbleAreaPipeline {
         outScale: Float = 1f,
         offX: Float = 0f,
         offY: Float = 0f,
-        allowBorder: Boolean = false
+        allowBorder: Boolean = false,
+        lightSnap: Boolean = false
     ): Area? {
         if (w <= 0 || h <= 0 || px.size < w * h) return null
         if (seedX !in 0 until w || seedY !in 0 until h) return null
-        val mask = WandEngine.flood(px, w, h, seedX, seedY, params) ?: return null
+        // Mode bubble: user's jaralah sering jatuh di atas TEKS, bukan di
+        // kertas. Flood dari teks akan memilih teks itu sendiri (benar secara
+        // algoritma, salah untuk kebutuhan), jadi seed dipindahkan ke piksel
+        // terang terdekat lebih dulu.
+        val seed = if (lightSnap) nearestLightPixel(px, w, h, seedX, seedY) else seedX to seedY
+        val mask = WandEngine.flood(px, w, h, seed.first, seed.second, params) ?: return null
         if (mask.pixels < MIN_AREA_PIXELS) return null
         val bin = mask.toBinary()
 
-        // 2) Komponen seed + deteksi tepi.
+        // 2) Isi lubang: teks dan garis di dalam gelembung memecah interior
+        //    menjadi beberapa wilayah, padahal yang diminta SATU area bubble.
+        //    Cara benar: labeli LATAR (komplemen mask); komponen latar yang tak
+        //    menyentuh tepi kanvas adalah lubang lalu diisi. Melabeli mask itu
+        //    sendiri (seperti percobaan pertama) tidak mengisi apa pun.
+        fillHoles(bin, w, h)
+        // 3) Komponen seed + deteksi tepi. Dilakukan SESUDAH isi lubang,
+        //    karena label yang dihitung lebih awal basi.
         val labels = IntArray(w * h)
-        val seedLabel = labelComponent(bin, labels, w, h, seedY * w + seedX) ?: return null
+        val seedLabel = labelComponent(bin, labels, w, h, seed.second * w + seed.first) ?: return null
         if (!allowBorder && touchesBorder(labels, w, h, seedLabel)) return null
 
-        // 3) Batasi ke komponen seed.
+        // 4) Batasi ke komponen seed.
         var count = 0
         for (i in bin.indices) {
             if (labels[i] == seedLabel) count++ else bin[i] = false
         }
         if (count < MIN_AREA_PIXELS) return null
 
-        // 4) Distance transform + puncak.
+        // 5) Distance transform + puncak.
         val dist = WandEngine.distanceTransform(bin, w, h)
         var maxD = 0f
         var argMax = -1
@@ -136,7 +149,7 @@ object BubbleAreaPipeline {
         }
         if (coreCount < 1) return null
 
-        // 5) Tumbuhkan geodesik di dalam mask asli.
+        // 6) Tumbuhkan geodesik di dalam mask asli.
         val owner = IntArray(w * h)
         val queue = IntArray(w * h)
         var head = 0
@@ -158,7 +171,7 @@ object BubbleAreaPipeline {
             if (y < h - 1 && owner[i + w] == 0 && bin[i + w]) { owner[i + w] = me; queue[tail++] = i + w }
         }
 
-        // 6) Kumpulkan tiap wilayah jadi satu area.
+        // 7) Kumpulkan tiap wilayah jadi satu area.
         val groups = HashMap<Int, IntArray>()
         val sizes = HashMap<Int, Int>()
         for (i in owner.indices) {
@@ -199,7 +212,7 @@ object BubbleAreaPipeline {
         // wilayah terbesar. Mengembalikan yang terbesar selalu salah: saat dua
         // gelembung bersinggungan, mengetuk gelembung kedua akan mendapat kotak
         // gelembung pertama (persis yang tertangkap uji kasus 2b).
-        val seedIdx = seedY * w + seedX
+        val seedIdx = seed.second * w + seed.first
         val ownerSeed = owner[seedIdx]
         val chosenIdx = (0 until boxes.size).firstOrNull { k ->
             masks[k][seedIdx]
@@ -232,11 +245,71 @@ object BubbleAreaPipeline {
         for (seed in seeds) {
             val sx = seed % w
             val sy = seed / w
-            val a = areaAt(px, w, h, sx, sy, params, outScale, offX, offY, allowBorder) ?: continue
+            val a = areaAt(
+                px, w, h, sx, sy, params, outScale, offX, offY, allowBorder, lightSnap = allowBorder
+            ) ?: continue
             if (out.any { RectF.intersects(it.bounds, a.bounds) }) continue
             out.add(a)
         }
         return out
+    }
+
+    /**
+     * Piksel terang (kertas) terdekat dari (x, y) dalam radius maksimal 5% sisi
+     * terpendek. Dipakai mode bubble agar ketukan di atas teks tetap memilih
+     * gelembung.
+     */
+    private fun nearestLightPixel(
+        px: IntArray, w: Int, h: Int, x: Int, y: Int
+    ): Pair<Int, Int> {
+        if (lightness(px, y * w + x) > LIGHT_SEED_LEVEL) return x to y
+        val maxR = max(6, min(w, h) / 20)
+        for (r in 1..maxR) {
+            for (dy in -r..r) {
+                for (dx in -r..r) {
+                    if (max(kotlin.math.abs(dx), kotlin.math.abs(dy)) != r) continue
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+                    if (lightness(px, ny * w + nx) > LIGHT_SEED_LEVEL) return nx to ny
+                }
+            }
+        }
+        return x to y
+    }
+
+    /** Ambang kecerahan (0..255) yang dianggap kertas/bubble. */
+    private const val LIGHT_SEED_LEVEL = 200
+
+    private fun lightness(px: IntArray, i: Int): Int {
+        val p = px[i]
+        return (0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) +
+            0.114f * (p and 0xFF)).toInt()
+    }
+
+    /**
+     * Isi semua lubang: komponen LATAR yang tidak menyentuh tepi kanvas diubah
+     * jadi "dalam". Efeknya teks dan garis di dalam gelembung ikut menjadi satu
+     * area dengan kertasnya, persis yang dibutuhkan saat memilih gelembung.
+     */
+    private fun fillHoles(bin: BooleanArray, w: Int, h: Int) {
+        val n = w * h
+        val bg = BooleanArray(n)
+        for (i in 0 until n) bg[i] = !bin[i]
+        val (lab, labels) = WandEngine.labelComponents(bg, w, h, 1)
+        val isBackground = BooleanArray(labels + 1)
+        for (x in 0 until w) {
+            isBackground[lab[x]] = true
+            isBackground[lab[(h - 1) * w + x]] = true
+        }
+        for (y in 0 until h) {
+            isBackground[lab[y * w]] = true
+            isBackground[lab[y * w + w - 1]] = true
+        }
+        for (i in 0 until n) {
+            val l = lab[i]
+            if (l != 0 && !isBackground[l]) bin[i] = true
+        }
     }
 
     /** Label komponen yang memuat [start]; null bila piksel itu di luar mask. */

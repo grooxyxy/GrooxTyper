@@ -517,7 +517,12 @@ private class EditorUiState {
      */
     var bubbleAreaPanelMode by mutableStateOf(false)
     /** Sakelar mode area bubble: wand membuat area, bukan seleksi biasa. */
-    var bubbleAreaMode by mutableStateOf(true)
+    /**
+     * Mode area bubble MATI secara bawaan: wand harus berperilaku seperti
+     * tongkat sihir Photoshop (ketuk -> seleksi) karena itu yang diharapkan
+     * pengguna. Sakelar di panel wand menyalakan pembuatan area bernomor.
+     */
+    var bubbleAreaMode by mutableStateOf(false)
     /** Panel area bubble tampil. */
     var showBubbleAreaPanel by mutableStateOf(false)
     var strokeProgress by mutableStateOf(0f)
@@ -2413,7 +2418,8 @@ fun CanvasEditorScreen(
                 area = BubbleAreaPipeline.areaAt(
                     px, w2, h2, sx, sy, params,
                     outScale = 1f / sample.scale, offX = 0f, offY = 0f,
-                    allowBorder = bubbleAreaPanelMode
+                    allowBorder = bubbleAreaPanelMode,
+                    lightSnap = true
                 )
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
