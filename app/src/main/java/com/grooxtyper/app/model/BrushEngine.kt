@@ -832,7 +832,43 @@ class BrushEngine {
             }
         } else null
 
-        if (isHuge) {
+        if (sfxGenre != null) {
+            // ── Jalur SFX genre: pita (ribbon) dengan profil half-width
+            // per titik menurut genre, di-sample pada panjang busur supaya
+            // tekstur tidak berenang.
+            //
+            // PERHATIKAN urutan cabang: SFX diperiksa SEBELUM isHuge. Dulu
+            // urutannya terbalik, sehingga di kanvas besar (>4 juta piksel,
+            // yaitu semua halaman webtoon) keempat genre SFX digambar sebagai
+            // goresan polos biasa dan user melaporkan "brush tetap sama".
+            //
+            // Di kanvas besar, pita tak digambar ulang per segmen (mahal),
+            // hanya titiknya dikumpulkan. Goresan utuh (bayangan, outline
+            // dua lapis, gradasi, dan pori bertekstur) digambar sekali di
+            // [GenreBrushEngine.Stroke.renderFinal] saat jari lifted. Hasilnya
+            // sama dengan kanvas biasa.
+            val sfxPts = ArrayList<Offset>(steps + 1)
+            sfxPts.add(curveStart)
+            for (i in 1..steps) {
+                val t = i / steps.toFloat()
+                val px: Float
+                val py: Float
+                if (ctrl != null) {
+                    val u = 1f - t
+                    px = u * u * curveStart.x + 2f * u * t * ctrl.x + t * t * curveEnd.x
+                    py = u * u * curveStart.y + 2f * u * t * ctrl.y + t * t * curveEnd.y
+                } else {
+                    px = curveStart.x + (curveEnd.x - curveStart.x) * t
+                    py = curveStart.y + (curveEnd.y - curveStart.y) * t
+                }
+                sfxPts.add(Offset(px, py))
+            }
+            if (isHuge) {
+                sfxStroke.pushNoLive(sfxPts)
+            } else {
+                sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))
+            }
+        } else if (isHuge) {
             // Huge 720x16000: SATU drawPath per segmen menggantikan loop 32
             // drawLine. Skia me-raster seluruh kurva kuadratik dalam satu pass
             // (presisi penuh, tanpa sampling dab) → 10-30x lebih sedikit
@@ -847,11 +883,8 @@ class BrushEngine {
             } else {
                 strokePath.lineTo(curveEnd.x, curveEnd.y)
             }
-            // Kanvas jumbo: SATU drawPath per segmen untuk semua kuas
-            // (termasuk SFX — stamp per-dab terlalu berat di sini; goresan
-            // tetap polos, rata, dan tanpa celah karena cap membulat).
             canvas.drawPath(strokePath, paint)
-        } else if (sfxGenre != null) {
+        } else {
             // ── Jalur SFX genre: pita (ribbon) dengan profil half-width
             // per titik menurut genre, di-sample pada panjang busur supaya
             // tekstur tidak berenang. Isi digambar langsung biar responsif;

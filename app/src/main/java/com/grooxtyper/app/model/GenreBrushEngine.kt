@@ -304,6 +304,37 @@ object GenreBrushEngine {
             discard()
         }
 
+        /**
+         * Tambah titik hasil interpolasi kurva TANPA menggambar apa pun.
+         *
+         * Dipakai di kanvas besar: per_segmen, pita SFX digambar ulang sebagai
+         * lusta path kecil, jadi biayanya terlalu mahal. Titik tetap dikumpulkan di
+         * sini, lalu [renderFinal] menggambar goresan utuh (bayangan, outline,
+         * gradasi, pori) sekali saat jari lifted. Hasil akhirnya sama dengan
+         * kanvas biasa, hanya selesai sedikit lebih lambat.
+         */
+        fun pushNoLive(pts: List<Offset>) {
+            if (!active) return
+            if (nPts == 0) {
+                val f = pts.firstOrNull() ?: return
+                xs.add(f.x); ys.add(f.y); arc[0] = 0f; nPts = 1
+            }
+            for (k in 1 until pts.size) {
+                val p = pts[k]
+                if (nPts >= MAX_PTS) compactPoints()
+                val lx = xs[nPts - 1]
+                val ly = ys[nPts - 1]
+                val dx = p.x - lx
+                val dy = p.y - ly
+                val d = sqrt(dx * dx + dy * dy)
+                if (d < 0.4f) continue
+                xs.add(p.x); ys.add(p.y)
+                length += d
+                arc[nPts] = length
+                nPts++
+            }
+        }
+
         /** Tambah titik hasil interpolasi kurva, lalu gambar isi goresan. */
         fun push(canvas: Canvas, pts: List<Offset>, speed: Float) {
             if (!active) return
@@ -489,7 +520,12 @@ object GenreBrushEngine {
             val shadowOn = st.shadowOn &&
                 (st.shadowBlur > 0.5f || abs(st.shadowDx) > 0.001f || abs(st.shadowDy) > 0.001f)
             val extras = extrasCount(genre, st.texture.coerceIn(0f, 1f)) > 0 || st.spatter > 0
-            if (!shadowOn && outline == null && !st.gradient && !extras) {
+            // Grain bertekstur juga butuh jalur berlapis: langkah tinta polos
+            // digambar lebih dulu, lalu pori ditumpuk di atasnya. Kalau jalur
+            // cepat di atas tetap mengambil cases tanpa grain, pori hilang
+            // tepat pada kanvas besar yang paling butuh pori.
+            val grainOn = st.grain.coerceIn(0f, 1f) >= 0.02f
+            if (!shadowOn && outline == null && !st.gradient && !extras && !grainOn) {
                 // Kasus sederhana: tanpa layering -> gambar langsung (cepat).
                 canvas.drawPath(ink, fillPaintFor(st, boundsOf(2f)))
                 return

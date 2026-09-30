@@ -812,6 +812,26 @@ assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(wandWin), 'kode jendela bebas karakt
 const oW = (wandWin.match(/\{/g) || []).length, cW = (wandWin.match(/\}/g) || []).length;
 assert(oW === cW, 'WandWindow: tanda kurawal seimbang (' + oW + '/' + cW + ')');
 
+
+// ============================ kuas SFX di kanvas besar (isHuge) ======
+console.log('\n== Kuas SFX di kanvas besar ==');
+const canvasTile = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/CanvasTile.kt'));
+assert(canvasTile.includes('const val HUGE_CANVAS_PIXELS = 4_000_000L'), 'ambang: kanvas besar di atas 4 juta piksel');
+assert(brush.includes('if (isHuge) {'), 'BrushEngine punya cabang isHuge');
+// Dua门槛 ini yang membuat keempat kuas SFXidentik di halaman webtoon:
+// cabang isHuge di Dahului cabang sfxGenre, jadi jalur SFX tak pernah jalan.
+const iSfx = brush.indexOf('if (sfxGenre != null) {');
+const iHuge = brush.indexOf('} else if (isHuge) {');
+assert(iSfx > 0 && iHuge > iSfx, 'BrushEngine: cabang SFX diperiksa sebelum cabang kanvas besar');
+assert(brush.includes('} else if (isHuge) {'), 'BrushEngine: SFX lebih dulu, baru optimasi kanvas besar');
+assert(!/Kanvas jumbo: SATU drawPath per segmen untuk semua kuas\n\s*\/\/ \(termasuk SFX/.test(brush), 'komentar tak lagi mengaku SFX digambar polos di kanvas besar');
+assert(brush.includes('sfxStroke.push(canvas, sfxPts, sfxSpeedFactor(distance))'), 'jalur SFX tetap memakai push pada kanvas besar');
+assert(genre.includes('fun pushNoLive('), 'Stroke punya push tanpa menggambar (kumpulator saja)');
+assert(genre.includes('fun renderFinal(canvas: Canvas)'), 'renderFinal menggambar goresan utuh (outline, bayangan, gradasi, pori)');
+assert(genre.includes('private fun drawGrain('), 'jalur pori (drawGrain) ada di mesin Stroke');
+assert(genre.includes('&& !grainOn) {'), 'renderFinal: jalur cepat tidak lagi menelan langkah pori');
+assert((genre.match(/drawGrain\(/g) || []).length >= 3, 'renderFinal: pori digambar di jalur bitmap sementara, jalur langsung, dan lewat helper');
+
 if (process.exitCode) {
   console.error('brush-check FAILED');
 } else {
