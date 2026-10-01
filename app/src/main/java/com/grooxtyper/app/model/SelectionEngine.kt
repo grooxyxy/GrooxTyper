@@ -120,6 +120,28 @@ class SelectionEngine(val width: Int, val height: Int) {
         }
     }
 
+    /**
+     * Tambah satu wilayah seleksi dari Path yang sudah tertutup.
+     *
+     * Dipakai [WandSelection] yang sudah membangun konturnya sendiri. Path
+     * di sini WAJIB tertutup (lihat [MaskContour]); path dari sub-path
+     * terpisah tidak bisa di-isi dan hanya akan muncul sebagai garis.
+     */
+    fun addRegionPath(region: Path, bounds: RectF) {
+        if (bounds.isEmpty || bounds.width() < 0.5f || bounds.height() < 0.5f) return
+        regions.add(region)
+        regionBounds.add(RectF(bounds))
+        rebuildUnion()
+    }
+
+    /** Buang semua wilayah seleksi. */
+    fun clearRegions() {
+        if (regions.isEmpty()) return
+        regions.clear()
+        regionBounds.clear()
+        rebuildUnion()
+    }
+
     private fun addRegion(region: Path) {
         val b = RectF()
         region.computeBounds(b, true)

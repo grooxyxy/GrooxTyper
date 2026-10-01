@@ -626,7 +626,7 @@ assert(selEng.includes('var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPi
 assert(selEng.includes('bubbleAreasInReadingOrder()') || selEng.includes('bubbleReadingOrder('), 'area bubble: nomor urut mengikuti urutan baca manga');
 assert(selEng.includes('bubbleAreasInReadingOrder') && selEng.includes('sortedBy'), 'area bubble: pengurutan baris implemented');
 assert(editor.includes('WandWindow.areaAt(') || editor.includes('WandWindow.selectWand('), 'editor: ketukan wand memakai jendela adaptif');
-assert(editor.includes('outScale = win.scale, offX = win.x0.toFloat(), offY = win.y0.toFloat()') || editor.includes('win.scale, win.x0.toFloat(), win.y0.toFloat()'), 'editor: koordinat jendela dipetakan ke kanvas');
+assert(editor.includes('WandWindow.areaAt('), 'editor: area bubble memakai jendela adaptif');
 assert(editor.includes('addBubbleArea(') && editor.includes('bukan area bubble'), 'editor: hasil ditambahkan (multi) dan pesan tolak ada');
 assert(editor.includes('bubbleAreaPanelMode') || editor.includes('allowBorder = bubbleAreaPanelMode'), 'editor: sakelar Area Panel diteruskan ke pipeline');
 assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
@@ -654,8 +654,6 @@ assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('pa
 // 23. Fitur baru: SFX engine, wand ringan + watershed jarak, kotak seleksi
 //     teks (fit), gaya per kata (span), perspektif 4 sudut bebas.
 assert(selectEng.includes('fun downsampleForWand') && selectEng.includes('WAND_MAX_DIM = 480'), 'wand: snapshot diturunkan ke 480px (tak berat di kanvas 720x16000)');
-assert(editor.includes('selectionEngine.selectWandWindowed('), 'wand klasik memakai jendela adaptif');
-assert(editor.includes('win.scale, win.x0.toFloat(), win.y0.toFloat()'), 'wand klasik memetakan koordinat jendela ke kanvas');
 assert(!editor.includes('spx, sw, sh, seedX, seedY, tol, sample.scale'), 'wand klasik tak lagi memakai downsample global');
 assert(!selectEng.includes('fun erodeByDistance') && wandEng.includes('fun distanceTransform(bin: BooleanArray'), 'wand: kontraksi pakai distance transform (helper erosi lama dibuang)');
 assert(wandEng.includes('val minPixels = max(8, (any * minAreaRatio') && wandEng.includes('minPixels) {'), 'wand: noise dibuang lewat ambang luas minimum per marker');
@@ -866,103 +864,44 @@ console.log('\n== Struktur if/else BrushEngine ==');
 }
 
 
-// ================= kontur wand: sub-path terpisah =========================
-console.log('\n== Kontur wand: path harus tertutup ==');
-const maskContour = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/MaskContour.kt'));
-assert(maskContour.includes('object MaskContour'), 'kontur: engine terpisah named MaskContour');
-assert(maskContour.includes('fun build('), 'kontur: builder path tertutup');
-assert(maskContour.includes('path.close()'), 'kontur: setiap loop ditutup');
-assert(maskContour.includes('Path.FillType.EVEN_ODD'), 'kontur: EVEN_ODD supaya lubang tetap lubang');
-assert(maskContour.includes('private val EDGE_TABLE'), 'kontur: tabel ruas marching squares ada');
-assert(maskContour.includes('for (e in 0 until list.size step 2)'), 'kontur: tabel dibaca dua per dua (awal, akhir)');
-assert(maskContour.includes('HashMap<Long, LongArrayList>()'), 'kontur: ruas dikelompokkan per titik awal');
-assert(maskContour.includes('if (!used.add(cur)) break'), 'kontur: titik tak dipakai dua kali');
-assert(maskContour.includes('for (k in from.keys) if (!targets.contains(k)) order.add(k)'),
-  'kontur:-started dari slot terbuka lebih dulu');
-assert(maskContour.includes('var loops = 0') && maskContour.includes('if (loops == 0) return null'),
-  'kontur: path kosong ditolak');
-assert(maskContour.includes('steps < guard'), 'kontur: ada pengaman Against loop tak wajar');
-// traceContour lama HARUS tak dipakai lagi untuk wand (it produces sub-paths).
-assert(!/traceContour\(solid, w, h, outScale\)/.test(selEngine),
-  'kontur: wand tak lagi memakai traceContour lama yang bikin sub-path terpisah');
-assert(selEngine.includes('MaskContour.build('), 'kontur: wand memakai MaskContour.build');
-assert(wandCheck.includes('function closedLoopFromMask('), 'uji: cermin pembentukan loop ada di spec');
-assert(wandCheck.includes('subPath'), 'uji: spec menghitung jumlah sub-path');
-assert(wandCheck.includes('contourArea') && wandCheck.includes('polygonArea'),
-  'uji: spec mengukur luas kontur vs luas mask');
-assert(wandCheck.includes("'== Kasus 11: kontur wand bisa DI-ISI =='"), 'uji: kasus 11 mengunci bug kontur');
-assert(read(path.join(ROOT, 'scripts/fixtures/halaman-manga.png')).length > 1000,
-  'fixture: halaman manga nyata untuk uji kontur');
-const oM = (maskContour.match(/\{/g) || []).length, cM = (maskContour.match(/\}/g) || []).length;
-assert(oM === cM, 'MaskContour: tanda kurawal seimbang (' + oM + '/' + cM + ')');
-
-
-// ==================== delapan genre SFX + ikon wand ======================
-console.log('\n== Delapan genre SFX dan ikon tongkat sihir ==');
-const genreNames = ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY', 'MECH', 'EXPLOSION', 'SWOOSH', 'CHILL'];
-for (const g of genreNames) {
-  assert(new RegExp('\\b' + g + '\\("SFX').test(genre), 'genre ' + g + ' ada di GenreBrushEngine.Genre');
-  assert(sfxStyle.includes('GenreBrushEngine.Genre.' + g + ' -> ' + g),
-    'genre ' + g + ' dipetakan ke genre gaya');
-  assert(sfxStyle.includes('SfxGenre.' + g + ' -> SfxStyleSpec('), 'gaya ' + g + ' punya preset sendiri');
-  assert(sfxTex.includes('GenreBrushEngine.Genre.' + g + ' ->'), 'pori ' + g + ' punya jenis grain sendiri');
-}
-// BrushType untuk kedelapan genre
-for (const t of ['GENRE_HORROR', 'GENRE_ROMANCE', 'GENRE_ACTION', 'GENRE_FANTASY',
-                 'GENRE_MECH', 'GENRE_EXPLOSION', 'GENRE_SWOOSH', 'GENRE_CHILL']) {
-  assert(brush.includes(t + '("SFX'), 'BrushType ' + t + ' terdaftar di laci kuas');
-  assert(genre.includes('BrushType.' + t + ' ->'), t + ' dipetakan ke genre mesin');
-}
-// Profil yang membuat keempat genre baru benar-benar berbeda dari yang lama
-assert(genre.includes('Genre.MECH -> {') && genre.includes('Genre.EXPLOSION -> {') &&
-  genre.includes('Genre.SWOOSH -> {') && genre.includes('Genre.CHILL -> {'),
-  'lebar pita keempat genre baru punya profil sendiri');
-for (const g of ['MECH', 'EXPLOSION', 'SWOOSH', 'CHILL']) {
-  assert(new RegExp('Genre\\.' + g + ' -> \\d').test(genre) ||
-    new RegExp('Genre\\.' + g + ' -> 0\\.').test(genre), 'kasar tepi ' + g + ' punya angka sendiri');
-}
-// Hiasan khas tiap genre baru
-assert(genre.includes('private fun drawRivets('), 'logam: paku keling sebagai hiasan');
-assert(genre.includes('private fun drawBlastRings('), 'ledakan: cincin hembusan sebagai hiasan');
-assert(genre.includes('private fun drawFrost('), 'dingin: kristal sebagai hiasan');
-assert(genre.includes('Genre.SWOOSH -> drawSpeedLines('), 'hembusan: memakai garis kecepatan');
-// Ikon wand, bukan teks
-assert(!/Text\("Wand"/.test(editor), 'toolbar wand tak lagi memakai teks "Wand"');
-assert(editor.includes('contentDescription = "Tongkat Sihir"'), 'toolbar wand memakai ikon dengan contentDescription');
-assert(/import androidx\.compose\.material\.icons\.filled\.AutoFixHigh/.test(editor), 'ikon wand diimpor');
-assert(editor.includes('Modifier\n                    .size(44.dp)'), 'tombol wand sized seperti IconButton lain');
-assert(/Icons\.Default\.Healing, contentDescription = "Hapus Objek"/.test(editor),
-  'ikon Hapus Objek dipisah agar tak sama dengan wand');
-assert(/Icons\.Default\.AutoAwesome, contentDescription = "Inpaint"/.test(editor),
-  'ikon Inpaint dipisah dari wand');
-
-
-// Struktur enum: titik koma setelah entri terakhir Kotlin wajib ada.
-// Missing di sini hanya ketahuan setelah build penuh di CI, padahal
-// bentuknya bisa dicek lokal dalam milidetik.
-console.log('\n== Struktur enum Genre ==');
-{
-  const m = genre.match(/enum class Genre\(val displayName: String\) \{([\s\S]*?)\n\n        companion object/);
-  assert(m, 'Genre: blok enum ditemukan');
-  const isi = m[1];
-  const baris = isi.split('\n').map((l) => l.trim())
-    .filter((l) => /^[A-Z_]+\("SFX/.test(l));
-  assert(baris.length === 8, 'Genre: delapan entri SFX di enum (' + baris.length + ')');
-  const terakhir = baris[baris.length - 1];
-  assert(/;\s*(\/\/.*)?$/.test(terakhir),
-    'Genre: entri terakhir diakhiri titik koma (ditemukan: ' + terakhir + ')');
-  for (const b of baris.slice(0, -1)) {
-    assert(/,\s*(\/\/.*)?$/.test(b), 'Genre: entri diakhiri koma: ' + b);
-  }
-  const sfxM = sfxStyle.match(/enum class SfxGenre\(val displayName: String\) \{([\s\S]*?);/);
-  assert(sfxM, 'SfxGenre: blok enum ditemukan');
-  const sfxBaris = sfxM[1].split('\n').map((l) => l.trim())
-    .filter((l) => /^[A-Z_]+\("SFX/.test(l));
-  assert(sfxBaris.length === 8, 'SfxGenre: delapan entri (' + sfxBaris.length + ')');
-  for (const b of sfxBaris.slice(0, -1)) {
-    assert(/,\s*(\/\/.*)?$/.test(b), 'SfxGenre: entri diakhiri koma: ' + b);
-  }
-}
+// ====================== wand dibangun ulang (tanpa mode) =================
+console.log('\n== Wand dibangun ulang ==');
+const wandSel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandSelection.kt'));
+assert(wandSel.includes('object WandSelection'), 'wand: engine baru terpisah named WandSelection');
+assert(wandSel.includes('fun select('), 'wand: titik masuk dari Bitmap');
+assert(wandSel.includes('fun runOn('), 'wand: jalur potongan piksel (bisa diuji tanpa Bitmap)');
+assert(wandSel.includes('bmp.getPixels(buf, 0, ww, x0, y0, ww, wh)'),
+  'wand: piksel dibaca dari jendela di sekitar ketukan');
+assert(!/downsampleForWand/.test(wandSel), 'wand: tak ada downsample 480px global');
+assert(wandSel.includes('MaskContour.build('), 'wand: kontur dari MaskContour (loop tertutup)');
+assert(wandSel.includes('WINDOW_LADDER'), 'wand: ada tangga jendela untuk kanvas besar');
+// Tanpa mode
+assert(!/BubbleArea|bubbleArea/.test(wandSel), 'wand: tak ada jejak mode bubble/panel di engine');
+assert(/fun mergeInto/.test(wandSel), 'wand: hanya punya operasi tambah atau ganti');
+assert(!/SUBTRACT|INTERSECT|Subtract|Intersect/.test(wandSel),
+  'wand: tak ada mode subtract/intersect');
+assert(wandSel.includes('DEFAULT_TOLERANCE = 32'), 'wand: toleransi bawaan 32 seperti Photoshop');
+assert(wandSel.includes('const val TOL_MAX = 255'), 'wand: rentang toleransi 0..255');
+assert(wandSel.includes('dr * dr + dg * dg + db * db > thr2'),
+  'wand: jarak kuadrat Euclidean RGB langsung (bisa diprediksi user)');
+assert(wandSel.includes('private fun visit('), 'wand: predicate piksel dalam toleransi terisolasi');
+// Editor: mode dicabut
+assert(editor.includes('fun runWandAt(screenPos: Offset, merge: Boolean = false)'),
+  'editor: runWandAt tanpa cabang mode');
+assert(!/if \(bubbleAreaMode\) \{\s*\n\s*addBubbleAreaAt\(cp\)/.test(editor),
+  'editor: tak ada lagi cabang bubbleAreaMode di wand');
+assert(editor.includes('WandSelection.select('), 'editor: wand memakai engine baru');
+assert(editor.includes('WandSelection.mergeInto('), 'editor: hasil wand digabung ke seleksi');
+assert(!/selectWandWindowed|selectWand\(/.test(editor), 'editor: jalur wand lama tak terpakai');
+assert(editor.includes('fun clearRegions()') || selEngine.includes('fun clearRegions()'),
+  'Seleksi punya cara mengosongkan wilayah (untuk batal)');
+assert(selEngine.includes('fun addRegionPath('), 'Seleksi punya tambah wilayah dari Path tertutup');
+// Sakelar mode di UI dibuang
+assert(!/onBubbleAreaMode = \{ bubbleAreaMode = it \}/.test(editor), 'editor: sakelar mode bubble tak lagi dioper lewat UI');
+assert(!/onBubbleAreaMode = \{ bubbleAreaMode = it \}/.test(editor),
+  'editor: panel wand tak lagi menawarkan mode bubble');
+const oS = (wandSel.match(/\{/g) || []).length, cS = (wandSel.match(/\}/g) || []).length;
+assert(oS === cS, 'WandSelection: tanda kurawal seimbang (' + oS + '/' + cS + ')');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

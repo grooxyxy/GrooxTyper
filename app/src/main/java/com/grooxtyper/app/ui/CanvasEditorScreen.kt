@@ -2512,81 +2512,63 @@ fun CanvasEditorScreen(
         return filledCount
     }
 
-    fun runWandAt(screenPos: Offset) {
+    /**
+     * Tongkat sihir: satu ketukan = satu seleksi.
+     *
+     * Tidak ada mode apa pun. Mode bubble/panel lama dicabut: watershed
+     * memecah wilayah yang seharusnya utuh, dan penolakan "bukan area
+     * bubble" gagal tepat di halaman webtoon yang wilayahnya memang besar.
+     *
+     * Tekan lagi di dalam seleksi yang sama = batal (mode ganti), tahan
+     * tombol shift saat mengetuk = tambah pada seleksi yang ada.
+     */
+    fun runWandAt(screenPos: Offset, merge: Boolean = false) {
         if (wandBusy) return
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
         val cx = cp.x.toInt()
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
-        // MODE AREA BUBBLE: satu ketukan = satu area yang terlihat, dan
-        // gelembung bersinggungan otomatis terpisah (pipeline watershed).
-        if (bubbleAreaMode) {
-            addBubbleAreaAt(cp)
-            return
-        }
-        if (wandMode == "auto") {
-            val hit = detectedBubbles
-                .mapIndexedNotNull { idx, b ->
-                    if (b.boundingBox.contains(cp.x, cp.y)) idx to (b.boundingBox.width() * b.boundingBox.height()) else null
-                }
-                .minByOrNull { it.second }?.first
-            if (hit != null) {
-                // Ketuk bubble = pecah bubble gabung (kasus webtoon: dua
-                // bubble menyatu terdeteksi satu kotak). Bila ternyata hanya
-                // satu bubble utuh, pilih utuh seperti biasa.
-                splitBubbleAt(detectedBubbles[hit].boundingBox)
-                return
-            }
-        }
         if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
-        // Piksel dibaca di dalam coroutine (bukan di Main) dan HANYA untuk
-        // jendela di sekitar ketukan. Versi lama membaca seluruh kanvas di
-        // Main: 720x16000 = 11,5 juta piksel = 46MB tiap ketukan.
+        val tol = wandTolerance.toInt().coerceIn(0, com.grooxtyper.app.model.WandSelection.TOL_MAX)
         wandBusy = true
         scope.launch(Dispatchers.Default) {
-            var added = false
+            var ok = false
             var err: String? = null
             try {
-                // Jendela di sekitar ketukan. Lihat WandWindow untuk bukti
-                // kenapa downsample 480px seluruh halaman merusak wand di kanvas webtoon.
-                val win = WandWindow.carve(compositeBitmap, cx, cy, 700)
-                    ?: WandWindow.carve(compositeBitmap, cx, cy, 300)
-                if (win == null) {
-                    err = "Wand: tak bisa membaca kanvas di titik itu"
+                val r = com.grooxtyper.app.model.WandSelection.select(
+                    compositeBitmap, cx, cy, tol
+                )
+                if (r == null) {
+                    err = "Wand: tak ada area warna mirip di titik itu - naikkan toleransi"
                 } else {
-                    val sx = ((cx - win.x0) * win.scale).toInt()
-                        .coerceIn(0, win.w - 1)
-                    val sy = ((cy - win.y0) * win.scale).toInt()
-                        .coerceIn(0, win.h - 1)
-                    val tol = if (wandMode == "auto") {
-                        selectionEngine.autoTolerance(win.px, win.w, win.h, sx, sy)
+                    // Ketuk di dalam seleksi yang sama = batal selections.
+                    if (!merge && selectionEngine.hasSelection) {
+                        val b = selectionEngine.selectionBounds()
+                        if (b != null && b.contains(cp.x.toFloat(), cp.y.toFloat())) {
+                            selectionEngine.clearRegions()
+                        } else {
+                            com.grooxtyper.app.model.WandSelection.mergeInto(
+                                selectionEngine, r, false
+                            )
+                        }
                     } else {
-                        (wandTolerance * 2.2f).coerceIn(0f, 220f)
+                        com.grooxtyper.app.model.WandSelection.mergeInto(selectionEngine, r, merge)
                     }
-                    val params = WandEngine.Params(
-                        threshold = WandEngine.thresholdForSrgb(tol, win.px[sy * win.w + sx])
-                    )
-                    // Path dihitung dari jendela, lalu digeser Offset supaya
-                    // kembali ke koordinat kanvas penuh.
-                    added = selectionEngine.selectWandWindowed(
-                        win.px, win.w, win.h, sx, sy, params,
-                        win.scale, win.x0.toFloat(), win.y0.toFloat()
-                    )
-                    if (!added) err = "Wand: tak ada area cocok - naikkan toleransi / ketuk area lain"
+                    ok = true
                 }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
-                err = "Wand OOM — coba toleransi lebih kecil"
+                err = "Wand OOM - kurangi toleransi"
             } catch (e: Exception) {
                 e.printStackTrace()
                 err = "Wand gagal: ${e.message ?: "error"}"
             } finally {
                 val msg = err
-                val ok = added
+                val berhasil = ok
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     wandBusy = false
                     if (msg != null) healError = msg
-                    if (ok) refreshComposite()
+                    if (berhasil) refreshComposite()
                 }
             }
         }
@@ -6034,16 +6016,9 @@ fun CanvasEditorScreen(
         if (activeTool == ActiveTool.SELECT_WAND) {
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                 WandSettingsBar(
-                    wandMode = wandMode,
-                    onMode = { wandMode = it },
                     wandTolerance = wandTolerance,
                     onTolerance = { wandTolerance = it },
-                    wandBusy = wandBusy,
-                    bubbleAreaMode = bubbleAreaMode,
-                    onBubbleAreaMode = { bubbleAreaMode = it },
-                    showBubbleAreaPanel = showBubbleAreaPanel,
-                    onToggleAreaPanel = { showBubbleAreaPanel = !showBubbleAreaPanel },
-                    areaCount = selectionEngine.bubbleAreaList.size
+                    wandBusy = wandBusy
                 )
             }
         }
@@ -6881,16 +6856,9 @@ fun CanvasEditorScreen(
  */
 @Composable
 private fun WandSettingsBar(
-    wandMode: String,
-    onMode: (String) -> Unit,
     wandTolerance: Float,
     onTolerance: (Float) -> Unit,
-    wandBusy: Boolean,
-    bubbleAreaMode: Boolean,
-    onBubbleAreaMode: (Boolean) -> Unit,
-    showBubbleAreaPanel: Boolean,
-    onToggleAreaPanel: () -> Unit,
-    areaCount: Int
+    wandBusy: Boolean
 ) {
     Column(
         modifier = Modifier
