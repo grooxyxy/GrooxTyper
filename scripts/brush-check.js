@@ -465,7 +465,8 @@ const selectEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mod
 assert(editor.includes('SELECT_WAND,'), 'wand: ActiveTool.SELECT_WAND terdaftar');
 assert(selectEng.includes('fun selectWand(') && selectEng.includes('fun traceContour(') && selectEng.includes('fun autoTolerance('), 'wand: flood fill + marching squares + toleransi otomatis di SelectionEngine');
 assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), 'wand: tap-vs-geser dibedakan (seleksi hanya saat ketuk)');
-assert(editor.includes('"Manual"') && editor.includes('"Otomatis"') && editor.includes('wandTolerance') && editor.includes('wandMode == "auto"'), 'wand: bar pengaturan mode Manual/Otomatis + slider toleransi');
+assert(editor.includes('"Toleransi"') && editor.includes('wandTolerance') && editor.includes('valueRange = 0f..100f'), 'wand: panel hanya slider toleransi (mode dicabut)');
+assert(!editor.includes('listOf("manual" to "Manual"'), 'wand: mode Manual/Otomatis tak lagi ada');
 assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
 assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung (kasus webtoon)');
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('WandEngine.splitBubbles('), 'wand-otomatis: watershed berbasis puncak distance transform (bukan erosi 1px per iterasi)');
@@ -902,6 +903,38 @@ assert(!/onBubbleAreaMode = \{ bubbleAreaMode = it \}/.test(editor),
   'editor: panel wand tak lagi menawarkan mode bubble');
 const oS = (wandSel.match(/\{/g) || []).length, cS = (wandSel.match(/\}/g) || []).length;
 assert(oS === cS, 'WandSelection: tanda kurawal seimbang (' + oS + '/' + cS + ')');
+
+
+// ======UI wand: composable harus sinkron dengan parameter formal =======
+console.log('\n== UI wand: parameter dan isi sinkron ==');
+{
+  // Build gagal dua kali karena isi composable masih memakai parameter yang
+  // sudah dihapus dari signature-nya. Pemeriksaan ini membuat kelas
+  // kesalahan itu terlihat lokal.
+  const i0 = editor.indexOf('private fun WandSettingsBar(');
+  assert(i0 > 0, 'UI wand: composable WandSettingsBar ada');
+  const i1 = editor.indexOf('\n) {', i0);
+  const sig = editor.slice(i0, i1);
+  const isi = editor.slice(i1);
+  const formal = [];
+  for (const baris of sig.split('\n').slice(1)) {
+    const m = baris.match(/^\s{4}([a-zA-Z][a-zA-Z0-9]*)\s*:/);
+    if (m) formal.push(m[1]);
+  }
+  const isiSampai = isi.slice(0, isi.indexOf('\n@') > 0 ? isi.indexOf('\n@') : 4000);
+  for (const f of formal) {
+    assert(isiSampai.includes(f), 'UI wand: isi memakai parameter ' + f);
+  }
+  // Parameter yang tak ada di signature tak boleh dipakai di isi.
+  const namaLama = ['onMode', 'onBubbleAreaMode', 'onToggleAreaPanel', 'areaCount',
+                    'showBubbleAreaPanel', 'bubbleAreaMode', 'wandMode'];
+  for (const n of namaLama) {
+    if (formal.includes(n)) continue;
+    assert(!new RegExp('\\b' + n + '\\b').test(isiSampai),
+      'UI wand: tak ada lagi referensi ke ' + n + ' yang sudah dibuang');
+  }
+  assert(formal.length === 3, 'UI wand: signature tinggal 3 parameter (' + formal.length + ')');
+}
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

@@ -6873,83 +6873,45 @@ private fun WandSettingsBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        // Baris tunggal: ikon + slider toleransi + nomornya. Mode
+        // Manual/Otomatis, "Area Bubble", dan "Panel Area" semuanya
+        // dicabut; wand kini hanya satu perilaku: ketuk area warna mirip.
         Row(verticalAlignment = Alignment.CenterVertically) {
-            listOf("manual" to "Manual", "auto" to "Otomatis").forEach { (mode, label) ->
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (wandMode == mode) Accent else Color.Transparent)
-                        .clickable { onMode(mode) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+            Icon(
+                Icons.Default.AutoFixHigh,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(18.dp)
+            )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                if (wandBusy) "Memproses…"
-                else if (bubbleAreaMode) "Ketuk gelembung = tambah area"
-                else if (wandMode == "auto") "Ketuk bubble gabung = pecah jadi 2"
-                else "Ketuk area warna mirip",
-                color = Color.Gray, fontSize = 11.sp,
-                modifier = Modifier.weight(1f)
+                if (wandBusy) "Memproses..." else "Ketuk area warna mirip",
+                color = Color.Gray, fontSize = 11.sp
             )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (bubbleAreaMode) Accent else Color.Transparent)
-                    .clickable { onBubbleAreaMode(!bubbleAreaMode) }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    "Area Bubble",
-                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (showBubbleAreaPanel) Accent else Color.Transparent)
-                    .clickable { onToggleAreaPanel() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    if (areaCount == 0) "Panel Area" else "Panel Area ($areaCount)",
-                    color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        if (bubbleAreaMode) {
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
-                "Ketuk gelembung satu per satu untuk menambah area. Ketuk lagi pada " +
-                    "area yang sama untuk menghapusnya. Area bersinggungan dipisah otomatis.",
-                color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp)
+                "Toleransi",
+                color = Color.White,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Slider(
+                value = wandTolerance,
+                onValueChange = onTolerance,
+                valueRange = 0f..100f,
+                modifier = Modifier.weight(1f),
+                colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+            )
+            Text(
+                "${wandTolerance.toInt()}",
+                color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(28.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.End
             )
         }
-
-        if (wandMode == "manual" && !bubbleAreaMode) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Toleransi", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
-                Slider(
-                    value = wandTolerance,
-                    onValueChange = onTolerance,
-                    valueRange = 1f..100f,
-                    modifier = Modifier.weight(1f),
-                    colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
-                )
-                Text(
-                    "${wandTolerance.toInt()}",
-                    color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.width(28.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.End
-                )
-            }
-        }
+        Text(
+            "Ketuk lagi di dalam seleksi untuk membatalkannya.",
+            color = Color.Gray, fontSize = 11.sp, modifier = Modifier.padding(top = 2.dp)
+        )
     }
 }
