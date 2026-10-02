@@ -513,6 +513,18 @@ private class EditorUiState {
     var isLoadingReference by mutableStateOf(false)
     var wandTolerance by mutableFloatStateOf(32f)
     var wandBusy by mutableStateOf(false)
+    /** Baca pixel terhubung saja (ON) atau semua pixel cocok (OFF). */
+    var wandContiguous by mutableStateOf(true)
+    /** Tepi seleksi bertingkat 0..255 (anti-alias). */
+    var wandAntialias by mutableStateOf(true)
+    /** ON = baca gabungan layer, OFF = hanya layer aktif. */
+    var wandSampleMerged by mutableStateOf(true)
+    /** Radius samarkan tepi 0..20 px, 0 = mati. */
+    var wandFeather by mutableFloatStateOf(0f)
+    /** ON = outline jadi batas keras + bubble menyatu dipisah. */
+    var wandBubbleAware by mutableStateOf(false)
+    /** Mode gabungan seleksi ala Photoshop. */
+    var wandSelMode by mutableStateOf(com.grooxtyper.app.model.selection.SelectionMode.NEW)
     /**
      * Mode "Area Panel": ketukan wand membuat SATU area dari wilayah tempat
      *user mengetuk (tanpa pemecahan watershed). Default false = mode bubble:
@@ -2295,6 +2307,22 @@ fun CanvasEditorScreen(
     var wandMode by remember { mutableStateOf("manual") }
     var wandTolerance by uiState::wandTolerance
     var wandBusy by uiState::wandBusy
+    var wandContiguous by uiState::wandContiguous
+    var wandAntialias by uiState::wandAntialias
+    var wandSampleMerged by uiState::wandSampleMerged
+    var wandFeather by uiState::wandFeather
+    var wandBubbleAware by uiState::wandBubbleAware
+    var wandSelMode by uiState::wandSelMode
+    // Adapter + macro + API script berbagi mesin yang sama dengan UI tool.
+    // Ditaruh di sini (sebelum runWandAt) karena fungsi lokal Kotlin hanya
+    // melihat deklarasi di atasnya.
+    val wandAdapter = remember { com.grooxtyper.app.model.selection.TiledSelectionAdapter() }
+    val wandMacro = remember { com.grooxtyper.app.model.selection.MacroRecorder() }
+    var wandJob by remember { mutableStateOf<Job?>(null) }
+    var wandPixelCount by remember { mutableStateOf(0L) }
+    var wandScriptApi by remember {
+        mutableStateOf<com.grooxtyper.app.model.selection.HugeWandScriptApi?>(null)
+    }
     var bubbleAreaPanelMode by uiState::bubbleAreaPanelMode
     var bubbleAreaMode by uiState::bubbleAreaMode
     var showBubbleAreaPanel by uiState::showBubbleAreaPanel
@@ -2522,6 +2550,14 @@ fun CanvasEditorScreen(
      * Tekan lagi di dalam seleksi yang sama = batal (mode ganti), tahan
      * tombol shift saat mengetuk = tambah pada seleksi yang ada.
      */
+    /**
+     * Tongkat sihir berubin: satu ketukan = satu seleksi Photoshop-like.
+     *
+     * UI dan script memakai mesin perintah yang sama
+     * ([CanvasCommandRunner] di atas [HugeWandEngine]), jadi hasilnya
+     * konsisten. Ketukan baru membatalkan hitungan lama (cancellable),
+     * viewport dipakai untuk overlay supaya kanvas 720x16000 tetap ringan.
+     */
     fun runWandAt(screenPos: Offset, merge: Boolean = false) {
         if (wandBusy) return
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
@@ -2529,31 +2565,73 @@ fun CanvasEditorScreen(
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
         if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
-        val tol = wandTolerance.toInt().coerceIn(0, com.grooxtyper.app.model.WandSelection.TOL_MAX)
+        val tol = wandTolerance.toInt().coerceIn(0, 255)
+        val mode = if (merge) {
+            com.grooxtyper.app.model.selection.SelectionMode.ADD
+        } else {
+            wandSelMode
+        }
+        val contiguous = wandContiguous
+        val antialias = wandAntialias
+        val bubble = wandBubbleAware
+        val merged = wandSampleMerged
+        val feather = wandFeather.toInt().coerceIn(0, 20)
+        wandJob?.cancel()
         wandBusy = true
-        scope.launch(Dispatchers.Default) {
+        wandJob = scope.launch(Dispatchers.Default) {
             var ok = false
             var err: String? = null
+            var count = 0L
             try {
-                val r = com.grooxtyper.app.model.WandSelection.select(
-                    compositeBitmap, cx, cy, tol
+                val src = if (merged) {
+                    compositeBitmap
+                } else {
+                    layerManager.getActiveLayer()?.getPersistentBitmap() ?: compositeBitmap
+                }
+                val provider = com.grooxtyper.app.model.selection.HugePixelProvider(src)
+                val api = com.grooxtyper.app.model.selection.HugeWandScriptApi(
+                    com.grooxtyper.app.model.selection.HugeWandEngine(provider),
+                    wandAdapter, canvasWidth, canvasHeight
+                ) { ad ->
+                    ad.pushToEngine(selectionEngine, canvasWidth, canvasHeight)
+                }
+                wandScriptApi = api
+                val cmd = com.grooxtyper.app.model.selection.CanvasCommand.WandSelectCommand(
+                    x = cx, y = cy, tolerance = tol,
+                    contiguous = contiguous, bubbleAware = bubble,
+                    antialias = antialias, mode = mode
                 )
-                if (r == null) {
+                wandMacro.record(cmd)
+                val runner = com.grooxtyper.app.model.selection.CanvasCommandRunner(
+                    provider,
+                    { com.grooxtyper.app.model.selection.HugeWandEngine(provider) },
+                    wandAdapter, selectionEngine, canvasWidth, canvasHeight
+                ) { layerManager.getActiveLayer() }
+                val va = screenToCanvasCoordinates(0f, 0f)
+                val vb = screenToCanvasCoordinates(
+                    viewportSize.width.toFloat(), viewportSize.height.toFloat()
+                )
+                runner.viewport = RectF(
+                    minOf(va.x, vb.x), minOf(va.y, vb.y),
+                    maxOf(va.x, vb.x), maxOf(va.y, vb.y)
+                )
+                val info = runner.run(cmd)
+                if (info == null) {
                     err = "Wand: tak ada area warna mirip di titik itu - naikkan toleransi"
                 } else {
-                    // Ketuk di dalam seleksi yang sama = batal selections.
-                    if (!merge && selectionEngine.hasSelection) {
-                        val b = selectionEngine.selectionBounds()
-                        if (b != null && b.contains(cp.x.toFloat(), cp.y.toFloat())) {
-                            selectionEngine.clearRegions()
-                        } else {
-                            com.grooxtyper.app.model.WandSelection.mergeInto(
-                                selectionEngine, r, false
-                            )
+                    if (feather > 0) {
+                        wandAdapter.feather(feather, canvasWidth, canvasHeight)
+                        runner.viewport?.let { vp2 ->
+                            val path = wandAdapter.toPath(vp2, canvasWidth, canvasHeight)
+                            val b = RectF()
+                            path.computeBounds(b, true)
+                            if (!b.isEmpty) {
+                                selectionEngine.clearSelection()
+                                selectionEngine.addRegionPath(path, b)
+                            }
                         }
-                    } else {
-                        com.grooxtyper.app.model.WandSelection.mergeInto(selectionEngine, r, merge)
                     }
+                    count = wandAdapter.pixelCount()
                     ok = true
                 }
             } catch (e: OutOfMemoryError) {
@@ -2565,8 +2643,10 @@ fun CanvasEditorScreen(
             } finally {
                 val msg = err
                 val berhasil = ok
+                val n = count
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     wandBusy = false
+                    wandPixelCount = n
                     if (msg != null) healError = msg
                     if (berhasil) refreshComposite()
                 }
@@ -6011,14 +6091,33 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Bar pengaturan Magic Wand (mode + toleransi), tampil saat tool aktif.
-        // (UI di bawah sebagai composable terpisah — batas method JVM 64KB.)
+        // Panel Magic Wand lengkap di file terpisah (batas method JVM 64KB).
         if (activeTool == ActiveTool.SELECT_WAND) {
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-                WandSettingsBar(
-                    wandTolerance = wandTolerance,
+                WandToolsPanel(
+                    tolerance = wandTolerance,
                     onTolerance = { wandTolerance = it },
-                    wandBusy = wandBusy
+                    contiguous = wandContiguous,
+                    onContiguous = { wandContiguous = it },
+                    antialias = wandAntialias,
+                    onAntialias = { wandAntialias = it },
+                    sampleMerged = wandSampleMerged,
+                    onSampleMerged = { wandSampleMerged = it },
+                    mode = wandSelMode,
+                    onMode = { wandSelMode = it },
+                    feather = wandFeather,
+                    onFeather = { wandFeather = it },
+                    bubbleAware = wandBubbleAware,
+                    onBubbleAware = { wandBubbleAware = it },
+                    busy = wandBusy,
+                    pixelCount = wandPixelCount,
+                    onClear = {
+                        wandJob?.cancel()
+                        wandAdapter.clear()
+                        selectionEngine.clearSelection()
+                        wandPixelCount = 0L
+                        refreshComposite()
+                    }
                 )
             }
         }

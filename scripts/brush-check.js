@@ -465,7 +465,7 @@ const selectEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mod
 assert(editor.includes('SELECT_WAND,'), 'wand: ActiveTool.SELECT_WAND terdaftar');
 assert(selectEng.includes('fun selectWand(') && selectEng.includes('fun traceContour(') && selectEng.includes('fun autoTolerance('), 'wand: flood fill + marching squares + toleransi otomatis di SelectionEngine');
 assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), 'wand: tap-vs-geser dibedakan (seleksi hanya saat ketuk)');
-assert(editor.includes('"Toleransi"') && editor.includes('wandTolerance') && editor.includes('valueRange = 0f..100f'), 'wand: panel hanya slider toleransi (mode dicabut)');
+assert(editor.includes('WandToolsPanel('), 'wand: panel lengkap di file terpisah (batas JVM 64KB)');
 assert(!editor.includes('listOf("manual" to "Manual"'), 'wand: mode Manual/Otomatis tak lagi ada');
 assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
 assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung (kasus webtoon)');
@@ -891,8 +891,8 @@ assert(editor.includes('fun runWandAt(screenPos: Offset, merge: Boolean = false)
   'editor: runWandAt tanpa cabang mode');
 assert(!/if \(bubbleAreaMode\) \{\s*\n\s*addBubbleAreaAt\(cp\)/.test(editor),
   'editor: tak ada lagi cabang bubbleAreaMode di wand');
-assert(editor.includes('WandSelection.select('), 'editor: wand memakai engine baru');
-assert(editor.includes('WandSelection.mergeInto('), 'editor: hasil wand digabung ke seleksi');
+assert(editor.includes('HugeWandEngine('), 'editor: wand memakai mesin berubin');
+assert(editor.includes('CanvasCommandRunner('), 'editor: hasil wand lewat runner perintah');
 assert(!/selectWandWindowed|selectWand\(/.test(editor), 'editor: jalur wand lama tak terpakai');
 assert(editor.includes('fun clearRegions()') || selEngine.includes('fun clearRegions()'),
   'Seleksi punya cara mengosongkan wilayah (untuk batal)');
@@ -934,6 +934,92 @@ console.log('\n== UI wand: parameter dan isi sinkron ==');
       'UI wand: tak ada lagi referensi ke ' + n + ' yang sudah dibuang');
   }
   assert(formal.length === 3, 'UI wand: signature tinggal 3 parameter (' + formal.length + ')');
+}
+
+
+// ================= Wand.md: rombak wand berubin =====================
+console.log('\n== Wand berubin (Wand.md) ==');
+const selDir = 'app/src/main/java/com/grooxtyper/app/model/selection';
+const provider = read(path.join(ROOT, selDir + '/CanvasPixelProvider.kt'));
+const hugeProvider = read(path.join(ROOT, selDir + '/HugePixelProvider.kt'));
+const hugeEngine = read(path.join(ROOT, selDir + '/HugeWandEngine.kt'));
+const tile = read(path.join(ROOT, selDir + '/SelectionTile.kt'));
+const tileMap = read(path.join(ROOT, selDir + '/SelectionTileMap.kt'));
+const wandResult = read(path.join(ROOT, selDir + '/WandResult.kt'));
+const selMode = read(path.join(ROOT, selDir + '/SelectionMode.kt'));
+assert(provider.includes('interface CanvasPixelProvider'), 'wand: abstraksi CanvasPixelProvider ada');
+assert(provider.includes('fun getPixel(') && provider.includes('fun getPixels('), 'wand: provider baca 1 piksel + 1 blok');
+assert(hugeProvider.includes('class HugePixelProvider') && hugeProvider.includes(': CanvasPixelProvider'), 'wand: HugePixelProvider implementasi provider');
+assert(!/Bitmap\.createBitmap\(\s*canvasWidth/.test(hugeProvider), 'wand: provider tak membuat bitmap sebesar kanvas');
+assert(hugeEngine.includes('class HugeWandEngine'), 'wand: HugeWandEngine ada');
+assert(hugeEngine.includes('suspend fun select('), 'wand: select suspend + cancellable');
+assert(hugeEngine.includes('ensureActive()'), 'wand: loop dicek ensureActive (bisa dibatalkan)');
+assert(hugeEngine.includes('contiguous') && hugeEngine.includes('floodGlobal'), 'wand: Contiguous ON/OFF (flood terhubung + global)');
+assert(!/BooleanArray\(canvasWidth \* canvasHeight\)/.test(hugeEngine), 'wand: tak ada BooleanArray sebesar kanvas');
+assert(!/IntArray\(canvasWidth \* canvasHeight\)/.test(hugeEngine), 'wand: tak ada IntArray sebesar kanvas');
+assert(tile.includes('class SelectionTile'), 'wand: SelectionTile ada');
+assert(tileMap.includes('class SelectionTileMap'), 'wand: SelectionTileMap jarang ada');
+assert(tileMap.includes('fun getBounds'), 'wand: peta bisa kembalikan batas');
+assert(tileMap.includes('fun combine(') && tileMap.includes('SelectionMode'), 'wand: gabung NEW/ADD/SUBTRACT/INTERSECT di peta');
+assert(read(path.join(ROOT, selDir + '/TiledSelectionAdapter.kt')).includes('fun feather('), 'adapter: feather/expand/contract/border (batas lokal)');
+assert(wandResult.includes('data class WandResult'), 'wand: WandResult ada');
+assert(wandResult.includes('bounds') && wandResult.includes('pixelCount'), 'wand: hasil bawa batas + jumlah piksel');
+assert(!/val path: Path/.test(wandResult), 'wand: hasil tak menyimpan Path sebagai sumber data');
+assert(selMode.includes('NEW') && selMode.includes('ADD') && selMode.includes('SUBTRACT') && selMode.includes('INTERSECT'), 'wand: enum mode NEW/ADD/SUBTRACT/INTERSECT');
+assert(hugeEngine.includes('fun colorDistance(') && hugeEngine.includes('dr * dr + dg * dg + db * db'), 'wand: cocok warna RGB langsung (tanpa Lab per piksel)');
+assert(hugeEngine.includes('tolerance.coerceIn(0, 255)') || hugeEngine.includes('coerceIn(0, 255)'), 'wand: toleransi 0..255 default 32');
+assert(editor.includes('wandContiguous') && editor.includes('wandAntialias') && editor.includes('wandSampleMerged'), 'editor: state Contiguous/Anti-alias/SampleMerged');
+assert(editor.includes('wandFeather') && editor.includes('wandBubbleAware') && editor.includes('wandSelMode'), 'editor: state Feather/BubbleAware/Mode');
+assert(editor.includes('wandJob?.cancel()'), 'editor: ketukan baru membatalkan hitungan lama');
+assert(editor.includes('HugeWandEngine(') && editor.includes('HugePixelProvider('), 'editor: runWandAt memakai mesin berubin');
+assert(editor.includes('CanvasCommandRunner(') && editor.includes('WandSelectCommand('), 'editor: UI lewat mesin perintah yang sama dengan script');
+assert(editor.includes('viewport') && editor.includes('toPath('), 'editor: overlay dibatasi viewport');
+assert(!/WandSelection\.select\(/.test(editor), 'editor: jalur window tetap lama tak dipakai runWandAt');
+const wandPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/WandToolsPanel.kt'));
+assert(wandPanel.includes('fun WandToolsPanel('), 'wand: panel di file terpisah (bukan CanvasEditorScreen)');
+assert(wandPanel.includes('valueRange = 0f..255f'), 'wand: slider toleransi 0..255');
+assert(wandPanel.includes('Contiguous') && wandPanel.includes('Anti-alias') && wandPanel.includes('Sample Merged'), 'wand: sakelar Contiguous/Anti-alias/SampleMerged');
+assert(wandPanel.includes('SelectionMode') && wandPanel.includes('Tambah') && wandPanel.includes('Iris'), 'wand: tombol mode Baru/Tambah/Kurang/Iris');
+assert(wandPanel.includes('Feather') && wandPanel.includes('Bubble Aware'), 'wand: Feather + Bubble Aware di panel');
+for (const [nm, tx] of [['CanvasPixelProvider', provider], ['HugePixelProvider', hugeProvider], ['HugeWandEngine', hugeEngine], ['SelectionTile', tile], ['SelectionTileMap', tileMap], ['WandResult', wandResult], ['SelectionMode', selMode], ['WandToolsPanel', wandPanel]]) {
+  const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
+  assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
+}
+
+// ============ integrasi.md: bubble + script =================
+console.log('\n== Integrasi bubble + script (integrasi.md) ==');
+const separator = read(path.join(ROOT, selDir + '/BubbleSeparator.kt'));
+const region = read(path.join(ROOT, selDir + '/SelectionRegion.kt'));
+const bubbleInfo = read(path.join(ROOT, selDir + '/BubbleInfo.kt'));
+const cmd = read(path.join(ROOT, selDir + '/CanvasCommand.kt'));
+const scriptApi = read(path.join(ROOT, selDir + '/WandScriptApi.kt'));
+const history = read(path.join(ROOT, selDir + '/SelectionHistory.kt'));
+const tapdapter = read(path.join(ROOT, selDir + '/TiledSelectionAdapter.kt'));
+assert(separator.includes('object BubbleSeparator'), 'bubble: pemisah bubble ada');
+assert(separator.includes('isWall(') && separator.includes('splitKeepSeed('), 'bubble: dinding outline + pecah milik seed');
+assert(separator.includes('boundaryConfidence('), 'bubble: confidence batas kuat/lemah');
+assert(hugeEngine.includes('bubbleAware') && hugeEngine.includes('separateBubble'), 'wand: mode BubbleAware + SeparateBubble (default OFF di UI)');
+assert(hugeEngine.includes('splitToSeed('), 'wand: gumpalan menyatu dipisah, milik seed kembali');
+assert(region.includes('data class SelectionRegion') && region.includes('val id: Long'), 'bubble: region punya ID sendiri');
+assert(bubbleInfo.includes('data class BubbleInfo') && bubbleInfo.includes('pixelCount') && bubbleInfo.includes('confidence'), 'bubble: metadata batas/piksel/confidence');
+assert(cmd.includes('sealed interface CanvasCommand') && cmd.includes('WandSelectCommand'), 'script: command abstraction + WandSelectCommand');
+assert(cmd.includes('FillSelectionCommand') && cmd.includes('ExpandSelectionCommand'), 'script: perintah fill/expand/contract/feather');
+assert(scriptApi.includes('interface WandScriptApi'), 'script: WandScriptApi ada');
+assert(scriptApi.includes('selectAt(') && scriptApi.includes('selectBubbleAt('), 'script: selectAt + selectBubbleAt');
+assert(scriptApi.includes('MacroRecorder') && scriptApi.includes('OcrCropHelper'), 'script: macro recorder + crop OCR sebatas batas');
+assert(history.includes('class SelectionHistory') && history.includes('fun current()') && history.includes('fun previous()'), 'script: riwayat current/previous/get');
+assert(tapdapter.includes('class TiledSelectionAdapter'), 'adapter: jembatan peta berubin ke SelectionEngine');
+assert(tapdapter.includes('fun apply(') && tapdapter.includes('fun pushToEngine('), 'adapter: apply(mode) + pushToEngine');
+assert(tapdapter.includes('MaskContour'), 'adapter: Path render lewat MaskContour (peta = sumber benar)');
+assert(editor.includes('TiledSelectionAdapter()') && editor.includes('MacroRecorder()'), 'editor: adapter + macro diingat sekali');
+assert(editor.includes('HugeWandScriptApi('), 'editor: API script dari mesin yang sama dengan UI');
+for (const [nm, tx] of [['BubbleSeparator', separator], ['SelectionRegion', region], ['BubbleInfo', bubbleInfo], ['CanvasCommand', cmd], ['WandScriptApi', scriptApi], ['SelectionHistory', history], ['TiledSelectionAdapter', tapdapter]]) {
+  const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
+  assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
+  assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(tx), nm + ' bebas karakter asing');
+}
+for (const tx of [provider, hugeProvider, hugeEngine, tile, tileMap, wandResult, selMode, wandPanel]) {
+  assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(tx), 'file wand bebas karakter asing');
 }
 
 if (process.exitCode) {
