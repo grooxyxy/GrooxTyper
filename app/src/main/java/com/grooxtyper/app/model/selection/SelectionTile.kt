@@ -14,9 +14,8 @@ class SelectionTile(
     /** Mask baris-mayor, satu byte per piksel (baca pakai `and 0xFF`). */
     val mask: ByteArray = ByteArray(width * height)
 
-    /** Jumlah piksel tak nol di tile ini. */
+    /** Jumlah piksel tak nol di tile ini (dijaga SelectionTileMap). */
     var count: Int = 0
-        private set
 
     /** Nilai 0..255 pada posisi lokal, 0 bila di luar tile. */
     fun get(lx: Int, ly: Int): Int {
