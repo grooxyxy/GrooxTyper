@@ -170,6 +170,36 @@ object BubbleSeparator {
     }
 
     /**
+     * Geser titik ketuk ke piksel kertas terdekat.
+     *
+     * Ketukan user sering jatuh di atas TEKS atau garis di dalam gelembung,
+     * bukan di kertasnya. Flood dari teks akan memilih teks itu sendiri
+     * (benar secara algoritma, salah untuk kebutuhan), jadi cari piksel
+     * terang (luminansi > 200) terdekat dalam radius [radiusMax] dan pakai
+     * itu sebagai seed. Null bila tidak ada kertas di sekitar.
+     */
+    fun snapToPaper(
+        provider: CanvasPixelProvider,
+        x: Int, y: Int,
+        radiusMax: Int = 24
+    ): Pair<Int, Int>? {
+        if (luma(provider.getPixel(x, y)) > 200f) return x to y
+        for (r in 1..radiusMax) {
+            for (dy in -r..r) {
+                for (dx in -r..r) {
+                    if (maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy)) != r) continue
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx !in 0 until provider.canvasWidth) continue
+                    if (ny !in 0 until provider.canvasHeight) continue
+                    if (luma(provider.getPixel(nx, ny)) > 200f) return nx to ny
+                }
+            }
+        }
+        return null
+    }
+
+    /**
      * Perkiraan kepercayaan 0..1 bahwa wilayah ini bubble tertutup.
      *
      * Bubble tertutup dikelilingi dinding di sebagian besar kelilingnya.

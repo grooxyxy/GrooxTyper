@@ -95,33 +95,8 @@ class TiledSelectionAdapter(
      * 720x16000 tidak me-render seleksi 16000px saat user hanya
      * melihat 720x900.
      */
-    fun toPath(viewport: RectF?, canvasWidth: Int, canvasHeight: Int): Path {
-        val out = Path()
-        val box: Rect? = if (viewport == null) {
-            tileMap.getBounds()
-        } else {
-            val l = viewport.left.toInt().coerceIn(0, canvasWidth)
-            val t = viewport.top.toInt().coerceIn(0, canvasHeight)
-            val r = viewport.right.toInt().coerceIn(0, canvasWidth)
-            val b = viewport.bottom.toInt().coerceIn(0, canvasHeight)
-            if (r - l < 2 || b - t < 2) null else Rect(l, t, r, b)
-        }
-        if (box == null) return out
-        // Kontur per tile: tiap tile jadi loop tertutup sendiri-sendiri
-        // supaya tidak ada BooleanArray sebesar batas seleksi.
-        tileMap.forEachTile { tx, ty, tile ->
-            if (tile.isEmpty()) return@forEachTile
-            val ox = tx * tileMap.tileSize
-            val oy = ty * tileMap.tileSize
-            if (ox + tile.width <= box.left || ox >= box.right) return@forEachTile
-            if (oy + tile.height <= box.top || oy >= box.bottom) return@forEachTile
-            val bin = BooleanArray(tile.width * tile.height)
-            for (i in bin.indices) bin[i] = (tile.mask[i].toInt() and 0xFF) != 0
-            val p = MaskContour.build(bin, tile.width, tile.height, 1f, ox.toFloat(), oy.toFloat())
-            if (p != null) out.addPath(p)
-        }
-        return out
-    }
+    fun toPath(viewport: RectF?, canvasWidth: Int, canvasHeight: Int): Path =
+        tileMapToPath(tileMap, viewport, canvasWidth, canvasHeight)
 
     /**
      * Dorong keadaan adapter ke [SelectionEngine] lama (satu Path gabungan
@@ -300,4 +275,43 @@ class TiledSelectionAdapter(
         regions.clear()
         regions.addAll(sisa)
     }
+}
+
+/**
+ * Bangun Path dari peta tile mana pun (bukan hanya milik adapter).
+ *
+ * Dipakai mode bubble script: hasil [HugeWandEngine] diubah jadi Path
+ * area tanpa menyentuh keadaan seleksi wand yang sedang aktif.
+ */
+fun tileMapToPath(
+    map: SelectionTileMap,
+    viewport: RectF?,
+    canvasWidth: Int,
+    canvasHeight: Int
+): Path {
+    val out = Path()
+    val box: Rect? = if (viewport == null) {
+        map.getBounds()
+    } else {
+        val l = viewport.left.toInt().coerceIn(0, canvasWidth)
+        val t = viewport.top.toInt().coerceIn(0, canvasHeight)
+        val r = viewport.right.toInt().coerceIn(0, canvasWidth)
+        val b = viewport.bottom.toInt().coerceIn(0, canvasHeight)
+        if (r - l < 2 || b - t < 2) null else Rect(l, t, r, b)
+    }
+    if (box == null) return out
+    // Kontur per tile: tiap tile jadi loop tertutup sendiri-sendiri
+    // supaya tidak ada BooleanArray sebesar batas seleksi.
+    map.forEachTile { tx, ty, tile ->
+        if (tile.isEmpty()) return@forEachTile
+        val ox = tx * map.tileSize
+        val oy = ty * map.tileSize
+        if (ox + tile.width <= box.left || ox >= box.right) return@forEachTile
+        if (oy + tile.height <= box.top || oy >= box.bottom) return@forEachTile
+        val bin = BooleanArray(tile.width * tile.height)
+        for (i in bin.indices) bin[i] = (tile.mask[i].toInt() and 0xFF) != 0
+        val p = MaskContour.build(bin, tile.width, tile.height, 1f, ox.toFloat(), oy.toFloat())
+        if (p != null) out.addPath(p)
+    }
+    return out
 }

@@ -9,12 +9,12 @@ import android.graphics.Path
  *
  * `SelectionEngine.traceContour` memakai marching squares lalu menulis tiap
  * ruas sebagai `path.moveTo` + `path.lineTo`. Hasilnya **1.564 sub-path
- * terpisah** untuk satu gelembung, masing-masing garis pendek 0,7 piksel
- * yang tidak pernah ditutup.
+ * terpisah** untuk satu gelembung, masing-masing garis pendek 0,7 piksel yang
+ * tidak pernah ditutup.
  *
  * Path seperti itu tidak bisa di-isi. Saat `drawPath(..., FILL)` setiap
  * sub-path tertutup otomatis menjadi poligon degenerat, sehingga luas yang
- * terisi hanya sekitar **1% dari mask**.Seleksi wand praktis kosong.
+ * terisi hanya sekitar **1% dari mask**. Seleksi wand praktis kosong.
  * Marching ants tetap terlihat karena path di-`STROKE`, bukan di-isi; itu
  * sebabnya wand tampak "bekerja" padahal tidak pernah mengisi apa pun.
  *
@@ -42,9 +42,12 @@ object MaskContour {
      * 8 = kiri-bawah, dibaca dari sel saat ini.
      *
      * Sisi sel dipakai sebagai: 0 = atas, 1 = kanan, 2 = bawah, 3 = kiri.
+     *
+     * Penting: setiap entri adalah pasangan edge (jumlah elemennya genap).
+     * Kasus 0000 dan 1111 tidak memiliki kontur, sehingga array HARUS kosong.
      */
     private val EDGE_TABLE = arrayOf(
-        intArrayOf(0),                                      // 0000
+        intArrayOf(),                                      // 0000
         intArrayOf(3, 0),                                   // 0001 kiri-atas
         intArrayOf(0, 1),                                   // 0010 kanan-atas
         intArrayOf(3, 1),                                   // 0011
@@ -58,7 +61,8 @@ object MaskContour {
         intArrayOf(2, 1),                                   // 1011
         intArrayOf(1, 3),                                   // 1100
         intArrayOf(1, 0),                                   // 1101
-        intArrayOf(0, 3)                                    // 1110
+        intArrayOf(0, 3),                                   // 1110
+        intArrayOf()                                        // 1111
     )
 
     /** Koordinat titik tengah sisi sel dalam kelipatan setengah piksel. */
@@ -84,7 +88,7 @@ object MaskContour {
      * @param mask piksel terpilih (true berarti masuk wilayah)
      * @param scale pengali koordinat (1f = ukuran kanvas penuh)
      * @param offX geseran X koordinat kanvas, untuk wand berjendela
-     * @param offY geseran Y koordinat kanvas
+     * @param offY geseran Y koordinat kanvas, untuk wand berjendela
      * @return Path dengan fill type EVEN_ODD, atau null bila mask kosong
      */
     fun build(
@@ -110,8 +114,10 @@ object MaskContour {
                     (if (mask[r1 + x + 1]) 4 else 0) or
                     (if (mask[r1 + x]) 8 else 0)
                 val list = EDGE_TABLE[idx]
-                if (list.size == 0) continue
-                for (e in 0 until list.size step 2) {
+                if (list.isEmpty()) continue
+                // Setiap entri tabel selalu genap: satu pasangan start/end
+                // untuk setiap ruas kontur.
+                for (e in list.indices step 2) {
                     val s = edgeHalf(x, y, list[e])
                     val d = edgeHalf(x, y, list[e + 1])
                     val arr = from.getOrPut(s) { LongArrayList(2) }
@@ -159,7 +165,10 @@ object MaskContour {
                 var next = -1L
                 for (i in 0 until outs.size) {
                     val cand = outs[i]
-                    if (cand != -1L && !used.contains(cand)) { next = cand; break }
+                    if (cand != -1L && !used.contains(cand)) {
+                        next = cand
+                        break
+                    }
                 }
                 if (next < 0L) break
                 cur = next

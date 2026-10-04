@@ -130,7 +130,6 @@ import com.grooxtyper.app.ml.AgnesKeyStore
 import com.grooxtyper.app.ml.readingOrder
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BubbleAreaPipeline
-import com.grooxtyper.app.model.WandEngine
 import com.grooxtyper.app.model.BrushHugeGuide
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.CanvasViewState
@@ -148,7 +147,6 @@ import com.grooxtyper.app.model.LayerManager
 import com.grooxtyper.app.model.ProjectManager
 import com.grooxtyper.app.model.RulerType
 import com.grooxtyper.app.model.SelectionEngine
-import com.grooxtyper.app.model.WandWindow
 import com.grooxtyper.app.model.TextBox
 import com.grooxtyper.app.model.TextHandle
 import com.grooxtyper.app.model.TextLayer
@@ -2399,6 +2397,17 @@ fun CanvasEditorScreen(
      * state dideklarasi) karena fungsi lokal Kotlin hanya melihat deklarasi
      * di atasnya.
      */
+    /**
+     * Satu ketukan mode bubble -> satu area bubble bernomor.
+     *
+     * TERHUBUNG dengan wand: area dibuat lewat [HugeWandEngine] yang sama
+     * dengan tool wand (bubbleAware + pemisah gelembung menyatu), bukan
+     * pipeline terpisah. Hasil wand diubah jadi [BubbleAreaPipeline.Area]
+     * supaya panel script dan isi-dari-script tetap jalan tanpa dirombak.
+     * Mode panel mematikan pemisahan (satu wilayah utuh untuk kotak narasi).
+     *
+     * Ketuk area yang sudah ada = hapus area itu.
+     */
     fun addBubbleAreaAt(cp: Offset) {
         if (wandBusy) return
         // Ketuk area yang sudah ada = hapus area itu.
@@ -2407,34 +2416,61 @@ fun CanvasEditorScreen(
             return
         }
         if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
-        // Snapshot piksel TIDAK lagi dibaca utuh. Jendela di sekitar ketukan
-        // (lihat WandWindow) membaca hanya ~640x640 piksel, jadi kanvas
-        // 720x16000 tak pernah allocates 46MB integer. Selain hemat memori,
-        // ini juga yang membuat wand benar pada kanvas webtoon: downsample
-        // global 480px membuat outline gelembung hilang di halaman 16000px.
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        // Piksel dibaca per tile dari dalam coroutine (bukan snapshot utuh
+        // di Main): kanvas 720x16000 tak pernah alokasi 46MB integer.
         wandBusy = true
         scope.launch(Dispatchers.Default) {
             var area: BubbleAreaPipeline.Area? = null
             var err: String? = null
             try {
-                // Jendela di sekitar ketukan, bukan downsample seluruh
-                // halaman. Pada kanvas webtoon 16000px, downsample 480px
-                // menyisakan lebar 20px sehingga outline gelembung hilang
-                // dan wand selalu gagal. Bukti: scripts/wand-check.mjs
-                // kasus 10 memakai halaman manga asli.
-                val seedPx = compositeBitmap.getPixel(
-                    cp.x.toInt().coerceIn(0, compositeBitmap.width - 1),
-                    cp.y.toInt().coerceIn(0, compositeBitmap.height - 1)
+                val src = if (wandSampleMerged) {
+                    compositeBitmap
+                } else {
+                    layerManager.getActiveLayer()?.getPersistentBitmap() ?: compositeBitmap
+                }
+                val provider = com.grooxtyper.app.model.selection.HugePixelProvider(src)
+                val engine = com.grooxtyper.app.model.selection.HugeWandEngine(provider)
+                val tol = wandTolerance.toInt().coerceIn(0, 255)
+                // Ketukan di atas teks/garis digeser dulu ke kertas
+                // terdekat, supaya yang terpilih gelembungnya bukan tintanya.
+                val snap = com.grooxtyper.app.model.selection.BubbleSeparator.snapToPaper(
+                    provider, cx, cy
                 )
-                val thr = (wandTolerance * 2.2f).coerceIn(4f, 160f)
-                val params = WandEngine.Params(
-                    threshold = WandEngine.thresholdForSrgb(thr, seedPx)
+                val sx = snap?.first ?: cx
+                val sy = snap?.second ?: cy
+                val hasil = engine.select(
+                    sx, sy, tol,
+                    contiguous = true,
+                    bubbleAware = true,
+                    separateBubble = !bubbleAreaPanelMode,
+                    antialias = wandAntialias
                 )
-                area = WandWindow.areaAt(
-                    compositeBitmap, cp.x.toInt(), cp.y.toInt(), params,
-                    allowBorder = bubbleAreaPanelMode,
-                    lightSnap = true
-                )
+                if (hasil == null) {
+                    area = null
+                } else {
+                    val path = com.grooxtyper.app.model.selection.tileMapToPath(
+                        hasil.selection, null, canvasWidth, canvasHeight
+                    )
+                    val box = RectF(hasil.bounds)
+                    if (box.isEmpty) {
+                        area = null
+                    } else {
+                        val kind = if (bubbleAreaPanelMode) {
+                            BubbleAreaPipeline.KIND_PANEL
+                        } else {
+                            BubbleAreaPipeline.KIND_BUBBLE
+                        }
+                        area = BubbleAreaPipeline.Area(
+                            bounds = box,
+                            path = path,
+                            textColor = contrastTextColor(provider, hasil.bounds),
+                            kind = kind
+                        )
+                    }
+                }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
                 err = "Area bubble OOM - area terlalu besar"
@@ -2461,6 +2497,38 @@ fun CanvasEditorScreen(
                 }
             }
         }
+    }
+
+    /**
+     * Warna teks kontras terhadap isi area: contoh luminansi dibatasi
+     * ~2048 titik supaya murah di area besar, deterministik (pola tetap).
+     */
+    fun contrastTextColor(
+        provider: com.grooxtyper.app.model.selection.CanvasPixelProvider,
+        bounds: android.graphics.Rect
+    ): Int {
+        val w = bounds.width()
+        val h = bounds.height()
+        if (w <= 0 || h <= 0) return -16777216
+        val langkah = maxOf(1, kotlin.math.sqrt((w.toLong() * h / 2048L).toDouble()).toInt())
+        var jumlah = 0L
+        var total = 0L
+        var y = bounds.top
+        while (y < bounds.bottom) {
+            var x = bounds.left
+            while (x < bounds.right) {
+                val p = provider.getPixel(x, y)
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                total += (0.299f * r + 0.587f * g + 0.114f * b).toLong()
+                jumlah++
+                x += langkah
+            }
+            y += langkah
+        }
+        if (jumlah == 0L) return -16777216
+        return if (total / jumlah < 128L) -1 else -16777216
     }
 
     /**
@@ -2561,6 +2629,12 @@ fun CanvasEditorScreen(
     fun runWandAt(screenPos: Offset, merge: Boolean = false) {
         if (wandBusy) return
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        // Mode bubble script: ketukan membuat area bernomor lewat mesin
+        // wand yang sama (bubbleAware + pemisah), bukan pipeline terpisah.
+        if (bubbleAreaMode) {
+            addBubbleAreaAt(cp)
+            return
+        }
         val cx = cp.x.toInt()
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
@@ -6109,6 +6183,11 @@ fun CanvasEditorScreen(
                     onFeather = { wandFeather = it },
                     bubbleAware = wandBubbleAware,
                     onBubbleAware = { wandBubbleAware = it },
+                    bubbleMode = bubbleAreaMode,
+                    onBubbleMode = {
+                        bubbleAreaMode = it
+                        showBubbleAreaPanel = it
+                    },
                     busy = wandBusy,
                     pixelCount = wandPixelCount,
                     onClear = {

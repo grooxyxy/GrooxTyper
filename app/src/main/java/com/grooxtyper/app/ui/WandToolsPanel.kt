@@ -62,6 +62,8 @@ fun WandToolsPanel(
     onFeather: (Float) -> Unit,
     bubbleAware: Boolean,
     onBubbleAware: (Boolean) -> Unit,
+    bubbleMode: Boolean,
+    onBubbleMode: (Boolean) -> Unit,
     busy: Boolean,
     pixelCount: Long,
     onClear: () -> Unit
@@ -168,6 +170,12 @@ fun WandToolsPanel(
             checked = bubbleAware,
             onChecked = onBubbleAware
         )
+        WandSwitchRow(
+            label = "Mode Bubble",
+            hint = "Ketuk = tambah area",
+            checked = bubbleMode,
+            onChecked = onBubbleMode
+        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Feather",
@@ -189,7 +197,8 @@ fun WandToolsPanel(
             )
         }
         Text(
-            "Ketuk bubble = satu bubble. Tambah = gabung, Kurang = buang, Iris = irisan.",
+            "Ketuk bubble = satu bubble. Tambah = gabung, Kurang = buang, Iris = irisan. " +
+                "Mode Bubble: ketukan membuat area bernomor untuk script.",
             color = Color.Gray, fontSize = 11.sp
         )
     }

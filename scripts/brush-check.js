@@ -555,10 +555,13 @@ const wf = read(path.join(ROOT, '.github/workflows/android.yml'));
   assert(/masks\[k\]\[seedIdx\]/.test(areaPipe), 'area bubble: area yang dikembalikan adalah yang memuat titik ketuk');
   assert(areaPipe.includes('fun fillHoles(') && areaPipe.includes('WandEngine.labelComponents(bg, w, h, 1)'), 'area bubble: lubang (teks di dalam bubble) diisi agar satu gelembung = satu area');
   assert(areaPipe.includes('fun nearestLightPixel(') && areaPipe.includes('lightSnap: Boolean = false'), 'area bubble: ketukan di atas teks bisa disnap ke kertas (mode bubble)');
-  assert(editor.includes('lightSnap = true'), 'editor: snap diaktifkan untuk mode area bubble');
+  assert(editor.includes('BubbleSeparator.snapToPaper('), 'editor: ketukan di atas teks digeser ke kertas (snap mode bubble)');
+assert(read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/BubbleSeparator.kt')).includes('fun snapToPaper('), 'uji: snap kertas ada di pemisah bubble');
   assert(/var bubbleAreaMode by mutableStateOf\(false\)/.test(editor), 'editor: wand bawaannya seleksi klasik (bukan mode area bubble)');
-  assert(editor.includes('WandWindow.areaAt('), 'editor: area bubble memakai jendela adaptif, bukan downsample 480px');
-  assert(!/downsampleForWand\(raw, w, h\)[\s\S]{0,400}BubbleAreaPipeline\.areaAt/.test(editor), 'editor: jalur area bubble tak lagi membaca seluruh kanvas');
+  assert(editor.includes('fun addBubbleAreaAt(cp: Offset)'), 'editor: mode bubble punya pembuat area sendiri');
+  assert(!/WandWindow\.areaAt\(/.test(editor), 'editor: area bubble tak lagi lewat jendela adaptif lama');
+  assert(!/BubbleAreaPipeline\.areaAt\(/.test(editor), 'editor: area bubble tak lagi lewat pipeline terpisah');
+  assert(!/downsampleForWand\(raw, w, h\)/.test(editor), 'editor: tak ada downsample seluruh kanvas di jalur ketuk');
   assert(areaPipe.includes('const val KIND_PANEL = 1') && areaPipe.includes('KIND_BUBBLE'), 'area bubble: jenis area (bubble/panel) ditandai');
   // Uji numeriknya harus benar-benar ada dan punya kasus ground truth.
   for (const k of ['Kasus 1: satu gelembung', 'Kasus 2: dua gelembung bersinggungan',
@@ -626,8 +629,8 @@ assert(selEng.includes('fun removeBubbleAreaAt(') && selEng.includes('fun clearB
 assert(selEng.includes('var bubbleAreaList by mutableStateOf(listOf<BubbleAreaPipeline.Area>())'), 'area bubble: daftar area adalah state (overlay ikut digambar ulang)');
 assert(selEng.includes('bubbleAreasInReadingOrder()') || selEng.includes('bubbleReadingOrder('), 'area bubble: nomor urut mengikuti urutan baca manga');
 assert(selEng.includes('bubbleAreasInReadingOrder') && selEng.includes('sortedBy'), 'area bubble: pengurutan baris implemented');
-assert(editor.includes('WandWindow.areaAt(') || editor.includes('WandWindow.selectWand('), 'editor: ketukan wand memakai jendela adaptif');
-assert(editor.includes('WandWindow.areaAt('), 'editor: area bubble memakai jendela adaptif');
+assert(editor.includes('HugePixelProvider('), 'editor: ketukan wand membaca per tile dari bitmap yang ada');
+assert(editor.includes('fun addBubbleAreaAt(cp: Offset)'), 'editor: area bubble dibuat dari hasil wand');
 assert(editor.includes('addBubbleArea(') && editor.includes('bukan area bubble'), 'editor: hasil ditambahkan (multi) dan pesan tolak ada');
 assert(editor.includes('bubbleAreaPanelMode') || editor.includes('allowBorder = bubbleAreaPanelMode'), 'editor: sakelar Area Panel diteruskan ke pipeline');
 assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
@@ -787,7 +790,7 @@ const selEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mod
 const wandWin = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandWindow.kt'));
 const wandCheck = read(path.join(ROOT, 'scripts/wand-check.mjs'));
 assert(wandWin.includes('object WandWindow'), 'jendela: engine terpisah bernama WandWindow');
-assert(/^import com\.grooxtyper\.app\.model\.WandWindow$/m.test(editor), 'editor: WandWindow diimpor (tanpa ini semua win.px jadi unresolved)');
+assert(!/^import com\.grooxtyper\.app\.model\.WandWindow$/m.test(editor), 'editor: import jendela lama dibuang (jalur mati dihapus)');
 assert(wandWin.includes('fun carve(bmp: Bitmap'), 'jendela: membaca hanya persegi di sekitar ketukan');
 assert(wandWin.includes('bmp.getPixels(buf, 0, rw, rx, ry, rw, rh)'), 'jendela: piksel dibaca per persegi, bukan seluruh kanvas');
 assert(wandWin.includes('val DEFAULT_PADS = intArrayOf(300, 700, 1500)'), 'jendela: tiga ukuran jendela untuk memperbesar saat perlu');
@@ -889,8 +892,8 @@ assert(wandSel.includes('private fun visit('), 'wand: predicate piksel dalam tol
 // Editor: mode dicabut
 assert(editor.includes('fun runWandAt(screenPos: Offset, merge: Boolean = false)'),
   'editor: runWandAt tanpa cabang mode');
-assert(!/if \(bubbleAreaMode\) \{\s*\n\s*addBubbleAreaAt\(cp\)/.test(editor),
-  'editor: tak ada lagi cabang bubbleAreaMode di wand');
+assert(/if \(bubbleAreaMode\) \{\s*\n\s*addBubbleAreaAt\(cp\)/.test(editor),
+  'editor: mode bubble dirutekan ke pembuat area (terhubung wand)');
 assert(editor.includes('HugeWandEngine('), 'editor: wand memakai mesin berubin');
 assert(editor.includes('CanvasCommandRunner('), 'editor: hasil wand lewat runner perintah');
 assert(!/selectWandWindowed|selectWand\(/.test(editor), 'editor: jalur wand lama tak terpakai');
@@ -1021,6 +1024,39 @@ for (const [nm, tx] of [['BubbleSeparator', separator], ['SelectionRegion', regi
 for (const tx of [provider, hugeProvider, hugeEngine, tile, tileMap, wandResult, selMode, wandPanel]) {
   assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(tx), 'file wand bebas karakter asing');
 }
+
+
+// ============ WandFix: tabel marching squares + bubble tersambung wand ====
+console.log('\n== WandFix + bubble tersambung wand ==');
+const maskContour = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/MaskContour.kt'));
+const sepSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/BubbleSeparator.kt'));
+const wandScriptApiSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/WandScriptApi.kt'));
+const refFix = read('/public/GrooxTyper_WandFix/GrooxTyper_WandFix/app/src/main/java/com/grooxtyper/app/model/MaskContour.kt');
+assert(maskContour === refFix, 'wandfix: MaskContour.kt sama persis dengan folder acuan');
+// Bug 1: kasus 0000 harus array kosong (dulu intArrayOf(0) -> list[1] crash)
+assert(maskContour.includes('intArrayOf(),                                      // 0000'),
+  'wandfix: kasus 0000 array kosong (tak ada kontur)');
+// Bug 2: kasus 1111 harus ada (dulu tabel 0..14 -> index 15 crash)
+assert(maskContour.includes('intArrayOf()                                        // 1111'),
+  'wandfix: kasus 1111 ada (tabel lengkap 0..15)');
+assert(maskContour.includes('setiap entri adalah pasangan edge (jumlah elemennya genap)'),
+  'wandfix: invarian tabel didokumentasikan');
+assert(maskContour.includes('if (list.isEmpty()) continue'), 'wandfix: sel kosong dilewati via isEmpty');
+assert(maskContour.includes('for (e in list.indices step 2)'), 'wandfix: baca tabel berpasangan via indices');
+// Mode bubble script terhubung wand (bukan pipeline terpisah)
+assert(editor.includes('HugeWandEngine(provider)'), 'bubble: area dibuat mesin wand yang sama');
+assert(editor.includes('bubbleAware = true'), 'bubble: outline jadi batas keras');
+assert(editor.includes('separateBubble = !bubbleAreaPanelMode'), 'bubble: panel mematikan pemisah, bubble memisah');
+assert(editor.includes('BubbleAreaPipeline.Area('), 'bubble: hasil wand dibungkus jadi Area bernomor');
+assert(editor.includes('tileMapToPath('), 'bubble: Path area dari peta tile (tanpa sentuh seleksi wand)');
+assert(editor.includes('fun contrastTextColor('), 'bubble: warna teks kontras dari isi area');
+assert(editor.includes('filterIsInstance') || editor.includes('fun fillAreasFromScript('),
+  'bubble: isi-dari-script tetap jalan di atas daftar area');
+assert(editor.includes('bubbleMode = bubbleAreaMode'), 'panel wand: sakelar Mode Bubble ada');
+assert(editor.includes('showBubbleAreaPanel = it'), 'panel wand: mode bubble membuka panel area');
+const oM = (maskContour.match(/\{/g) || []).length, cM = (maskContour.match(/\}/g) || []).length;
+assert(oM === cM, 'MaskContour: tanda kurawal seimbang (' + oM + '/' + cM + ')');
+assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(maskContour), 'MaskContour bebas karakter asing');
 
 if (process.exitCode) {
   console.error('brush-check FAILED');
