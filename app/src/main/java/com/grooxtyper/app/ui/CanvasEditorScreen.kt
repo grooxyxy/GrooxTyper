@@ -2398,6 +2398,38 @@ fun CanvasEditorScreen(
      * di atasnya.
      */
     /**
+     * Warna teks kontras terhadap isi area: contoh luminansi dibatasi
+     * ~2048 titik supaya murah di area besar, deterministik (pola tetap).
+     */
+    fun contrastTextColor(
+        provider: com.grooxtyper.app.model.selection.CanvasPixelProvider,
+        bounds: android.graphics.Rect
+    ): Int {
+        val w = bounds.width()
+        val h = bounds.height()
+        if (w <= 0 || h <= 0) return -16777216
+        val langkah = maxOf(1, kotlin.math.sqrt((w.toLong() * h / 2048L).toDouble()).toInt())
+        var jumlah = 0L
+        var total = 0L
+        var y = bounds.top
+        while (y < bounds.bottom) {
+            var x = bounds.left
+            while (x < bounds.right) {
+                val p = provider.getPixel(x, y)
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                total += (0.299f * r + 0.587f * g + 0.114f * b).toLong()
+                jumlah++
+                x += langkah
+            }
+            y += langkah
+        }
+        if (jumlah == 0L) return -16777216
+        return if (total / jumlah < 128L) -1 else -16777216
+    }
+
+    /**
      * Satu ketukan mode bubble -> satu area bubble bernomor.
      *
      * TERHUBUNG dengan wand: area dibuat lewat [HugeWandEngine] yang sama
@@ -2499,37 +2531,6 @@ fun CanvasEditorScreen(
         }
     }
 
-    /**
-     * Warna teks kontras terhadap isi area: contoh luminansi dibatasi
-     * ~2048 titik supaya murah di area besar, deterministik (pola tetap).
-     */
-    fun contrastTextColor(
-        provider: com.grooxtyper.app.model.selection.CanvasPixelProvider,
-        bounds: android.graphics.Rect
-    ): Int {
-        val w = bounds.width()
-        val h = bounds.height()
-        if (w <= 0 || h <= 0) return -16777216
-        val langkah = maxOf(1, kotlin.math.sqrt((w.toLong() * h / 2048L).toDouble()).toInt())
-        var jumlah = 0L
-        var total = 0L
-        var y = bounds.top
-        while (y < bounds.bottom) {
-            var x = bounds.left
-            while (x < bounds.right) {
-                val p = provider.getPixel(x, y)
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                total += (0.299f * r + 0.587f * g + 0.114f * b).toLong()
-                jumlah++
-                x += langkah
-            }
-            y += langkah
-        }
-        if (jumlah == 0L) return -16777216
-        return if (total / jumlah < 128L) -1 else -16777216
-    }
 
     /**
      * Isi semua area bubble dari script dialog.
