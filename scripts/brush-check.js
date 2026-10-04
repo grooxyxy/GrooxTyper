@@ -1103,6 +1103,7 @@ for (const g of ['SMOKE("SFX Asap")', 'ELECTRIC("SFX Listrik")', 'SLASH("SFX Teb
 assert(sfxEng.includes('drawSmokePuffs') && sfxEng.includes('drawSparks'), 'SFX: hiasan asap + percikan listrik');
 assert(sfxEng.includes('Pellicin lebar') || sfxEng.includes('rata-rata gerak'), 'SFX: profil lebar dilicinkan (anti kaku)');
 assert(sfxTex.includes('Genre.SMOKE -> RIBBON') && sfxTex.includes('Genre.ELECTRIC -> HATCH'), 'SFX: pori genre baru terpetakan');
+assert(sfxEng.includes('import kotlin.math.min'), 'SFX: import min untuk pelicin lebar (tanpa ini CI merah)');
 for (const [nm, tx] of [['TextRenderer', textRenderer], ['BulkTextDialog', bulkDlg], ['MultiTextSection', multiSec]]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
