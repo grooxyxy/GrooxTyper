@@ -217,7 +217,10 @@ data class TextShadowSpec(
     var dx: Float = 4f,
     var dy: Float = 4f,
     var blur: Float = 8f,
-    var color: Int = 0x80000000.toInt(),
+    // Hitam pekat: opacity slider yang berkuasa (ala Photoshop), bukan
+    // alpha warna. Dulu 0x80 sehingga bayangan tak pernah pekat walau
+    // opacity 100%.
+    var color: Int = 0xFF000000.toInt(),
     // Photoshop-like: opacity 0..1, spread/choke 0..100
     var opacity: Float = 0.75f,
     var spread: Float = 0f

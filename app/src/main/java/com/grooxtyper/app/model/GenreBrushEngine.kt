@@ -60,7 +60,10 @@ object GenreBrushEngine {
         MECH("SFX Logam"),      // dentingan logam / robot: sudut keras
         EXPLOSION("SFX Ledakan"), // hembusan besar: agave melebar
         SWOOSH("SFX Hembus"),   // kecepatan / angin: pita tipis memanjang
-        CHILL("SFX Dingin");     // kabut / embun: tepi lembut
+        CHILL("SFX Dingin"),     // kabut / embun: tepi lembut
+        SMOKE("SFX Asap"),       // asap/kabut tebal: mengembang lembut
+        ELECTRIC("SFX Listrik"), // sengatan: zigzag tipis cepat
+        SLASH("SFX Tebasan");    // tebasan: sapuan tebal menipis
 
         companion object {
             fun of(brushType: BrushType): Genre? = when (brushType) {
@@ -72,6 +75,9 @@ object GenreBrushEngine {
                 BrushType.GENRE_EXPLOSION -> EXPLOSION
                 BrushType.GENRE_SWOOSH -> SWOOSH
                 BrushType.GENRE_CHILL -> CHILL
+                BrushType.GENRE_SMOKE -> SMOKE
+                BrushType.GENRE_ELECTRIC -> ELECTRIC
+                BrushType.GENRE_SLASH -> SLASH
                 else -> null
             }
         }
@@ -161,8 +167,15 @@ object GenreBrushEngine {
                 Genre.EXPLOSION -> 1.25f
                 Genre.SWOOSH -> 1.2f
                 Genre.CHILL -> 1.0f
+                Genre.SMOKE -> 1.4f
+                Genre.ELECTRIC -> 0.8f
+                Genre.SLASH -> 1.1f
             }
-            opacity = if (genre == Genre.ROMANCE) 0.95f else 1f
+            opacity = when (genre) {
+                Genre.ROMANCE -> 0.95f
+                Genre.SMOKE -> 0.8f
+                else -> 1f
+            }
         }
 
         /** Terapkan preset gaya bersama ke setelan kuas ini. */
@@ -259,6 +272,22 @@ object GenreBrushEngine {
                 // dari semua genre.
                 0.96f + 0.07f * sin(t * 4f + 1.1f)
             }
+            Genre.SMOKE -> {
+                // Asap: mengembang lembut di tengah, tepi membaur. Murni
+                // sinus agar sapuan terasa mengalir, bukan kaku.
+                1.1f + 0.35f * sin(t * PI.toFloat()) + 0.06f * sin(t * 11f)
+            }
+            Genre.ELECTRIC -> {
+                // Listrik: zigzag cepat tapi amplitudo kecil, garis dasarnya
+                // ramping. Ketajaman datang dari frekuensi, bukan dari
+                // lompatan lebar (yang bikin kaku).
+                0.62f + 0.22f * abs(sin(t * PI.toFloat() * 9f)) + 0.05f * jitter
+            }
+            Genre.SLASH -> {
+                // Tebasan: mulai tebal lalu menipis mulus sampai ujung,
+                // seperti satu ayunan pedang. Tanpa langkah/patahan.
+                1.25f - 0.95f * t
+            }
         }
 
     /** Kasar tepi per genre dalam fraksi half-width. */
@@ -271,6 +300,9 @@ object GenreBrushEngine {
         Genre.EXPLOSION -> 0.18f + 0.46f * texture
         Genre.SWOOSH -> 0.04f + 0.12f * texture
         Genre.CHILL -> 0.01f + 0.05f * texture
+        Genre.SMOKE -> 0.05f + 0.15f * texture
+        Genre.ELECTRIC -> 0.02f + 0.06f * texture
+        Genre.SLASH -> 0.03f + 0.10f * texture
     }
 
     /** Jumlah hiasan khas tiap genre (0 = tanpa). */
@@ -283,6 +315,9 @@ object GenreBrushEngine {
         Genre.EXPLOSION -> 4 + (texture * 10f).toInt()
         Genre.SWOOSH -> 2
         Genre.CHILL -> 1
+        Genre.SMOKE -> 2 + (texture * 4f).toInt()
+        Genre.ELECTRIC -> 3
+        Genre.SLASH -> 2
     }
 
     // ------------------------------------------------------------------
@@ -450,6 +485,23 @@ object GenreBrushEngine {
                 val w = base * widthFactor(genre, t, rnd.nextFloat()) * taper
                 val noise = SfxInk.EdgeProfile.sample(prof, arc[i], ds)
                 out[i] = max(0.6f, w * (1f + rough * noise) + extra)
+            }
+            // Pelicin lebar: rata-rata gerak kecil supaya transisi profil
+            // (mis. langkah kotak ACTION/MECH) mengalir, tidak kaku. Radius
+            // proporsional jumlah titik; karakter tiap genre tetap karena
+            // hanya perubahan antar titik tetangga yang diratakan.
+            val r = max(1, nPts / 48)
+            if (r > 1 && nPts > 3) {
+                val src = out.copyOf()
+                for (i in 0 until nPts) {
+                    var sum = 0f
+                    var n = 0
+                    for (k in max(0, i - r)..min(nPts - 1, i + r)) {
+                        sum += src[k]
+                        n++
+                    }
+                    out[i] = sum / n
+                }
             }
             return out
         }
@@ -803,6 +855,9 @@ object GenreBrushEngine {
                     Genre.SWOOSH -> drawSpeedLines(canvas, rnd, base, col, opa, nEx)
                     // Dingin: kristal es kecil di tepi.
                     Genre.CHILL -> drawFrost(canvas, rnd, base, col, opa, nEx)
+                    Genre.SMOKE -> drawSmokePuffs(canvas, rnd, base, col, opa, nEx)
+                    Genre.ELECTRIC -> drawSparks(canvas, rnd, base, col, opa, nEx)
+                    Genre.SLASH -> drawSpeedLines(canvas, rnd, base, col, opa, nEx)
                     Genre.ROMANCE -> Unit
                 }
             }
@@ -956,6 +1011,73 @@ object GenreBrushEngine {
             }
         }
 
+        /**
+         * Asap: gumpalan bulat lembut di sisi goresan, alpha rendah supaya
+         * terbaca sebagai kabut, bukan titik. Posisi menempel di sekitar
+         * tinta (lihat drawSpatter: jangan sebar sejauh clip).
+         */
+        private fun drawSmokePuffs(
+            canvas: Canvas, rnd: SfxInk.XorShift64,
+            base: Float, col: Int, opa: Float, nEx: Int
+        ) {
+            if (nPts < 2) return
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                color = col
+                if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+            }
+            for (i in 0 until nEx) {
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val side = if (rnd.nextFloat() < 0.5f) 1f else -1f
+                val off = base * (0.6f + rnd.nextFloat() * 1.2f) * side
+                val cx = xs[idx] + nx(idx) * off
+                val cy = ys[idx] + ny(idx) * off
+                val r = base * (0.35f + rnd.nextFloat() * 0.45f)
+                p.alpha = (opa * 70f).toInt().coerceIn(0, 255)
+                if (p.alpha <= 3) continue
+                canvas.drawCircle(cx, cy, max(1f, r), p)
+            }
+        }
+
+        /**
+         * Listrik: percikan zigzag pendek (3 segmen) di sisi goresan,
+         * seperti loncatan arus. Garis tipis ROUND supaya tidak kaku.
+         */
+        private fun drawSparks(
+            canvas: Canvas, rnd: SfxInk.XorShift64,
+            base: Float, col: Int, opa: Float, nEx: Int
+        ) {
+            if (nPts < 2) return
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+                color = col
+                alpha = (opa * 220f).toInt().coerceIn(0, 255)
+                if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+            }
+            for (i in 0 until nEx) {
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val side = if (rnd.nextFloat() < 0.5f) 1f else -1f
+                var cx = xs[idx] + nx(idx) * base * (0.7f + rnd.nextFloat() * 0.6f) * side
+                var cy = ys[idx] + ny(idx) * base * (0.7f + rnd.nextFloat() * 0.6f) * side
+                p.strokeWidth = max(1f, base * 0.08f)
+                val path = Path()
+                path.moveTo(cx, cy)
+                // 3 patahan kecil, arah umum menjauhi tinta.
+                val dirX = nx(idx) * side
+                val dirY = ny(idx) * side
+                for (k in 0 until 3) {
+                    val segLen = base * (0.25f + rnd.nextFloat() * 0.3f)
+                    val jag = (rnd.nextFloat() - 0.5f) * base * 0.5f
+                    cx += dirX * segLen - dirY * jag
+                    cy += dirY * segLen + dirX * jag
+                    path.lineTo(cx, cy)
+                }
+                canvas.drawPath(path, p)
+            }
+        }
+
         /** Kilau bintang fantasy: bintang 4 sudut + titik kecil di samping. */
         private fun drawSparkles(
             canvas: Canvas, rnd: SfxInk.XorShift64,
@@ -977,23 +1099,35 @@ object GenreBrushEngine {
             }
         }
 
-        /** Percikan kecil di sekitar goresan (jumlah dari setelan spatter). */
+        /**
+         * Percikan kecil di sekitar goresan (jumlah dari setelan spatter).
+         *
+         * Titik diambil dari titik goresan acak lalu digeser tegak lurus
+         * maksimal ~2x setengah-lebar: percikan menempel di sekitar tinta,
+         * bukan lingkaran misterius di tengah/ujung clip. (Dulu titik
+         * disebar dalam radius setengah clip — untuk goresan panjang,
+         * titiknya jatuh jauh dari tinta.)
+         */
         private fun drawSpatter(
             canvas: Canvas, rnd: SfxInk.XorShift64,
             base: Float, col: Int, opa: Float, count: Int, clip: RectF
         ) {
+            // Normal butuh 2 titik (lihat nx()/ny()); tap 1 titik tak berpercik.
+            if (nPts < 2) return
             val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.FILL
                 color = col
                 if (alphaLocked) xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
             }
-            val reach = max(clip.width(), clip.height()) * 0.5f + base
             for (i in 0 until count) {
-                val th = rnd.nextFloat() * 2f * PI.toFloat()
-                val rad = reach * rnd.nextFloat()
-                val cx = clip.centerX() + cos(th) * rad
-                val cy = clip.centerY() + sin(th) * rad
-                p.alpha = (opa * 200f * (1f - rad / max(1f, reach))).toInt().coerceIn(0, 255)
+                val idx = (rnd.nextFloat() * (nPts - 1)).toInt().coerceIn(0, nPts - 1)
+                val side = if (rnd.nextFloat() < 0.5f) 1f else -1f
+                // 0.8..2.2x setengah-lebar dari tepi tinta: dekat tapi di luar.
+                val off = base * (0.8f + rnd.nextFloat() * 1.4f) * side
+                val cx = xs[idx] + nx(idx) * off
+                val cy = ys[idx] + ny(idx) * off
+                val fade = 1f - (off / (base * 2.2f)).coerceIn(0f, 1f)
+                p.alpha = (opa * 200f * fade).toInt().coerceIn(0, 255)
                 if (p.alpha <= 3) continue
                 canvas.drawCircle(cx, cy, max(0.7f, base * 0.10f * rnd.nextFloat()), p)
             }

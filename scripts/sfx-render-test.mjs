@@ -52,7 +52,7 @@ function preset(block) {
 }
 
 const presets = {};
-for (const g of ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY']) {
+for (const g of ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY', 'MECH', 'EXPLOSION', 'SWOOSH', 'CHILL', 'SMOKE', 'ELECTRIC', 'SLASH']) {
   const i = styleSrc.indexOf('SfxGenre.' + g);
   if (i < 0) { fail('preset ' + g + ' tidak ditemukan di SfxStyle.kt'); continue; }
   const start = styleSrc.indexOf('SfxStyleSpec(', i);
@@ -160,6 +160,13 @@ function widthFactor(g, t, jitter) {
   if (g === 'HORROR') { const tri = Math.abs(((t * 9) % 1) * 2 - 1); return 0.85 + 0.55 * tri + 0.18 * jitter; }
   if (g === 'ROMANCE') return 0.95 + 0.16 * Math.max(0, Math.sin(t * Math.PI));
   if (g === 'ACTION') { const step = (t * 5) % 1; return (step < 0.45 ? 1 : 0.55) + 0.10 * jitter; }
+  if (g === 'MECH') { const seg = (t * 7) % 1; return (seg < 0.5 ? 1 : 0.78) + 0.06 * jitter; }
+  if (g === 'EXPLOSION') { const u = t * 2 - 1; return 0.42 + 0.95 * (1 - u * u); }
+  if (g === 'SWOOSH') return 1.05 - 0.62 * t + 0.08 * Math.sin(t * 6);
+  if (g === 'CHILL') return 0.96 + 0.07 * Math.sin(t * 4 + 1.1);
+  if (g === 'SMOKE') return 1.1 + 0.35 * Math.sin(t * Math.PI) + 0.06 * Math.sin(t * 11);
+  if (g === 'ELECTRIC') return 0.62 + 0.22 * Math.abs(Math.sin(t * Math.PI * 9)) + 0.05 * jitter;
+  if (g === 'SLASH') return 1.25 - 0.95 * t;
   return 0.92 + 0.22 * Math.sin(t * 9 + 0.7) + 0.10 * Math.sin(t * 23);
 }
 function render(genre, p, file) {
@@ -253,6 +260,6 @@ for (const [g, p] of Object.entries(presets)) {
 }
 
 console.log(failures === 0
-  ? '\nsfx-render-test PASSED: preset bersama dipakai dan keempat genre layak render'
+  ? '\nsfx-render-test PASSED: preset bersama dipakai dan semua genre layak render'
   : '\nsfx-render-test FAILED: ' + failures + ' masalah');
 process.exit(failures === 0 ? 0 : 1);

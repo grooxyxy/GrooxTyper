@@ -210,12 +210,12 @@ const sfxEng = genreEngineSrc;
   const c = (sfxEng.match(/}/g) || []).length;
   assert(o === c, 'GenreBrushEngine braces balanced (' + o + '/' + c + ')');
 }
-const genreBrushes = ['GENRE_HORROR', 'GENRE_ROMANCE', 'GENRE_ACTION', 'GENRE_FANTASY'];
-assert(genreBrushes.every(b => brush.includes(b + '(')), 'BrushType: 4 kuas genre SFX terdaftar');
+const genreBrushes = ['GENRE_HORROR', 'GENRE_ROMANCE', 'GENRE_ACTION', 'GENRE_FANTASY', 'GENRE_MECH', 'GENRE_EXPLOSION', 'GENRE_SWOOSH', 'GENRE_CHILL', 'GENRE_SMOKE', 'GENRE_ELECTRIC', 'GENRE_SLASH'];
+assert(genreBrushes.every(b => brush.includes(b + '(')), 'BrushType: 11 kuas genre SFX terdaftar');
 for (const b of ['SFX_PEN', 'SFX_BRUSH', 'SFX_MARKER', 'SFX_AIR', 'SFX_CRAYON', 'SFX_INK', 'SFX_NEON']) {
   assert(!brush.includes(b + '('), 'kuas SFX lama sudah dibuang: ' + b);
 }
-assert(genreBrushes.every(b => sfxEng.includes(b)), 'GenreBrushEngine: keempat genre terpetakan ke mesin');
+assert(genreBrushes.every(b => sfxEng.includes(b)), 'GenreBrushEngine: kesebelas genre terpetakan ke mesin');
 assert(sfxEng.includes('HORROR("SFX Horror")') && sfxEng.includes('ROMANCE("SFX Romance")') &&
   sfxEng.includes('ACTION("SFX Action")') && sfxEng.includes('FANTASY("SFX Fantasy")'),
   'GenreBrushEngine: nama genre tampil apa adanya di daftar kuas');
@@ -235,7 +235,7 @@ assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 
   for (const f of ['gradStart', 'gradEnd', 'gradAngle', 'inkScale', 'outlineScale', 'outlineColor', 'shadowDx', 'shadowDy', 'shadowBlur', 'shadowColor', 'roughness', 'tiltPerWord', 'spatter']) {
     assert(sfxStyle.includes('val ' + f), 'SFX: preset bersama punya field ' + f);
   }
-  for (const g of ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY']) {
+  for (const g of ['HORROR', 'ROMANCE', 'ACTION', 'FANTASY', 'MECH', 'EXPLOSION', 'SWOOSH', 'CHILL', 'SMOKE', 'ELECTRIC', 'SLASH']) {
     assert(sfxStyle.includes('SfxGenre.' + g), 'SFX: preset untuk genre ' + g);
   }
   assert(sfxStyle.includes('enum class SfxGenre') && sfxStyle.includes('fun of(genre: GenreBrushEngine.Genre)'), 'SFX: pemetaan GenreBrushEngine.Genre ke SfxGenre');
@@ -246,7 +246,7 @@ assert(sfxEng.includes('fun applyPreset(') && sfxEng.includes('fun copyFrom('), 
   assert(blurVals.length > 0 && blurVals.every(v => v === 0), 'SFX: bayangan SFX keras semua (blur 0) sesuai riset');
   // Outline dua lapis: dalam = setengah luar.
   assert(sfxStyle.includes('fun outlineInnerScale()') && sfxStyle.includes('outlineScale * 0.5f'), 'SFX: outline dalam setengah luar (rasio 2:1 Comicraft)');
-  for (const g of ['HORROR','ROMANCE','ACTION','FANTASY']) {
+  for (const g of ['HORROR','ROMANCE','ACTION','FANTASY','MECH','EXPLOSION','SWOOSH','CHILL','SMOKE','ELECTRIC','SLASH']) {
     const i = sfxStyle.indexOf('SfxGenre.' + g);
     const seg = sfxStyle.slice(i, i + 700);
     assert(seg.includes('outlineInnerColor ='), 'SFX: preset ' + g + ' punya warna outline dalam');
@@ -730,7 +730,7 @@ assert(genre.includes('if (!SfxTextureBrush.prepare()) return false'), 'grain: I
 assert(genre.includes('tx[i] = xs[i] - offX'), 'grain: koordinat ikut digeser agar tidak meleset dari kanvas sementara');
 assert(sfxStyle.includes('val grain: Float = 0f'), 'grain: preset gaya punya kolom grain');
 assert(sfxStyle.includes('val texture: SfxTextureBrush.Texture'), 'preset gaya punya jenis grain');
-assert((sfxStyle.match(/grain = 0\.\d+f/g) || []).length === 8, 'grain: kedelapan genre punya angka grain sendiri');
+assert((sfxStyle.match(/grain = 0\.\d+f/g) || []).length === 11, 'grain: kesebelas genre punya angka grain sendiri');
 assert(/grain = 0f,/.test(sfxStyle), 'grain: teks tanpa genre (NETRAL) tetap polos');
 assert(sfxStyle.includes('roughness, tiltPerWord, spatter, grain, texture'), 'grain: copy() preset menyalin kolom baru');
 for (const t of ['CRUNCH', 'RIBBON', 'SPATTER', 'HALFTONE', 'HATCH']) {
@@ -1067,6 +1067,47 @@ assert(editor.includes('showBubbleAreaPanel = it'), 'panel wand: mode bubble mem
 const oM = (maskContour.match(/\{/g) || []).length, cM = (maskContour.match(/\}/g) || []).length;
 assert(oM === cM, 'MaskContour: tanda kurawal seimbang (' + oM + '/' + cM + ')');
 assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(maskContour), 'MaskContour bebas karakter asing');
+
+
+// ============ Perbaikan 6-in-1 (shadow/bulk/multi/ikon/spatter/SFX) =====
+console.log('\n== 6 perbaikan ==');
+// 1. Shadow Photoshop-like: spread persen -> choke dari blur, rim warna
+//    bayangan (bukan warna isi), default hitam pekat.
+assert(textRenderer.includes('fun spreadChokePx('), 'shadow: choke spread% dari blur (bukan piksel mentah)');
+assert(!/strokeWidth = [sg]?\.?spread \* box\.scale/.test(textRenderer), 'shadow/glow: tak ada lagi spread persen dipakai sebagai piksel');
+assert(textRenderer.includes('color = shadowColor'), 'shadow: pass gemuk memakai warna bayangan');
+assert(textBoxSrc.includes('var color: Int = 0xFF000000.toInt()'), 'shadow: default hitam pekat (opacity berkuasa)');
+// 2. Multi teks menyatu fitur teks (tab Multi di panel teks).
+const multiSec = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/MultiTextSection.kt'));
+assert(multiSec.includes('fun MultiTextTab('), 'multi: tab Multi di file sendiri');
+assert(editor.includes('onCreateMultiText'), 'multi: panel teks bisa membuat banyak kotak sekaligus');
+assert(editor.includes('applyStyleFrom(base)'), 'multi: kotak baru meniru gaya kotak terpilih');
+assert(textEditor.includes('"Tulis", "Warna", "Efek", "Style", "Multi"'), 'multi: tab kelima di panel teks');
+// 3. Bulk edit: warna (picker), italic, font.
+assert(bulkDlg.includes('ColorPickerDialog('), 'bulk: pilih warna lewat color picker (bukan warna brush)');
+assert(bulkDlg.includes('bulkItalic') && bulkDlg.includes('Miring (italic)'), 'bulk: sakelar italic');
+assert(bulkDlg.includes('bulkFontName') && bulkDlg.includes('fonts.forEach'), 'bulk: pilih font dari daftar');
+assert(bulkDlg.includes('onApply(bulkChecked, bulkSize, bulkBold, bulkItalic, bulkFontName, bulkColor)'), 'bulk: terapkan bawa semua atribut');
+assert(editor.includes('tl.box.italic = italic') && editor.includes('tl.box.fontName = fontName'), 'bulk: call site menerapkan italic+font per kotak');
+// 4. Ikon deteksi ganda dibuang (satu pintu dialog).
+assert(!/contentDescription = "Text Detector"/.test(editor), 'ikon: tombol Text Detector ganda dibuang');
+assert(editor.includes('contentDescription = "Inpaint"'), 'ikon: pintu Inpaint tetap ada');
+// 5. Percikan menempel di sekitar tinta (bukan sejauh setengah clip).
+assert(sfxEng.includes('0.8f + rnd.nextFloat() * 1.4f'), 'spatter: titik menempel max 2.2x setengah-lebar');
+assert(!/reach = max\(clip\.width\(\), clip\.height\(\)\) \* 0\.5f/.test(sfxEng), 'spatter: sebar sejauh clip dibuang');
+assert(sfxEng.includes('if (nPts < 2) return'), 'spatter: aman untuk tap 1 titik');
+// 6. Tiga genre baru + pelicin lebar anti-kaku.
+for (const g of ['SMOKE("SFX Asap")', 'ELECTRIC("SFX Listrik")', 'SLASH("SFX Tebasan")']) {
+  assert(sfxEng.includes(g), 'SFX: genre baru ' + g);
+}
+assert(sfxEng.includes('drawSmokePuffs') && sfxEng.includes('drawSparks'), 'SFX: hiasan asap + percikan listrik');
+assert(sfxEng.includes('Pellicin lebar') || sfxEng.includes('rata-rata gerak'), 'SFX: profil lebar dilicinkan (anti kaku)');
+assert(sfxTex.includes('Genre.SMOKE -> RIBBON') && sfxTex.includes('Genre.ELECTRIC -> HATCH'), 'SFX: pori genre baru terpetakan');
+for (const [nm, tx] of [['TextRenderer', textRenderer], ['BulkTextDialog', bulkDlg], ['MultiTextSection', multiSec]]) {
+  const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
+  assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
+  assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(tx), nm + ' bebas karakter asing');
+}
 
 if (process.exitCode) {
   console.error('brush-check FAILED');

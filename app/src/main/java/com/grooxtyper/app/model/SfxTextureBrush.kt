@@ -109,6 +109,11 @@ object SfxTextureBrush {
                 GenreBrushEngine.Genre.EXPLOSION -> CRUNCH
                 GenreBrushEngine.Genre.SWOOSH -> SPATTER
                 GenreBrushEngine.Genre.CHILL -> RIBBON
+                // Asap butuh tepi membaur (pita air), listrik butuh pola
+                // berarah (arsir), tebasan butuh sapuan kering (ciprican).
+                GenreBrushEngine.Genre.SMOKE -> RIBBON
+                GenreBrushEngine.Genre.ELECTRIC -> HATCH
+                GenreBrushEngine.Genre.SLASH -> SPATTER
             }
         }
     }

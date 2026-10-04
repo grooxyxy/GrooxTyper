@@ -3,12 +3,14 @@ package com.grooxtyper.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +28,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,9 +48,10 @@ private val BulkPanelBg = Color(0xFF2C2C2E)
 
 /**
  * Dialog Edit Teks Massal: pilih beberapa kotak teks, terapkan ukuran /
- * warna / tebal sekaligus, atau hapus yang dipilih. Ditaruh di file sendiri
- * (bukan di badan CanvasEditorScreen) karena composable raksasa melebihi
- * batas method JVM 64KB → build gagal "Method too large".
+ * warna / tebal / miring / font sekaligus, atau hapus yang dipilih.
+ * Ditaruh di file sendiri (bukan di badan CanvasEditorScreen) karena
+ * composable raksasa melebihi batas method JVM 64KB → build gagal
+ * "Method too large".
  */
 @Composable
 fun BulkTextDialog(
@@ -55,8 +59,11 @@ fun BulkTextDialog(
     initialChecked: Set<String>,
     initialSize: Float,
     initialBold: Boolean,
-    onApply: (ids: Set<String>, size: Float, bold: Boolean) -> Unit,
-    onApplyColor: (ids: Set<String>) -> Unit,
+    initialItalic: Boolean,
+    initialFontName: String?,
+    initialColor: Int,
+    fonts: List<Pair<String, android.graphics.Typeface>>,
+    onApply: (ids: Set<String>, size: Float, bold: Boolean, italic: Boolean, fontName: String?, color: Int) -> Unit,
     onDelete: (ids: Set<String>) -> Unit,
     onEmptySelection: () -> Unit,
     onClose: () -> Unit
@@ -64,6 +71,11 @@ fun BulkTextDialog(
     var bulkChecked by remember { mutableStateOf(initialChecked) }
     var bulkSize by remember { mutableFloatStateOf(initialSize) }
     var bulkBold by remember { mutableStateOf(initialBold) }
+    var bulkItalic by remember { mutableStateOf(initialItalic) }
+    var bulkFontName by remember { mutableStateOf(initialFontName) }
+    var bulkColor by remember { mutableIntStateOf(initialColor) }
+    var showColor by remember { mutableStateOf(false) }
+    var fontExpanded by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Edit Teks Massal", color = Color.White, fontWeight = FontWeight.Bold) },
@@ -124,34 +136,66 @@ fun BulkTextDialog(
                         colors = SwitchDefaults.colors(checkedThumbColor = BulkAccent)
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            if (bulkChecked.isEmpty()) {
-                                onEmptySelection()
-                                return@Button
-                            }
-                            onApply(bulkChecked, bulkSize, bulkBold)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = BulkAccent),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Terapkan", color = Color.White, fontSize = 12.sp) }
-                    Button(
-                        onClick = {
-                            if (bulkChecked.isEmpty()) {
-                                onEmptySelection()
-                                return@Button
-                            }
-                            onApplyColor(bulkChecked)
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = BulkPanelBg),
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Warna brush", color = Color.White, fontSize = 12.sp) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Miring (italic)", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = bulkItalic,
+                        onCheckedChange = { bulkItalic = it },
+                        colors = SwitchDefaults.colors(checkedThumbColor = BulkAccent)
+                    )
                 }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Warna teks", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(Color(bulkColor))
+                            .clickable { showColor = true }
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Font: ${bulkFontName ?: "Campuran"}",
+                        color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { fontExpanded = !fontExpanded }) {
+                        Text(if (fontExpanded) "Tutup" else "Pilih", color = BulkAccent, fontSize = 12.sp)
+                    }
+                }
+                if (fontExpanded) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        if (fonts.isEmpty()) {
+                            Text("Belum ada font.", color = Color.Gray, fontSize = 12.sp)
+                        }
+                        fonts.forEach { (name, _) ->
+                            Text(
+                                name,
+                                color = if (name == bulkFontName) BulkAccent else Color.LightGray,
+                                fontSize = 12.sp,
+                                fontWeight = if (name == bulkFontName) FontWeight.Bold else FontWeight.Normal,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (name == bulkFontName) Color(0xFF1F3D2B) else BulkPanelBg)
+                                    .clickable { bulkFontName = name; fontExpanded = false }
+                                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Button(
+                    onClick = {
+                        if (bulkChecked.isEmpty()) {
+                            onEmptySelection()
+                            return@Button
+                        }
+                        onApply(bulkChecked, bulkSize, bulkBold, bulkItalic, bulkFontName, bulkColor)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BulkAccent),
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Terapkan ke ${bulkChecked.size} teks", color = Color.White, fontSize = 12.sp) }
             }
         },
         confirmButton = {
@@ -167,4 +211,11 @@ fun BulkTextDialog(
         },
         containerColor = BulkPanelBg
     )
+    if (showColor) {
+        ColorPickerDialog(
+            initialColor = bulkColor,
+            onColorSelected = { bulkColor = it },
+            onDismiss = { showColor = false }
+        )
+    }
 }

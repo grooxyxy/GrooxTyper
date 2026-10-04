@@ -44,7 +44,6 @@ import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Colorize
@@ -6384,15 +6383,9 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.FlipToBack, contentDescription = "Image", tint = if (activeTool == ActiveTool.IMAGE) Accent else Color.White)
             }
 
-            // Text Detector (ML Kit lokal, tanpa download model): buka panel dulu,
-            // deteksi baru jalan saat tombol Deteksi di panel ditekan.
-            IconButton(
-                onClick = { showMLInpaintDialog = true }
-            ) {
-                Icon(Icons.Default.Search, contentDescription = "Text Detector", tint = Color.White)
-            }
-
-            // ML Inpaint (pakai hasil deteksi teks terakhir)
+            // Deteksi teks + Inpaint (satu pintu: dialog yang sama memakai
+            // hasil deteksi teks terakhir; tombol ganda sebelumnya membuka
+            // dialog yang persis sama sehingga satu dibuang).
             IconButton(
                 onClick = { showMLInpaintDialog = true }
             ) {
@@ -6742,6 +6735,29 @@ fun CanvasEditorScreen(
                             eyedropSampled = false
                         },
                         onFlatten = { showFlattenConfirm = true },
+                        onCreateMultiText = { lines ->
+                            // Multi teks menyatu fitur teks: tiap baris jadi
+                            // satu kotak baru menumpuk ke bawah, meniru gaya
+                            // kotak yang sedang dipilih (atau bawaan).
+                            val base = selectedTextBox
+                            val x0 = base?.position?.x ?: (canvasWidth / 2f)
+                            var y = (base?.position?.y ?: (canvasHeight / 2f)) +
+                                (base?.let { it.fontSize * it.scale } ?: 64f) + 24f
+                            var last: com.grooxtyper.app.model.TextBox? = null
+                            for (line in lines) {
+                                val nb = com.grooxtyper.app.model.TextBox(
+                                    text = line,
+                                    position = Offset(x0, y)
+                                )
+                                if (base != null) nb.applyStyleFrom(base)
+                                val created = layerManager.addTextLayer(nb)
+                                undoRedoManager.pushLayerAdd(created.id)
+                                last = nb
+                                y += nb.fontSize * nb.scale + 24f
+                            }
+                            if (last != null) selectedTextBox = last
+                            refreshComposite()
+                        },
                         onDelete = { deleteSelectedText() },
                         onClose = { showTextEditor = false }
                     )
@@ -6778,18 +6794,19 @@ fun CanvasEditorScreen(
                 initialSize = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.fontSize
                     ?: selectedTextBox?.fontSize ?: 64f,
                 initialBold = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.bold ?: true,
-                onApply = { ids, size, bold ->
+                initialItalic = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.italic ?: false,
+                initialFontName = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.fontName,
+                initialColor = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.color
+                    ?: brushEngine.color,
+                fonts = fontList,
+                onApply = { ids, size, bold, italic, fontName, color ->
                     for (tl in bulkLayers.filter { it.id in ids }) {
                         undoRedoManager.pushTextBox(tl.id, tl.box.copy())
                         tl.box.fontSize = size
                         tl.box.bold = bold
-                    }
-                    refreshComposite()
-                },
-                onApplyColor = { ids ->
-                    for (tl in bulkLayers.filter { it.id in ids }) {
-                        undoRedoManager.pushTextBox(tl.id, tl.box.copy())
-                        tl.box.color = brushEngine.color
+                        tl.box.italic = italic
+                        if (fontName != null) tl.box.fontName = fontName
+                        tl.box.color = color
                     }
                     refreshComposite()
                 },

@@ -107,6 +107,8 @@ fun TextEditorPanel(
     onOpenMultiBubble: () -> Unit,
     onFlatten: () -> Unit,
     onDelete: () -> Unit,
+    // Multi teks: satu baris = satu kotak teks (menyatu dengan fitur teks).
+    onCreateMultiText: (List<String>) -> Unit = {},
     onOpenPerspectiveGrid: () -> Unit = {},
     // Mode pipet: screen mendaftarkan konsumer warna (dipanggil saat user
     // mengetuk kanvas) untuk target warna yang sedang dipilih di panel ini.
@@ -145,7 +147,7 @@ fun TextEditorPanel(
     var strokePos by remember(box.id, styleVersion) { mutableStateOf(box.strokePosition) }
 
     var shadowOn by remember(box.id, styleVersion) { mutableStateOf(box.shadow != null) }
-    var shadowColor by remember(box.id, styleVersion) { mutableIntStateOf(box.shadow?.color ?: 0x80000000.toInt()) }
+    var shadowColor by remember(box.id, styleVersion) { mutableIntStateOf(box.shadow?.color ?: 0xFF000000.toInt()) }
     var shadowOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.shadow?.opacity ?: 0.75f) }
     var shadowDist by remember(box.id, styleVersion) {
         mutableFloatStateOf(box.shadow?.let { hypot(it.dx, it.dy) } ?: 6f)
@@ -349,7 +351,7 @@ fun TextEditorPanel(
                     .background(PanelLight)
                     .padding(4.dp)
             ) {
-                listOf("Tulis", "Warna", "Efek", "Style").forEachIndexed { i, t ->
+                listOf("Tulis", "Warna", "Efek", "Style", "Multi").forEachIndexed { i, t ->
                     Box(
                         modifier = Modifier
                             .weight(1f)
@@ -541,6 +543,9 @@ fun TextEditorPanel(
                         fonts = fonts,
                         onApply = { applyPreset(it) },
                         onDeletePreset = { presets = styleManager.delete(it.id) }
+                    )
+                    4 -> MultiTextTab(
+                        onCreateLines = { onCreateMultiText(it) }
                     )
                 }
                 // Mode SFX (tab Tulis): huruf di busur + jitter ala lettering

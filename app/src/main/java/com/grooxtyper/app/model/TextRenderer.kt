@@ -431,7 +431,7 @@ object TextRenderer {
         val gc = withAlpha(g.color, g.opacity)
         gp.apply {
             style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
-            strokeWidth = g.spread * box.scale
+            strokeWidth = spreadChokePx(g.spread, g.blur, box.scale)
             strokeJoin = Paint.Join.ROUND
             this.shader = null
             color = Color.WHITE
@@ -551,7 +551,7 @@ object TextRenderer {
             Paint(fill).apply {
                 shader = null
                 style = Paint.Style.FILL_AND_STROKE
-                strokeWidth = box.glow!!.spread * box.scale
+                strokeWidth = spreadChokePx(box.glow!!.spread, box.glow!!.blur, box.scale)
                 strokeJoin = Paint.Join.ROUND
                 color = Color.WHITE
                 alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
@@ -617,7 +617,7 @@ object TextRenderer {
         val glowPaint = Paint(fill).apply {
             shader = null
             style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
-            strokeWidth = g.spread * box.scale
+            strokeWidth = spreadChokePx(g.spread, g.blur, box.scale)
             strokeJoin = Paint.Join.ROUND
             color = Color.WHITE
             alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
@@ -698,6 +698,14 @@ object TextRenderer {
         }
     }
 
+    /**
+     * Choke inti bayangan/glow ala Photoshop: spread 0..100% dari radius
+     * blur. Spread 0 = inti nol (bayangan lembut penuh), 100 = inti
+     * selebar blur (bayangan keras bertepi). Nilai persen, BUKAN piksel.
+     */
+    private fun spreadChokePx(spreadPct: Float, blurPx: Float, scale: Float): Float =
+        (spreadPct.coerceIn(0f, 100f) / 100f) * maxOf(1f, blurPx) * scale
+
     /** Isi teks + bayangan (mendukung opacity & spread ala Photoshop). */
     private fun drawFillWithShadow(
         canvas: Canvas,
@@ -716,12 +724,19 @@ object TextRenderer {
         }
         val shadowColor = withAlpha(s.color, s.opacity)
         if (s.spread > 0f) {
-            // Pass 1: bentuk digemukkan khusus untuk melebarkan bayangan,
-            // Pass 2: isi normal menutupnya agar fill tidak ikut gemuk.
+            // Pass 1: bentuk digemukkan sebesar choke KHUSUS untuk melebarkan
+            // inti bayangan. Cat digambar WARNA BAYANGAN (bukan warna isi!):
+            // kalau warna isi yang digemukkan, spread besar menutup kanvas
+            // dengan warna teks (mis. putih) dan bayangan terkubur.
+            // Pass 2: isi normal menutup tengahnya agar fill tidak ikut gemuk.
+            val choke = spreadChokePx(s.spread, s.blur, box.scale)
             val fat = Paint(fill).apply {
+                shader = null
                 style = Paint.Style.FILL_AND_STROKE
-                strokeWidth = s.spread * box.scale
+                strokeWidth = choke
                 strokeJoin = Paint.Join.ROUND
+                color = shadowColor
+                alpha = (Color.alpha(shadowColor) * box.textOpacity).toInt().coerceIn(0, 255)
                 setShadowLayer(s.blur * box.scale, s.dx * box.scale, s.dy * box.scale, shadowColor)
             }
             for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fat, extra, wordExtra)
