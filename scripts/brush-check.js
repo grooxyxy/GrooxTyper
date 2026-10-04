@@ -1031,8 +1031,18 @@ console.log('\n== WandFix + bubble tersambung wand ==');
 const maskContour = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/MaskContour.kt'));
 const sepSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/BubbleSeparator.kt'));
 const wandScriptApiSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/WandScriptApi.kt'));
-const refFix = read('/public/GrooxTyper_WandFix/GrooxTyper_WandFix/app/src/main/java/com/grooxtyper/app/model/MaskContour.kt');
-assert(maskContour === refFix, 'wandfix: MaskContour.kt sama persis dengan folder acuan');
+// Tabel acuan ada di folder GrooxTyper_WandFix (lokal saja, tak ikut repo);
+// di sini yang dikunci strukturnya supaya jalan di CI mana pun.
+const tabel = maskContour.slice(
+  maskContour.indexOf('private val EDGE_TABLE'),
+  maskContour.indexOf('fun edgeHalf(')
+);
+const entri = (tabel.match(/intArrayOf\([^)]*\)/g) || []);
+assert(entri.length === 16, 'wandfix: tabel tepat 16 entri 0..15 (' + entri.length + ')');
+for (const e of entri) {
+  const dalam = e.slice(e.indexOf('(') + 1, e.indexOf(')')).split(',').map((x) => x.trim()).filter((x) => x !== '');
+  assert(dalam.length % 2 === 0, 'wandfix: tiap entri genap (pasangan start/end): ' + e);
+}
 // Bug 1: kasus 0000 harus array kosong (dulu intArrayOf(0) -> list[1] crash)
 assert(maskContour.includes('intArrayOf(),                                      // 0000'),
   'wandfix: kasus 0000 array kosong (tak ada kontur)');
