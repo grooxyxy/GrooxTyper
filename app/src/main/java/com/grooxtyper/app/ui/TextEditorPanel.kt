@@ -52,6 +52,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -647,6 +648,10 @@ private fun WriteTab(
     onImportFont: () -> Unit,
     onOpenMultiBubble: () -> Unit
 ) {
+    var fontQuery by rememberSaveable { mutableStateOf("") }
+    val shownFonts = remember(fonts, fontQuery) {
+        fonts.filter { matchesSearchQuery(it.first, fontQuery) }
+    }
     OutlinedTextField(
         value = text,
         onValueChange = onText,
@@ -718,9 +723,25 @@ private fun WriteTab(
         Text("Import TTF/OTF", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold,
             modifier = Modifier.clickable { onImportFont() })
     }
+    SearchField(
+        value = fontQuery,
+        onValueChange = { fontQuery = it },
+        placeholder = "Cari font (mis. Bangers, Patrick, Comic)"
+    )
+    Text(
+        if (fontQuery.isBlank()) "${fonts.size} font tersedia"
+        else "${shownFonts.size} dari ${fonts.size} font cocok",
+        color = Color.Gray, fontSize = 11.sp
+    )
+    if (shownFonts.isEmpty()) {
+        Text(
+            "Font tidak ditemukan. Coba kata lain atau impor TTF/OTF.",
+            color = Color.Gray, fontSize = 12.sp
+        )
+    }
     // Daftar font: preview di-render async agar panel langsung muncul.
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        fonts.forEach { (name, tf) ->
+        shownFonts.forEach { (name, tf) ->
             val sel = boxFontName == name
             Card(
                 modifier = Modifier
@@ -1092,6 +1113,14 @@ private fun StyleTab(
     onApply: (TextStylePreset) -> Unit,
     onDeletePreset: (TextStylePreset) -> Unit
 ) {
+    var styleQuery by rememberSaveable { mutableStateOf("") }
+    val shownPresets = remember(presets, styleQuery) {
+        presets.filter {
+            matchesSearchQuery(it.name, styleQuery) ||
+                matchesSearchQuery(it.fontName, styleQuery) ||
+                matchesSearchQuery(it.prefix, styleQuery)
+        }
+    }
     Text("Simpan gaya saat ini", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1143,14 +1172,28 @@ private fun StyleTab(
         }
     }
     Text("Prefix otomatis: teks diawali [..] langsung pakai stylenya.", color = Color.Gray, fontSize = 11.sp)
-    Text("Style tersimpan (${presets.size}) — ketuk untuk pakai", color = Color.Gray, fontSize = 12.sp)
+    SearchField(
+        value = styleQuery,
+        onValueChange = { styleQuery = it },
+        placeholder = "Cari style (nama, font, atau prefix)"
+    )
+    Text(
+        if (styleQuery.isBlank()) "Style tersimpan (${presets.size}) — ketuk untuk pakai"
+        else "${shownPresets.size} dari ${presets.size} style cocok",
+        color = Color.Gray, fontSize = 12.sp
+    )
     if (presets.isEmpty()) {
         Text(
             "Belum ada style. Atur font, warna, stroke, bayangan lalu tekan Simpan.",
             color = Color.Gray, fontSize = 12.sp
         )
+    } else if (shownPresets.isEmpty()) {
+        Text(
+            "Style tidak ditemukan. Coba nama, font, atau prefix lain.",
+            color = Color.Gray, fontSize = 12.sp
+        )
     }
-    presets.forEach { preset ->
+    shownPresets.forEach { preset ->
         Card(
             modifier = Modifier
                 .fillMaxWidth()

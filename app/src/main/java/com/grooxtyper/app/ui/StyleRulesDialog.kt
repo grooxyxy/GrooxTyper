@@ -25,6 +25,11 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +62,14 @@ fun StyleRulesDialog(
     onDelete: (String) -> Unit,
     onClose: () -> Unit
 ) {
+    var styleQuery by rememberSaveable { mutableStateOf("") }
+    val shownPresets = remember(presets, styleQuery) {
+        presets.filter {
+            matchesSearchQuery(it.name, styleQuery) ||
+                matchesSearchQuery(it.fontName, styleQuery) ||
+                matchesSearchQuery(it.prefix, styleQuery)
+        }
+    }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Style Rules", color = Color.White) },
@@ -85,25 +98,37 @@ fun StyleRulesDialog(
                         "Pilih style:",
                         color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                     )
+                    SearchField(
+                        value = styleQuery,
+                        onValueChange = { styleQuery = it },
+                        placeholder = "Cari style (nama, font, atau prefix)"
+                    )
                     Spacer(modifier = Modifier.height(4.dp))
-                    LazyColumn(modifier = Modifier.fillMaxWidth().height(110.dp)) {
-                        itemsIndexed(presets) { _, p ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (styleId == p.id) RulesAccent else RulesPanel)
-                                    .clickable { onStyleId(p.id) }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    p.name, color = Color.White, fontSize = 12.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                if (p.prefix.isNotBlank()) {
-                                    Text("[${p.prefix}]", color = Color.Gray, fontSize = 10.sp)
+                    if (shownPresets.isEmpty()) {
+                        Text(
+                            "Style tidak ditemukan. Coba kata lain.",
+                            color = Color.Gray, fontSize = 11.sp
+                        )
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxWidth().height(110.dp)) {
+                            itemsIndexed(shownPresets) { _, p ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 2.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (styleId == p.id) RulesAccent else RulesPanel)
+                                        .clickable { onStyleId(p.id) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        p.name, color = Color.White, fontSize = 12.sp,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (p.prefix.isNotBlank()) {
+                                        Text("[${p.prefix}]", color = Color.Gray, fontSize = 10.sp)
+                                    }
                                 }
                             }
                         }

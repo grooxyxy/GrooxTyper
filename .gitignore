@@ -19,10 +19,15 @@ local.properties
 *.so
 obj/
 
-# Model bubble (~20MB Kiuyha YOLO26s ONNX) tidak di-commit agar repo ramping
-# & push cepat; di-bundle saat build di GitHub Actions (lihat
-# .github/workflows/android.yml). Batas <50MB terpenuhi.
+# Model bubble (KZKT v2.3.6, diambil dari APK rilis lalu dikonversi ONNX
+# fp16/int8 oleh CI) tidak di-commit agar repo ramping & push cepat; di-bundle
+# saat build di GitHub Actions (lihat .github/workflows/android.yml).
+# Batas <50MB terpenuhi.
 app/src/main/assets/models/bd.onnx
+
+# Python
+__pycache__/
+*.pyc
 
 # Model heal (~27MB MiGAN pipeline v2 ONNX, MIT Picsart AI Research)
 # tidak di-commit; di-bundle saat build di GitHub Actions (lihat

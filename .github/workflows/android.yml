@@ -7,9 +7,22 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Model bubble KZKT dipatok ke rilis terbaru + hash hasil decode.
+      # Ganti tag/hash HANYA setelah model baru lolos verifikasi manual.
+      KZKT_TAG: v2.3.6
+      KZKT_MODEL_SHA: c646d17e33d3577e5f2333977c4837e6b8110de45d9400fc00ad133dee4d3983
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,25 +46,33 @@ jobs:
 
       - name: Install NDK, CMake, platform
         run: |
-          "$SDKMANAGER" --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973" "cmake;3.22.1" || true
+          "$SDKMANAGER" --install "platforms;android-34" "platforms;android-35" "build-tools;34.0.0" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1" || true
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> $GITHUB_ENV
 
-      - name: Cache pip (ultralytics)
+      - name: Cache pip (onnx)
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-ultralytics-v1
+          key: pip-onnx-v2
 
-      - name: Model bubble kzkt (dari APK, XOR 0x5A -> ONNX, varian terverifikasi)
+      - name: Cache model bubble KZKT
+        id: model-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/assets/models/bd.onnx
+          key: kzkt-model-${{ env.KZKT_TAG }}-${{ env.KZKT_MODEL_SHA }}
+
+      - name: Siapkan model bubble KZKT (dari APK, XOR 0x5A -> ONNX)
+        if: steps.model-cache.outputs.cache-hit != 'true'
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p app/src/main/assets/models
           # Model bubble diambil dari APK rilis KZKT: repo kouzen-neo/kzkt hanya
           # berisi docs, modelnya ada di dalam assets/models/kzkt.dat dan
-          # sengaja disamarkan (XOR satu byte 0x5A). Hanya entri itu yang
-          # diunduh lewat HTTP Range (86MB dari 125MB), lalu di-inflate +
-          # didekode.
+          # sengaja disamarkan (XOR satu byte 0x5A). Skrip fetch membaca ZIP
+          # central directory lewat HTTP Range, jadi offset tidak di-hardcode
+          # dan tag baru cukup diganti lewat env KZKT_TAG.
           #
           # Kenapa tak dikuantisasi int8 dinamis lagi:
           #   quantize_dynamic menghasilkan op ConvInteger, dan AAR
@@ -64,21 +85,13 @@ jobs:
           # Setiap varian WAJIB lewat uji kontrak (sesi onnxruntime sungguhan
           # + IoU kotak decoder) sebelum dipakai; kalau tidak ada yang lolos,
           # build gagal, bukan diam-diam mengirim model rusak ke perangkat.
-          URL="https://github.com/kouzen-neo/kzkt/releases/download/v2.1.1/KZKT-arm64-v8a-v2.1.1.apk"
-          curl -sL --retry 3 -H "Range: bytes=43639867-129836409" -o /tmp/kzkt.deflate "$URL"
-          ls -la /tmp/kzkt.deflate
-          python3 - <<'PY'
-          import zlib
-          raw = zlib.decompressobj(-15).decompress(open('/tmp/kzkt.deflate', 'rb').read())
-          if len(raw) != 103627861:
-              raise SystemExit('ukuran kzkt.dat tak sesuai: %d' % len(raw))
-          tbl = bytes(x ^ 0x5A for x in range(256))
-          open('/tmp/bd_f32.onnx', 'wb').write(raw.translate(tbl))
-          print('onnx float32 siap:', len(raw), 'byte')
-          PY
+          python3 scripts/fetch-kzkt-model.py \
+            --tag "$KZKT_TAG" \
+            --sha256 "$KZKT_MODEL_SHA" \
+            --out /tmp/bd_f32.onnx
           SIZE=$(stat -c%s /tmp/bd_f32.onnx)
           echo "bubble model float32 size: $SIZE bytes"
-          pip install --quiet onnx onnxruntime onnxconverter-common > /dev/null 2>&1
+          python3 -m pip install --quiet --disable-pip-version-check onnx onnxruntime onnxconverter-common
 
           FINAL=""
           for VARIAN in fp16 int8; do
@@ -107,6 +120,14 @@ jobs:
           echo "bubble model final size: $SIZE bytes"
           test "$SIZE" -lt 52428800
 
+      - name: Verifikasi asset model bubble
+        run: |
+          set -euo pipefail
+          test -s app/src/main/assets/models/bd.onnx
+          SIZE=$(stat -c%s app/src/main/assets/models/bd.onnx)
+          echo "bd.onnx: $SIZE bytes"
+          test "$SIZE" -lt 52428800
+
       - name: Download heal model (MiGAN pipeline v2 -> ONNX, <50MB)
         run: |
           curl -sL --retry 3 -o app/src/main/assets/models/mg.onnx "https://huggingface.co/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx"
@@ -127,12 +148,30 @@ jobs:
       - name: Build Release APK
         run: ./gradlew assembleRelease --stacktrace
 
+      - name: Ringkasan APK
+        if: success()
+        run: |
+          {
+            echo "### APK GrooxTyper"
+            echo ""
+            echo "| Varian | Ukuran |"
+            echo "|---|---|"
+            for f in app/build/outputs/apk/debug/*.apk app/build/outputs/apk/release/*.apk; do
+              [ -f "$f" ] || continue
+              echo "| $(basename "$f") | $(du -h "$f" | cut -f1) |"
+            done
+            echo ""
+            echo "Model bubble: KZKT \`$KZKT_TAG\` (sha256 \`$KZKT_MODEL_SHA\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload Debug APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload Release APK
         if: success()
@@ -140,3 +179,5 @@ jobs:
         with:
           name: app-release
           path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 14

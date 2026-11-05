@@ -1,22 +1,30 @@
 # GrooxTyper
 
 Editor terjemahan manga on-device (Android): deteksi teks ML Kit, deteksi balon
-teks on-device via model YOLO detect end-to-end (bubble, 1 kelas),
+teks on-device via model YOLO detect end-to-end (bubble, 2 kelas; kelas 0 dipakai),
 inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Fitur utama
 
 - **Bubble Detector (inferensi nyata, on-device)** — model
-  `assets/models/bd.onnx` (YOLO end-to-end NMS-free, 1 kelas text,
-  input 640x640, single output (1,300,6) = x1,y1,x2,y2,score,cls) dieksekusi
-  langsung di perangkat memakai **ONNX Runtime Mobile**
-  (`com.microsoft.onnxruntime:onnxruntime-android`). Decode Kotlin:
-  letterbox → threshold skor → box dalam koordinat kanvas
-  (mask=null, tanpa NMS karena head sudah one-to-one). Kompatibel mundur
-  dengan varian detect klasik (1,6,8400) dan seg legacy (37ch + protos).
+  `assets/models/bd.onnx` (YOLO end-to-end NMS-free, 2 kelas: 0 = text_bubble,
+  1 = text_free; kelas 0 yang dipakai, input 640x640, output (1,300,6) =
+  x1,y1,x2,y2,score,cls) dieksekusi langsung di perangkat memakai **ONNX
+  Runtime Mobile** (`com.microsoft.onnxruntime:onnxruntime-android`). Decode
+  Kotlin: letterbox → threshold skor → box dalam koordinat kanvas (mask=null,
+  tanpa NMS karena head sudah one-to-one). Kompatibel mundur dengan varian
+  detect klasik (1,6,8400) dan seg legacy (37ch + protos).
   Untuk kanvas jangkung, gambar dipotong jadi tile persegi ber-overlap 30%
-  dengan NMS global untuk menghapus duplikat di sambungan tile. Bila session ONNX gagal dimuat,
-  otomatis fallback ke heuristik putih tersaturasi-rendah ber-outline gelap.
+  dengan NMS global untuk menghapus duplikat di sambungan tile. Bila session
+  ONNX gagal dimuat, deteksi mengembalikan error yang terlihat (tanpa fallback
+  heuristik).
+- **Pencarian font & style** — kolom cari di panel Teks (tab Tulis dan Style)
+  serta di dialog Style Rules. Pencocokan tidak peduli huruf besar/kecil,
+  spasi, atau strip, jadi "patrickhand" menemukan "PatrickHand-Regular".
+- **Eyedropper tahan-geser** — tahan jari untuk membuka loupe pembesaran,
+  geser untuk mengoreksi warna, lepas untuk memakai. HUD menampilkan HEX, RGB,
+  nama warna, dan koordinat piksel; geser ke strip atas untuk batal, dan
+  banner hasil pipet punya tombol **Salin** HEX.
 - **Mask Bentuk Teks** — Otsu biner sesungguhnya per region teks + deteksi
   polaritas otomatis (teks gelap / teks terang di latar gelap) + dilatasi 1px
   agar anti-alias tepi stroke ikut tertutup + pembersihan noise komponen
@@ -65,19 +73,30 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
 ## Konversi model (detect)
 
-Model aktif bubble detector adalah Kiuyha YOLO26s end-to-end NMS-free
-1-class (text, Apache-2.0, `Kiuyha/Manga-Bubble-YOLO`, mAP50 0.961),
-dilatih 1280 dijalankan 640, task detect, output (1,300,6).
-CI men-download `.pt` (~20MB) lalu export agar input 640x640 sesuai
-`BubbleDetector.INPUT_SIZE` (tanpa ubah decoder `decodeE2E`):
+Model aktif bubble detector berasal dari aplikasi **KZKT**
+(`kouzen-neo/kzkt`), dibundel di dalam APK rilis sebagai
+`assets/models/kzkt.dat` (deflate + XOR satu byte `0x5A`). Repo KZKT hanya
+berisi dokumentasi, jadi model diambil dari APK rilis terbaru
+(**v2.3.6**, CRC32 `060587A7`, 103.627.861 byte, sha256
+`c646d17e…3983`).
+
+Skrip `scripts/fetch-kzkt-model.py` membaca ZIP central directory lewat HTTP
+Range (tidak mengunduh 125 MB penuh, offset tidak di-hardcode), memverifikasi
+CRC/ukuran/SHA-256, lalu menulis ONNX float32. CI mengonversinya ke fp16/int8
+statis dan menguji kontrak sesi ONNX + IoU decoder sebelum dipakai:
 
 ```bash
-pip install ultralytics onnx onnxruntime
-curl -sL -o yolo26s.pt "https://huggingface.co/Kiuyha/Manga-Bubble-YOLO/resolve/main/weights/yolo26s.pt"
-python -c "from ultralytics import YOLO; YOLO('yolo26s.pt').export(format='onnx', imgsz=640, dynamic=False, opset=17)"
-# hasil: app/src/main/assets/models/bd.onnx (nama disamarkan, ~20MB <50MB,
-# di-bundle saat GitHub Actions, tidak di-commit)
+python3 scripts/fetch-kzkt-model.py --tag v2.3.6 --out /tmp/bd_f32.onnx
+pip install onnx onnxruntime onnxconverter-common
+python3 scripts/make-bubble-model.py fp16 /tmp/bd_f32.onnx /tmp/bd_fp16.onnx
+python3 scripts/verify-bubble-model.py /tmp/bd_fp16.onnx
+# hasil akhir: app/src/main/assets/models/bd.onnx (<50MB, tidak di-commit)
 ```
+
+Model disimpan di cache GitHub Actions berdasarkan tag + SHA-256, jadi build
+berikutnya tidak mengunduh ulang. Catatan lisensi: repo KZKT tidak
+mencantumkan lisensi dan model hanya tersedia di dalam APK; pastikan Anda
+punya izin sebelum mendistribusikan ulang APK yang memuat model ini.
 
 ## Build
 
@@ -86,7 +105,9 @@ python -c "from ultralytics import YOLO; YOLO('yolo26s.pt').export(format='onnx'
 ```
 
 CI: GitHub Actions (`.github/workflows/android.yml`) mem-build APK debug +
-release dan mengunggah artefak.
+release dan mengunggah artefak `app-debug` / `app-release`. Jalankan lewat
+tombol **Run workflow** (`workflow_dispatch`) atau push ke `main` / PR.
+Versi saat ini: **1.1.0** (versionCode 2).
 
 ## Font komik bawaan
 

@@ -2806,6 +2806,15 @@ fun CanvasEditorScreen(
         runCatching { brushEngine.color = compositeBitmap.getPixel(x, y) }
     }
 
+    /**
+     * Sampel warna kanvas tanpa clamp: titik di luar kanvas mengembalikan null
+     * supaya pipet tidak "melompat" ke piksel tepi saat jari keluar area.
+     */
+    fun sampleCanvasColor(x: Int, y: Int): Int? {
+        if (x < 0 || y < 0 || x >= canvasWidth || y >= canvasHeight) return null
+        return runCatching { compositeBitmap.getPixel(x, y) }.getOrNull()
+    }
+
     var lastCanvasPoint by remember { mutableStateOf<Offset?>(null) }
     var lastScreenPoint by remember { mutableStateOf<Offset?>(null) }
     // Titik awal tekan di tool PAN (untuk deteksi ketuk-hapus region teks:
@@ -2919,6 +2928,18 @@ fun CanvasEditorScreen(
     // pinch-zoom tak ikut mutar liar; rotasi sengaja tetap jalan utuh.
     var rotAccum by uiState::rotAccum
 
+    // Sesi pipet tahan-geser: warna baru dipakai saat jari dilepas, sehingga
+    // salah tekan masih bisa dikoreksi dengan menggeser ke warna yang benar.
+    val eyeCtl = remember { EyeDropperController() }
+    val eyeCancelZonePx = with(context.resources.displayMetrics) { 76f * density }
+    var colorBanner by remember { mutableStateOf<ColorPickBanner?>(null) }
+    LaunchedEffect(colorBanner) {
+        if (colorBanner != null) {
+            delay(5000)
+            colorBanner = null
+        }
+    }
+
     // Tahan jari 600ms tanpa geser = eyedropper sementara.
     // Titik awal dibatalkan via undo agar kanvas tetap bersih.
     // Pada kanvas jangkung 720x16000, tahan lama sering tidak sengaja memicu
@@ -2944,8 +2965,13 @@ fun CanvasEditorScreen(
                 brushEngine.endStroke()
                 strokeLayer = null
             }
-            colorPickActive = true
-            pickColorAt(cursorPosition ?: pressStartScreen)
+            colorPickActive = eyeCtl.begin(
+                screen = cursorPosition ?: pressStartScreen,
+                cancelZonePx = eyeCancelZonePx,
+                toCanvas = { x, y -> screenToCanvasCoordinates(x, y) },
+                sampler = { x, y -> sampleCanvasColor(x, y) },
+                target = { c -> brushEngine.color = c }
+            )
             refreshComposite()
         }
     }
@@ -4012,7 +4038,8 @@ fun CanvasEditorScreen(
                                 strokeIsAi = false
                                 brushEngine.endStroke()
                                 colorPickActive = false
-                                // Dua jari membatalkan mode pipet dari dialog warna.
+                                // Dua jari membatalkan sesi pipet & mode pipet dialog.
+                                eyeCtl.abort()
                                 eyedropConsumer = null
                                 eyedropSampled = false
                                 pressId++
@@ -4129,7 +4156,9 @@ fun CanvasEditorScreen(
                                     } else {
                                         lastScreenPoint = null
                                     }
-                                } else if (pointerCount == 1 && activeTool == ActiveTool.PAN) {
+                                } else if (pointerCount == 1 && activeTool == ActiveTool.PAN &&
+                                    eyedropConsumer == null && !eyeCtl.active
+                                ) {
                                     val change = changes[0]
                                     if (change.pressed) {
                                         if (lastScreenPoint == null && textEraseMode) {
@@ -4164,7 +4193,22 @@ fun CanvasEditorScreen(
                             } else if (pointerCount == 1) {
                                 val change = changes[0]
                                 if (change.pressed) {
-                                    if (twoFingerActive) {
+                                    if (eyeCtl.active) {
+                                        // Lanjutkan sesi pipet: perbarui preview,
+                                        // warna belum diterapkan sampai jari lepas.
+                                        eyeCtl.update(change.position)
+                                        change.consume()
+                                    } else if (eyedropConsumer != null || activeTool == ActiveTool.EYEDROPPER) {
+                                        // Mulai sesi pipet (tahan & geser).
+                                        eyeCtl.begin(
+                                            screen = change.position,
+                                            cancelZonePx = eyeCancelZonePx,
+                                            toCanvas = { x, y -> screenToCanvasCoordinates(x, y) },
+                                            sampler = { x, y -> sampleCanvasColor(x, y) },
+                                            target = eyedropConsumer ?: { c -> brushEngine.color = c }
+                                        )
+                                        change.consume()
+                                    } else if (twoFingerActive) {
                                         // Sisa satu jari setelah pinch: tahan semua aksi
                                         // sampai jari diangkat (mencegah titik/goresan liar).
                                         lastCanvasPoint = null
@@ -4184,24 +4228,10 @@ fun CanvasEditorScreen(
                                     cursorPosition = change.position
                                     val touchCanvasPos = screenToCanvasCoordinates(change.position.x, change.position.y)
 
-                                    // Mode pipet dari color picker: sekali ketuk →
-                                    // sampel warna piksel → konsumen (brush/teks) →
-                                    // selesai saat jari diangkat (tanpa menggambar).
-                                    val eyeDrop = eyedropConsumer
-                                    if (eyeDrop != null) {
-                                        if (!eyedropSampled) {
-                                            eyedropSampled = true
-                                            val picked = runCatching {
-                                                compositeBitmap.getPixel(
-                                                    touchCanvasPos.x.toInt().coerceIn(0, canvasWidth - 1),
-                                                    touchCanvasPos.y.toInt().coerceIn(0, canvasHeight - 1)
-                                                )
-                                            }.getOrDefault(brushEngine.color)
-                                            eyeDrop(picked)
-                                            eyedropConsumer = null
-                                        }
-                                        change.consume()
-                                    } else if (activeTool == ActiveTool.TEXT) {
+                                    // Mode pipet sudah ditangani di awal cabang
+                                    // pressed (sesi tahan-geser), jadi di sini
+                                    // langsung ke tool biasa.
+                                    if (activeTool == ActiveTool.TEXT) {
                                         val grip = 28f / viewState.scale
                                         if (lastCanvasPoint == null) {
                                             // Tekan baru: handle dulu, lalu badan box, lalu kanvas kosong.
@@ -4398,9 +4428,6 @@ fun CanvasEditorScreen(
                                                 refreshCompositeCoalesced()
                                             }
                                         }
-                                    } else if (activeTool == ActiveTool.EYEDROPPER) {
-                                        // Eyedropper tool: ketuk/seret untuk ambil warna kanvas.
-                                        pickColorAt(change.position)
                                     } else if (activeTool == ActiveTool.LASSO) {
                                         if (lastCanvasPoint == null) {
                                             // Ketuk bubble terdeteksi: mode hapus → buang bubble,
@@ -4552,9 +4579,6 @@ fun CanvasEditorScreen(
                                                     refreshCanvasState++
                                                 }
                                             }
-                                        } else if (colorPickActive) {
-                                            // Mode tahan-jari: ambil warna, jangan melukis.
-                                            pickColorAt(change.position)
                                         } else if (lastCanvasPoint == null) {
                                             pressId++
                                             pressStartScreen = change.position
@@ -4662,6 +4686,17 @@ fun CanvasEditorScreen(
                                     change.consume()
                                     } // else twoFingerActive
                                 } else {
+                                    // Sesi pipet: commit warna terakhir saat jari lepas.
+                                    if (eyeCtl.active) {
+                                        eyeCtl.update(change.position)
+                                        val picked = eyeCtl.finish()
+                                        if (picked != null) {
+                                            colorBanner = ColorPickBanner(picked)
+                                            savePickedColorToPalette(context, picked)
+                                        }
+                                        colorPickActive = false
+                                        change.consume()
+                                    }
                                     // Ketukan pipet selesai (sampel/batal) — reset mode.
                                     eyedropConsumer = null
                                     eyedropSampled = false
@@ -6581,8 +6616,8 @@ fun CanvasEditorScreen(
             loadError = referenceError
         )
 
-        // Mode pipet dari dialog warna: ketuk kanvas untuk ambil warna.
-        if (eyedropConsumer != null) {
+        // Mode pipet dari dialog warna: tahan & geser, lepas untuk pakai.
+        if (eyedropConsumer != null && !eyeCtl.active) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -6595,7 +6630,7 @@ fun CanvasEditorScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        "Pipet: ketuk kanvas untuk ambil warna",
+                        "Pipet: tahan & geser ke warna, lepas untuk pakai · geser ke atas = batal",
                         color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f)
                     )
                     TextButton(onClick = { eyedropConsumer = null; eyedropSampled = false }) {
@@ -6603,6 +6638,22 @@ fun CanvasEditorScreen(
                     }
                 }
             }
+        }
+
+        // HUD pipet: loupe + HEX/RGB/nama warna yang sedang disentuh.
+        eyeCtl.state?.let { st ->
+            EyeDropperOverlay(state = st, bitmap = compositeBitmap)
+        }
+
+        // Banner hasil pipet: HEX + nama warna + tombol salin.
+        colorBanner?.let { b ->
+            ColorPickBannerBar(
+                banner = b,
+                onDismiss = { colorBanner = null },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 56.dp)
+            )
         }
 
         // Dialogs
