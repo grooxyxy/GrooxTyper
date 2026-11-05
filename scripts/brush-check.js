@@ -423,6 +423,7 @@ const inpaintMgr = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mo
 const bubbleDet = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/BubbleDetector.kt'));
 const agnesInpaintSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ml/AgnesInpainter.kt'));
 const ciYml = read(path.join(ROOT, '.github/workflows/android.yml'));
+const fetchKzkt = read(path.join(ROOT, 'scripts/fetch-kzkt-model.py'));
 for (const [name, text] of [['InpaintingManager', inpaintMgr], ['BubbleDetector', bubbleDet]]) {
   const o = (text.match(/{/g) || []).length;
   const c = (text.match(/}/g) || []).length;
@@ -435,7 +436,7 @@ assert(!editor.includes('Text("PatchMatch"'), 'text-detection: tidak ada lagi op
 assert(bubbleDet.includes('fun decodeRtDetr(') && bubbleDet.includes('1f / (1f + kotlin.math.exp(-l[c]))'), 'bubble: decoder RT-DETR (sigmoid focal, tanpa NMS)');
 assert(bubbleDet.includes('Model balon KZKT') || bubbleDet.includes('detektor balon dari aplikasi KZKT'), 'bubble: model aktif = detektor balon KZKT (Ultralytics, 2 kelas)');
 assert(!bubbleDet.includes('Model aktif: Kiuyha') && !bubbleDet.includes('Kiuyha/Manga-Bubble-YOLO'), 'bubble: Kiuyha bukan lagi model aktif (hanya disebut sebagai legacy-compat)');
-assert(ciYml.includes('kouzen-neo/kzkt/releases/download') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: model bubble diambil dari APK rilis kouzen-neo/kzkt (bukan Kiuyha/ogkalu)');
+assert(fetchKzkt.includes('kouzen-neo/kzkt/releases/download') && ciYml.includes('scripts/fetch-kzkt-model.py') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: model bubble diambil dari APK rilis kouzen-neo/kzkt (bukan Kiuyha/ogkalu)');
 assert(editor.indexOf('contentDescription = "Text"') < editor.indexOf('contentDescription = "Brush"'), 'toolbar: Text tepat di sebelah Pan (sebelum Brush)');
 assert(editor.includes('Berlaku di SEMUA tool termasuk TEXT'), 'text: cubit dua jari = geser+zoom kanvas di semua tool termasuk TEXT');
 assert(editor.includes('const val SCRIPT_LINE_BREAK = "⏎"') && editor.includes('fun comicShapeLines('), 'script: marker jeda manual ⏎ + auto-bentuk baris seimbang (tanpa penggal kata)');
@@ -635,7 +636,7 @@ assert(editor.includes('addBubbleArea(') && editor.includes('bukan area bubble')
 assert(editor.includes('bubbleAreaPanelMode') || editor.includes('allowBorder = bubbleAreaPanelMode'), 'editor: sakelar Area Panel diteruskan ke pipeline');
 assert(selEng.includes('WandEngine.splitBubbles(') && selEng.includes('WandEngine.maskFromBinary('), 'seleksi: pecah bubble gabung memakai watershed puncak (bukan pencarian biner erosi)');
 assert(!selEng.includes('fun erodeByDistance(') && !selEng.includes('fun topLabels('), 'seleksi: helper erosi/label lama yang sudah tak dipakai dibuang');
-assert(wf.includes('XOR satu byte 0x5A') && wf.includes('Range: bytes=43639867-129836409'), 'CI: model kzkt diambil dari APK (range) lalu di-dekode XOR');
+assert(wf.includes('XOR satu byte 0x5A') && fetchKzkt.includes('XOR_KEY = 0x5A') && fetchKzkt.includes('Range') && fetchKzkt.includes('RAW_CRC') && fetchKzkt.includes('RAW_SHA256'), 'CI: model kzkt diambil dari APK (range) lalu di-dekode XOR + CRC/SHA');
 assert(wf.includes('for VARIAN in fp16 int8') && wf.includes('make-bubble-model.py "$VARIAN"'), 'CI: varian model bubble(fp16/int8) dicoba berurutan');
 assert(wf.includes('verify-bubble-model.py /tmp/bd_try.onnx') && wf.includes('::error::tidak ada varian model bubble yang lolos uji kontrak'), 'CI: tiap varian WAJIB lewat uji kontrak sebelum dipakai (gagal = build merah)');
 assert(wf.includes('test "$SIZE" -lt 52428800') && !wf.includes('::warning::model bubble'), 'CI: model wajib <50MB (gagal build, bukan sekadar peringatan)');
