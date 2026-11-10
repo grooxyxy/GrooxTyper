@@ -453,6 +453,7 @@ fun TextEditorPanel(
                         },
                         onImportFont = onImportFont,
                         onOpenFontFinder = onOpenFontFinder,
+                        onOpenKerning = { showKerning = true },
                         onOpenMultiBubble = onOpenMultiBubble
                     )
                     1 -> ColorTab(
@@ -722,6 +723,7 @@ private fun WriteTab(
     onPickFont: (String) -> Unit,
     onImportFont: () -> Unit,
     onOpenFontFinder: () -> Unit = {},
+    onOpenKerning: () -> Unit = {},
     onOpenMultiBubble: () -> Unit
 ) {
     var fontQuery by rememberSaveable { mutableStateOf("") }
@@ -802,7 +804,7 @@ private fun WriteTab(
                 color = Accent,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.clickable { showKerning = true }
+                modifier = Modifier.clickable { onOpenKerning() }
             )
             Text(
                 "Font Finder",
