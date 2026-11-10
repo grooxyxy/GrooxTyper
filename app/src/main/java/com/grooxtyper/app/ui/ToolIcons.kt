@@ -248,8 +248,12 @@ object ToolIcons {
      * Bangun (dan cache) ImageVector untuk ikon bernama [name].
      * Null bila nama tak dikenal.
      */
-    fun of(name: String): ImageVector? = cache.getOrPut(name) {
-        all[name]?.let { build(it) }
+    fun of(name: String): ImageVector? {
+        cache[name]?.let { return it }
+        val def = all[name] ?: return null
+        val built = build(def)
+        cache[name] = built
+        return built
     }
 
     /** Bangun ImageVector dari definisi ikon. */
@@ -296,6 +300,8 @@ object ToolIcons {
         val nodes = mutableListOf<PathNode>()
         var i = 0
         var cmd = ' '
+        var subStartX = 0f
+        var subStartY = 0f
         fun num(): Float {
             val t = tokens.getOrNull(i) ?: return 0f
             i++
@@ -313,6 +319,8 @@ object ToolIcons {
                     val x = num()
                     val y = num()
                     nodes.add(PathNode.MoveTo(x, y))
+                    subStartX = x
+                    subStartY = y
                     cmd = 'L'
                 }
                 'L' -> {
@@ -326,7 +334,10 @@ object ToolIcons {
                     val x3 = num(); val y3 = num()
                     nodes.add(PathNode.CurveTo(x1, y1, x2, y2, x3, y3))
                 }
-                'Z' -> nodes.add(PathNode.Close())
+                // PathNode.Close tak terlihat dari Kotlin, jadi subpath
+                // ditutup dengan garis balik ke titik awal - untuk bentuk
+                // tertutup di ikon ini hasilnya sama persis.
+                'Z' -> nodes.add(PathNode.LineTo(subStartX, subStartY))
                 else -> i++
             }
         }
