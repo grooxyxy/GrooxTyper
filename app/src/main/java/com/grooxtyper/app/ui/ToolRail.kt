@@ -58,8 +58,8 @@ fun SelectionFamilyButton(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box(modifier = modifier) {
-        FamilyButton(
-            icon = selectionToolIcon(current),
+        ToolButton(
+            icon = selectionToolIconName(current),
             label = selectionToolShortLabel(current),
             active = isSelectionTool(activeTool),
             onClick = { menuOpen = true }
@@ -122,11 +122,13 @@ fun RetouchFamilyButton(
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Box(modifier = modifier) {
-        FamilyButton(
-            icon = retouchIcon(current),
+        ToolButton(
+            icon = retouchIconName(current),
             label = retouchShortLabel(current),
             active = activeTool == ActiveTool.INPAINT ||
-                activeTool == ActiveTool.CLONE_STAMP,
+                activeTool == ActiveTool.CLONE_STAMP ||
+                activeTool == ActiveTool.MAGIC_ERASER ||
+                activeTool == ActiveTool.BUBBLE_CLEANER,
             onClick = { menuOpen = true }
         )
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -163,42 +165,14 @@ fun RetouchFamilyButton(
                 }
             )
             DropdownMenuItem(
-                text = { Text("Bubble Eraser") },
+                text = { Text("Bubble Cleaner") },
                 leadingIcon = { Icon(Icons.Default.BubbleChart, null) },
                 onClick = {
                     menuOpen = false
-                    onPick(RetouchKind.BUBBLE_ERASER)
+                    onPick(RetouchKind.BUBBLE_CLEANER)
                 }
             )
         }
-    }
-}
-
-/** Tombol rail satu keluarga (ikon + label kecil). */
-@Composable
-private fun FamilyButton(
-    icon: ImageVector,
-    label: String,
-    active: Boolean,
-    onClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (active) FamilyAccent else FamilyPanel)
-            .clickable { onClick() }
-            .padding(horizontal = 8.dp, vertical = 5.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(20.dp))
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            label,
-            color = Color.White,
-            fontSize = 9.sp,
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-            maxLines = 1
-        )
     }
 }
 
@@ -212,8 +186,8 @@ enum class RetouchKind {
     CLONE_STAMP,
     /** Magic eraser: ketuk = langsung hapus area warna mirip. */
     MAGIC_ERASER,
-    /** Bubble eraser: ketuk dalam gelembung = teks hilang, warna bubble. */
-    BUBBLE_ERASER
+    /** Bubble cleaner: ketuk dalam gelembung = teks hilang, warna bubble. */
+    BUBBLE_CLEANER
 }
 
 /** True bila tool ini anggota keluarga seleksi. */
@@ -222,16 +196,6 @@ fun isSelectionTool(tool: ActiveTool): Boolean = tool == ActiveTool.SELECT_BOX |
     tool == ActiveTool.LASSO ||
     tool == ActiveTool.POLYGON_LASSO ||
     tool == ActiveTool.SELECT_WAND
-
-/** Ikon untuk tool seleksi. */
-fun selectionToolIcon(tool: ActiveTool): ImageVector = when (tool) {
-    ActiveTool.SELECT_BOX -> Icons.Default.OpenInFull
-    ActiveTool.SELECT_ELLIPSE -> Icons.Default.Circle
-    ActiveTool.LASSO -> Icons.Default.Gesture
-    ActiveTool.POLYGON_LASSO -> Icons.Default.Polyline
-    ActiveTool.SELECT_WAND -> Icons.Default.AutoFixHigh
-    else -> Icons.Default.Gesture
-}
 
 /** Label pendek untuk rail. */
 fun selectionToolShortLabel(tool: ActiveTool): String = when (tool) {
@@ -243,13 +207,13 @@ fun selectionToolShortLabel(tool: ActiveTool): String = when (tool) {
     else -> "Seleksi"
 }
 
-/** Ikon untuk anggota keluarga retouch. */
-fun retouchIcon(kind: RetouchKind): ImageVector = when (kind) {
-    RetouchKind.OBJECT_ERASER -> Icons.Default.Delete
-    RetouchKind.HEAL_MIGAN -> Icons.Default.Healing
-    RetouchKind.CLONE_STAMP -> Icons.Default.ContentCopy
-    RetouchKind.MAGIC_ERASER -> Icons.Default.AutoFixHigh
-    RetouchKind.BUBBLE_ERASER -> Icons.Default.BubbleChart
+/** Nama ikon SVG untuk anggota keluarga retouch. */
+fun retouchIconName(kind: RetouchKind): String = when (kind) {
+    RetouchKind.OBJECT_ERASER -> "inpaint"
+    RetouchKind.HEAL_MIGAN -> "heal"
+    RetouchKind.CLONE_STAMP -> "clone"
+    RetouchKind.MAGIC_ERASER -> "eraser"
+    RetouchKind.BUBBLE_CLEANER -> "bubbleClean"
 }
 
 /** Label pendek untuk anggota keluarga retouch. */
@@ -258,5 +222,5 @@ fun retouchShortLabel(kind: RetouchKind): String = when (kind) {
     RetouchKind.HEAL_MIGAN -> "Heal"
     RetouchKind.CLONE_STAMP -> "Clone"
     RetouchKind.MAGIC_ERASER -> "Eraser"
-    RetouchKind.BUBBLE_ERASER -> "Bubble"
+    RetouchKind.BUBBLE_CLEANER -> "Bubble"
 }

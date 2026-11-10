@@ -176,7 +176,7 @@ enum class ActiveTool {
     INPAINT,
     CLONE_STAMP,
     MAGIC_ERASER,
-    BUBBLE_ERASER,
+    BUBBLE_CLEANER,
     RESHAPE,
     GRADIENT,
     LASSO,
@@ -592,7 +592,7 @@ fun CanvasEditorScreen(
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
     val cloneStamp = remember { com.grooxtyper.app.model.CloneStampEngine() }
-    val bubbleEraser = remember { com.grooxtyper.app.model.BubbleEraserEngine() }
+    val bubbleCleaner = remember { com.grooxtyper.app.model.BubbleCleanerEngine() }
     val gradientEngine = remember { com.grooxtyper.app.model.GradientEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
     val fontRegistry = remember { FontRegistry(context) }
@@ -2400,11 +2400,11 @@ fun CanvasEditorScreen(
     var bubbleAreaMode by uiState::bubbleAreaMode
     var showBubbleAreaPanel by uiState::showBubbleAreaPanel
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
-    // Bubble Eraser (ala TypeR "Bubble Cleaner"): toleransi + margin tinta.
-    var bubbleEraserTolerance by mutableFloatStateOf(24f)
-    var bubbleEraserMargin by mutableFloatStateOf(2f)
+    // Bubble Cleaner (ala TypeR "Bubble Cleaner"): toleransi + margin.
+    var bubbleCleanerTolerance by mutableFloatStateOf(24f)
+    var bubbleCleanerMargin by mutableFloatStateOf(2f)
     /** Jumlah piksel terakhir yang dibersihkan (info di options bar). */
-    var bubbleEraserLastCount by mutableIntStateOf(0)
+    var bubbleCleanerLastCount by mutableIntStateOf(0)
 
     /**
      * Bubble Reshaper: titik-titik outline gelembung yang sedang diseleksi
@@ -2976,27 +2976,27 @@ fun CanvasEditorScreen(
     }
 
     /**
-     * Bubble Eraser (ala TypeR "Bubble Cleaner"): ketuk dalam gelembung →
-     * teksnya hilang, diganti warna gelembung itu sendiri.
+     * Bubble Cleaner (ala TypeR "Bubble Cleaner", shortcut J di sana):
+     * ketuk di dalam gelembung → teksnya hilang, ditutup dengan **warna
+     * gelembung itu sendiri**.
      *
-     * Memakai mesin flood yang sama dengan wand (peta tile sparse), lalu
-     * cari teks di dalam interior gelembung dan timpa dengan warna bubble.
-     * Outline gelembung tidak ikut terhapus karena flood berhenti di
-     * garis outline.
+     * Memakai mesin [BubbleCleanerEngine] yang mengimplementasikan algoritma
+     * TypeR apa adanya (flood interior, deteksi huruf lewat lubang, median
+     * warna, margin halo) — BUKAN digabung dengan alur inpaint/clear yang
+     * sudah ada di aplikasi ini.
      */
-    fun runBubbleEraserAt(screenPos: Offset) {
+    fun runBubbleCleanerAt(screenPos: Offset) {
         if (wandBusy) return
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
         val cx = cp.x.toInt()
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
         val active = layerManager.getActiveLayer() ?: run {
-            healError = "Pilih layer gambar dulu untuk bubble eraser"
+            healError = "Pilih layer gambar dulu untuk bubble cleaner"
             return
         }
-        val tol = bubbleEraserTolerance.toInt().coerceIn(0, 255)
-        val margin = bubbleEraserMargin.toInt().coerceIn(0, 20)
-        val merged = wandSampleMerged
+        val tol = bubbleCleanerTolerance.toInt().coerceIn(0, 255)
+        val margin = bubbleCleanerMargin.toInt().coerceIn(0, 20)
         // Snapshot undo di Main thread (undoRedoManager menyimpan Compose state).
         undoRedoManager.saveSnapshot(active)
         wandJob?.cancel()
@@ -3006,28 +3006,29 @@ fun CanvasEditorScreen(
             var err: String? = null
             var painted = 0
             try {
-                val src = if (merged) {
-                    compositeBitmap
+                val src = active.getPersistentBitmap()
+                if (src.width != canvasWidth || src.height != canvasHeight) {
+                    err = "Ukuran layer tak sama dengan kanvas"
                 } else {
-                    active.getPersistentBitmap()
-                }
-                val provider = com.grooxtyper.app.model.selection.HugePixelProvider(src)
-                val plan = bubbleEraser.plan(
-                    provider, canvasWidth, canvasHeight, cx, cy,
-                    tolerance = tol, margin = margin
-                )
-                if (plan == null) {
-                    err = "Bubble eraser: ketuk di dalam gelembung (area putih), bukan di teks atau outline"
-                } else {
-                    painted = bubbleEraser.apply(active, plan)
-                    ok = true
+                    val px = IntArray(canvasWidth * canvasHeight)
+                    src.getPixels(px, 0, canvasWidth, 0, 0, canvasWidth, canvasHeight)
+                    val plan = bubbleCleaner.plan(
+                        px, canvasWidth, canvasHeight, cx, cy,
+                        tolerance = tol, margin = margin
+                    )
+                    if (plan == null) {
+                        err = "Bubble cleaner: ketuk di dalam gelembung (area putih), bukan di teks atau outline"
+                    } else {
+                        painted = bubbleCleaner.apply(active, plan)
+                        ok = true
+                    }
                 }
             } catch (e: OutOfMemoryError) {
                 e.printStackTrace()
-                err = "Bubble eraser OOM - kurangi toleransi"
+                err = "Bubble cleaner OOM - kurangi toleransi"
             } catch (e: Exception) {
                 e.printStackTrace()
-                err = "Bubble eraser gagal: ${e.message ?: "error"}"
+                err = "Bubble cleaner gagal: ${e.message ?: "error"}"
             } finally {
                 val msg = err
                 val berhasil = ok
@@ -3037,7 +3038,7 @@ fun CanvasEditorScreen(
                     if (msg != null) healError = msg
                     else if (berhasil) {
                         healError = null
-                        bubbleEraserLastCount = n
+                        bubbleCleanerLastCount = n
                     }
                     if (berhasil) refreshComposite()
                 }
@@ -4963,7 +4964,7 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.MAGIC_ERASER ||
-                                        activeTool == ActiveTool.BUBBLE_ERASER
+                                        activeTool == ActiveTool.BUBBLE_CLEANER
                                     ) {
                                         // Magic eraser / bubble eraser: cukup
                                         // ketuk (tanpa geser). Aksi jalan saat
@@ -5138,7 +5139,16 @@ fun CanvasEditorScreen(
                                             // bukan per-move (menghindari recompose tiap event).
                                             if (activeTool == ActiveTool.ERASER) {
                                                 brushEngine.brushType = BrushType.ERASER
-                                            } else if (brushEngine.brushType == BrushType.ERASER) {
+                                            } else if (brushEngine.brushType == BrushType.ERASER ||
+                                                brushEngine.brushType == BrushType.OBJECT_ERASER ||
+                                                brushEngine.brushType == BrushType.HEAL_MIGAN ||
+                                                brushEngine.brushType == BrushType.AI_INPAINT
+                                            ) {
+                                                // Brush biasa harus menggambar. Kalau
+                                                // tipe kuasnya masih "hapus objek"
+                                                // (dari tool Retouch sebelumnya),
+                                                // cabang heal di atas akan mengambil
+                                                // alih dan sapuan tak terlihat.
                                                 brushEngine.brushType = BrushType.PEN_HARD
                                             }
                                             undoRedoManager.saveSnapshot(activeLayer)
@@ -5385,13 +5395,13 @@ fun CanvasEditorScreen(
                                     }
                                     // Bubble eraser: ketuk dalam gelembung ->
                                     // teks hilang, diganti warna bubble.
-                                    if (activeTool == ActiveTool.BUBBLE_ERASER) {
+                                    if (activeTool == ActiveTool.BUBBLE_CLEANER) {
                                         val start = wandPressStart
                                         wandPressStart = null
                                         if (start != null && !wandBusy &&
                                             (change.position - start).getDistance() <= 24f
                                         ) {
-                                            runBubbleEraserAt(start)
+                                            runBubbleCleanerAt(start)
                                             change.consume()
                                         }
                                     }
@@ -7054,19 +7064,17 @@ fun CanvasEditorScreen(
         }
 
         // Options bar bubble eraser (toleransi + margin, ala TypeR).
-        if (activeTool == ActiveTool.BUBBLE_ERASER) {
-            BubbleEraserOptionsBar(
+        if (activeTool == ActiveTool.BUBBLE_CLEANER) {
+            BubbleCleanerOptionsBar(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 52.dp, start = 4.dp, end = 4.dp),
-                tolerance = bubbleEraserTolerance,
-                onTolerance = { bubbleEraserTolerance = it },
-                margin = bubbleEraserMargin,
-                onMargin = { bubbleEraserMargin = it },
-                sampleMerged = wandSampleMerged,
-                onSampleMerged = { wandSampleMerged = it },
+                tolerance = bubbleCleanerTolerance,
+                onTolerance = { bubbleCleanerTolerance = it },
+                margin = bubbleCleanerMargin,
+                onMargin = { bubbleCleanerMargin = it },
                 busy = wandBusy,
-                lastPixels = bubbleEraserLastCount
+                lastPixels = bubbleCleanerLastCount
             )
         }
 
@@ -7225,9 +7233,10 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Bottom toolbar (ibisPaint style) — BISA DI-SLIDE/SCROLL horizontal
-        // agar semua tool muat di layar sempit dan Text Detector tidak hilang.
-        // clickable noop agar tap di celah tombol tidak tembus ke kanvas.
+        // Bottom toolbar (rail) - dikelompokkan dengan pemisah biar
+        // urutannya terbaca:
+        //   NAVIGASI | GAMBAR | RETOUCH | SELEKSI | ISI & TEKS | PANEL
+        // Semua tombol memakai ikon SVG kustom (ToolIcons) + label kecil.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -7245,216 +7254,205 @@ fun CanvasEditorScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .horizontalScroll(toolbarScroll)
-                    .padding(horizontal = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-            // Pan tool
-            IconButton(onClick = { activeTool = ActiveTool.PAN; showBrushSettings = false }) {
-                Icon(Icons.Default.PanTool, contentDescription = "Pan", tint = if (activeTool == ActiveTool.PAN) Accent else Color.White)
-            }
-
-            // Text: ditaruh tepat di sebelah Pan (navigasi & teks = pasangan
-            // kerja utama, tidak lagi terpisah brush/lasso/seleksi).
-            IconButton(onClick = {
-                activeTool = ActiveTool.TEXT
-                showBrushSettings = false
-                if (selectedTextBox != null) showTextEditor = true
-            }) {
-                Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
-            }
-
-            // Bubble Reshaper (ala TypeR): ubah bentuk outline gelembung
-            // dengan menarik titik-titiknya (push/pull).
-            IconButton(onClick = {
-                activeTool = ActiveTool.RESHAPE
-                showBrushSettings = false
-            }) {
-                Icon(
-                    Icons.Default.BubbleChart,
-                    contentDescription = "Bubble Reshaper",
-                    tint = if (activeTool == ActiveTool.RESHAPE) Accent else Color.White
+            // ---- NAVIGASI ----
+            ToolGroup {
+                ToolButton(
+                    icon = "pan",
+                    label = "Geser",
+                    active = activeTool == ActiveTool.PAN,
+                    onClick = { activeTool = ActiveTool.PAN; showBrushSettings = false }
+                )
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(CircleShape)
+                        .background(Color(brushEngine.color))
+                        .border(2.dp, Color.White, CircleShape)
+                        .clickable { showColorPicker = true }
                 )
             }
 
-            // Edit teks massal + gaya per kata (pindah dari panel teks ke
-            // toolbar utama: di sana zona kerja utama, panel teks padat).
-            TextToolsExtra(
-                bulkActive = showBulkTextDialog,
-                richActive = showRichTextPanel,
-                onBulk = { showBulkTextDialog = true },
-                onRich = { openRichTextPanel() }
-            )
+            ToolGroupSeparator()
 
-            // Brush / Eraser toggle pill
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(PanelBg)
-                    .padding(2.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (activeTool == ActiveTool.BRUSH) Accent else Color.Transparent)
-                        .clickable {
-                            if (activeTool == ActiveTool.BRUSH) {
-                                // Toggle: tap ikon brush saat aktif untuk buka/tutup panel.
-                                showBrushSettings = !showBrushSettings
-                            } else {
-                                activeTool = ActiveTool.BRUSH
-                                if (brushEngine.brushType == BrushType.ERASER) {
+            // ---- GAMBAR ----
+            ToolGroup {
+                ToolButton(
+                    icon = "brush",
+                    label = "Kuas",
+                    active = activeTool == ActiveTool.BRUSH,
+                    onClick = {
+                        if (activeTool == ActiveTool.BRUSH) {
+                            // Toggle: tap ikon kuas saat aktif untuk buka/tutup panel.
+                            showBrushSettings = !showBrushSettings
+                        } else {
+                            activeTool = ActiveTool.BRUSH
+                            // Kembalikan ke kuas gambar biasa (bukan tipe
+                            // "hapus objek" dari tool Retouch sebelumnya).
+                            when (brushEngine.brushType) {
+                                BrushType.ERASER,
+                                BrushType.OBJECT_ERASER,
+                                BrushType.HEAL_MIGAN,
+                                BrushType.AI_INPAINT ->
                                     brushEngine.brushType = BrushType.PEN_HARD
-                                }
-                                layerManager.ensureDrawingLayer()
-                                showBrushSettings = true
+                                else -> Unit
+                            }
+                            layerManager.ensureDrawingLayer()
+                            showBrushSettings = true
+                        }
+                    }
+                )
+                ToolButton(
+                    icon = "eraser",
+                    label = "Hapus",
+                    active = activeTool == ActiveTool.ERASER,
+                    onClick = {
+                        activeTool = ActiveTool.ERASER
+                        brushEngine.brushType = BrushType.ERASER
+                        layerManager.ensureDrawingLayer()
+                        showBrushSettings = false
+                    }
+                )
+            }
+
+            ToolGroupSeparator()
+
+            // ---- RETOUCH (keluarga: hapus objek, heal, clone, magic eraser,
+            //      bubble cleaner) ----
+            ToolGroup {
+                RetouchFamilyButton(
+                    activeTool = activeTool,
+                    current = lastRetouchKind,
+                    onPick = { kind ->
+                        lastRetouchKind = kind
+                        when (kind) {
+                            RetouchKind.OBJECT_ERASER -> {
+                                activeTool = ActiveTool.INPAINT
+                                brushEngine.brushType = BrushType.OBJECT_ERASER
+                            }
+                            RetouchKind.HEAL_MIGAN -> {
+                                activeTool = ActiveTool.INPAINT
+                                brushEngine.brushType = BrushType.HEAL_MIGAN
+                            }
+                            RetouchKind.CLONE_STAMP -> {
+                                activeTool = ActiveTool.CLONE_STAMP
+                                cloneStamp.clearSource()
+                            }
+                            RetouchKind.MAGIC_ERASER -> {
+                                activeTool = ActiveTool.MAGIC_ERASER
+                            }
+                            RetouchKind.BUBBLE_CLEANER -> {
+                                activeTool = ActiveTool.BUBBLE_CLEANER
                             }
                         }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(Icons.Default.Brush, contentDescription = "Brush", tint = if (activeTool == ActiveTool.BRUSH) Color.White else Color.White, modifier = Modifier.size(18.dp))
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (activeTool == ActiveTool.ERASER) Accent else Color.Transparent)
-                        .clickable {
-                            activeTool = ActiveTool.ERASER
-                            brushEngine.brushType = BrushType.ERASER
-                            layerManager.ensureDrawingLayer()
-                            showBrushSettings = false
-                        }
-                        .padding(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(Icons.Default.Delete, contentDescription = "Eraser", tint = if (activeTool == ActiveTool.ERASER) Color.White else Color.White, modifier = Modifier.size(18.dp))
-                }
-            }
-
-            // Eyedropper
-            IconButton(onClick = { activeTool = ActiveTool.EYEDROPPER; showBrushSettings = false }) {
-                Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Accent else Color.White)
-            }
-
-            // Keluarga RETOUCH: hapus objek (content-aware), heal on-device,
-            // dan clone stamp dalam satu tombol (popup).
-            RetouchFamilyButton(
-                activeTool = activeTool,
-                current = lastRetouchKind,
-                onPick = { kind ->
-                    lastRetouchKind = kind
-                    when (kind) {
-                        RetouchKind.OBJECT_ERASER -> {
-                            activeTool = ActiveTool.INPAINT
-                            brushEngine.brushType = BrushType.OBJECT_ERASER
-                        }
-                        RetouchKind.HEAL_MIGAN -> {
-                            activeTool = ActiveTool.INPAINT
-                            brushEngine.brushType = BrushType.HEAL_MIGAN
-                        }
-                        RetouchKind.CLONE_STAMP -> {
-                            activeTool = ActiveTool.CLONE_STAMP
-                            cloneStamp.clearSource()
-                        }
-                        RetouchKind.MAGIC_ERASER -> {
-                            activeTool = ActiveTool.MAGIC_ERASER
-                        }
-                        RetouchKind.BUBBLE_ERASER -> {
-                            activeTool = ActiveTool.BUBBLE_ERASER
-                        }
+                        showBrushSettings = false
+                        layerManager.ensureDrawingLayer()
                     }
-                    showBrushSettings = false
-                    layerManager.ensureDrawingLayer()
-                }
-            )
-
-            // Gradient: isi gradasi (linear/radial) ala Photoshop/TypeR.
-            IconButton(onClick = {
-                activeTool = ActiveTool.GRADIENT
-                showBrushSettings = false
-                layerManager.ensureDrawingLayer()
-            }) {
-                Icon(
-                    Icons.Default.Gradient,
-                    contentDescription = "Gradient",
-                    tint = if (activeTool == ActiveTool.GRADIENT) Accent else Color.White
                 )
             }
 
-            // Color circle
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(Color(brushEngine.color))
-                    .border(2.dp, Color.White, CircleShape)
-                    .clickable { showColorPicker = true }
-            )
+            ToolGroupSeparator()
 
-            // Keluarga SELEKSI (ala TypeR): satu tombol, popup isi tool
-            // (kotak/elips/lasso/poligon/wand). Toolbar jadi lega dan tool
-            // aktif selalu kelihatan lewat ikon tombolnya.
-            SelectionFamilyButton(
-                activeTool = activeTool,
-                current = lastSelectionTool,
-                onPick = { t ->
-                    lastSelectionTool = t
-                    activeTool = t
-                    showBrushSettings = false
-                }
-            )
-
-            // Image: pindah/putar/ubah ukuran image layer.
-            IconButton(onClick = {
-                activeTool = ActiveTool.IMAGE
-                showBrushSettings = false
-            }) {
-                Icon(Icons.Default.FlipToBack, contentDescription = "Image", tint = if (activeTool == ActiveTool.IMAGE) Accent else Color.White)
-            }
-
-            // Deteksi teks + Inpaint (satu pintu: dialog yang sama memakai
-            // hasil deteksi teks terakhir; tombol ganda sebelumnya membuka
-            // dialog yang persis sama sehingga satu dibuang).
-            IconButton(
-                onClick = { showMLInpaintDialog = true }
-            ) {
-                Icon(Icons.Default.AutoAwesome, contentDescription = "Inpaint", tint = Color.White)
-            }
-
-            // Script: kombo seleksi + bubble (import/ketik -> kolom baris -> jalankan)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (showScriptPanel) Accent else PanelBg)
-                    .clickable { showScriptPanel = true }
-                    .padding(horizontal = 8.dp, vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Description, contentDescription = "Script", tint = Color.White, modifier = Modifier.size(16.dp))
-                    if (scriptEntries.isNotEmpty()) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        val remaining = scriptEntries.count { !it.used }
-                        Text(
-                            "$remaining/${scriptEntries.size}",
-                            color = Color.White, fontWeight = FontWeight.Bold, fontSize = 11.sp
-                        )
+            // ---- SELEKSI (keluarga: kotak, elips, lasso, poligon, wand) ----
+            ToolGroup {
+                SelectionFamilyButton(
+                    activeTool = activeTool,
+                    current = lastSelectionTool,
+                    onPick = { t ->
+                        lastSelectionTool = t
+                        activeTool = t
+                        showBrushSettings = false
                     }
-                }
+                )
             }
 
-            // Layers button with count
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(PanelBg)
-                    .clickable { showLayersPanel = true }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Layers, contentDescription = "Layers", tint = Color.White, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("${layerManager.layers.size}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                }
+            ToolGroupSeparator()
+
+            // ---- ISI & TEKS ----
+            ToolGroup {
+                ToolButton(
+                    icon = "gradient",
+                    label = "Gradasi",
+                    active = activeTool == ActiveTool.GRADIENT,
+                    onClick = {
+                        activeTool = ActiveTool.GRADIENT
+                        showBrushSettings = false
+                        layerManager.ensureDrawingLayer()
+                    }
+                )
+                ToolButton(
+                    icon = "text",
+                    label = "Teks",
+                    active = activeTool == ActiveTool.TEXT,
+                    onClick = {
+                        activeTool = ActiveTool.TEXT
+                        showBrushSettings = false
+                        if (selectedTextBox != null) showTextEditor = true
+                    }
+                )
+                ToolButton(
+                    icon = "reshape",
+                    label = "Bentuk",
+                    active = activeTool == ActiveTool.RESHAPE,
+                    onClick = {
+                        activeTool = ActiveTool.RESHAPE
+                        showBrushSettings = false
+                    }
+                )
+                ToolButton(
+                    icon = "eyedropper",
+                    label = "Pipet",
+                    active = activeTool == ActiveTool.EYEDROPPER,
+                    onClick = {
+                        activeTool = ActiveTool.EYEDROPPER
+                        showBrushSettings = false
+                    }
+                )
+                // Edit teks massal + gaya per kata.
+                TextToolsExtra(
+                    bulkActive = showBulkTextDialog,
+                    richActive = showRichTextPanel,
+                    onBulk = { showBulkTextDialog = true },
+                    onRich = { openRichTextPanel() }
+                )
             }
+
+            ToolGroupSeparator()
+
+            // ---- PANEL & GAMBAR ----
+            ToolGroup {
+                ToolButton(
+                    icon = "image",
+                    label = "Gambar",
+                    active = activeTool == ActiveTool.IMAGE,
+                    onClick = {
+                        activeTool = ActiveTool.IMAGE
+                        showBrushSettings = false
+                    }
+                )
+                ToolButton(
+                    icon = "layers",
+                    label = "L${layerManager.layers.size}",
+                    active = false,
+                    onClick = { showLayersPanel = true }
+                )
+                ToolButton(
+                    icon = "script",
+                    label = "Script",
+                    active = false,
+                    onClick = { showScriptPanel = true }
+                )
+                ToolButton(
+                    icon = "inpaint",
+                    label = "AI",
+                    active = false,
+                    onClick = { showMLInpaintDialog = true }
+                )
+            }
+
             }
 
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {

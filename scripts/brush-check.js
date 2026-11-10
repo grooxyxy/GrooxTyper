@@ -437,7 +437,11 @@ assert(bubbleDet.includes('fun decodeRtDetr(') && bubbleDet.includes('1f / (1f +
 assert(bubbleDet.includes('Model balon KZKT') || bubbleDet.includes('detektor balon dari aplikasi KZKT'), 'bubble: model aktif = detektor balon KZKT (Ultralytics, 2 kelas)');
 assert(!bubbleDet.includes('Model aktif: Kiuyha') && !bubbleDet.includes('Kiuyha/Manga-Bubble-YOLO'), 'bubble: Kiuyha bukan lagi model aktif (hanya disebut sebagai legacy-compat)');
 assert(fetchKzkt.includes('kouzen-neo/kzkt/releases/download') && ciYml.includes('scripts/fetch-kzkt-model.py') && !ciYml.includes('Kiuyha/Manga-Bubble-YOLO'), 'CI: model bubble diambil dari APK rilis kouzen-neo/kzkt (bukan Kiuyha/ogkalu)');
-assert(editor.indexOf('contentDescription = "Text"') < editor.indexOf('contentDescription = "Brush"'), 'toolbar: Text tepat di sebelah Pan (sebelum Brush)');
+// Toolbar disusun ulang jadi kelompok rail (navigasi | gambar | retouch |
+// seleksi | isi&teks | panel) - urutan tak lagi "tepat di sebelah Pan".
+assert(editor.indexOf('icon = "pan"') < editor.indexOf('icon = "brush"') &&
+  editor.indexOf('icon = "brush"') < editor.indexOf('icon = "gradient"'),
+  'toolbar: rail urut navigasi -> gambar -> isi');
 assert(editor.includes('Berlaku di SEMUA tool termasuk TEXT'), 'text: cubit dua jari = geser+zoom kanvas di semua tool termasuk TEXT');
 assert(editor.includes('const val SCRIPT_LINE_BREAK = "⏎"') && editor.includes('fun comicShapeLines('), 'script: marker jeda manual ⏎ + auto-bentuk baris seimbang (tanpa penggal kata)');
 assert(editor.includes('applyScriptBreaks(unused[i].text)') && editor.includes('applyScriptBreaks(entry.text)') && editor.includes('applyScriptBreaks(row.script)'), 'script: marker ⏎ dirender jadi baris di 3 jalur (bubble teks/seleksi/bubble-rows)');
@@ -877,23 +881,29 @@ assert(gradBar.includes('fun GradientOptionsBar('), 'UI: options bar gradient ad
 assert(gradBar.includes('Linear') && gradBar.includes('Radial'), 'UI: gradient punya linear/radial');
 
 // -- Magic Eraser + Bubble Eraser (ala TypeR) --
-const bubbleEraser = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BubbleEraserEngine.kt'));
-const eraserBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/MagicEraserOptionsBar.kt'));
+const bubbleCleaner = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BubbleCleanerEngine.kt'));
+const cleanerBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/BubbleCleanerOptionsBar.kt'));
+const eraserBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/MagicEraserOptions.kt'));
 assert(editor.includes('fun runMagicEraserAt('), 'magic eraser: eksekusi dari editor ada');
 assert(editor.includes('selectionEngine.clearSelectedArea(active)'), 'magic eraser: area terpilih jadi transparan');
 assert(editor.includes('ActiveTool.MAGIC_ERASER'), 'editor: ActiveTool.MAGIC_ERASER terdaftar');
 assert(eraserBar.includes('fun MagicEraserOptionsBar('), 'UI: options bar magic eraser ada');
 assert(eraserBar.includes('Toleransi') && eraserBar.includes('Sample merged') && eraserBar.includes('Anti-alias'),
   'UI: magic eraser punya toleransi/sample merged/anti-alias (setelan TypeR)');
-assert(bubbleEraser.includes('class BubbleEraserEngine'), 'bubble eraser: mesin bubble cleaner ada');
-assert(bubbleEraser.includes('HugeWandEngine'), 'bubble eraser: flood interior pakai mesin wand (peta sparse)');
-assert(bubbleEraser.includes('bubbleColor') || bubbleEraser.includes('val bubbleColor'),
-  'bubble eraser: warna bubble diambil dari histogram interior');
-assert(bubbleEraser.includes('growInside'), 'bubble eraser: margin teased di dalam interior');
-assert(editor.includes('fun runBubbleEraserAt('), 'bubble eraser: eksekusi dari editor ada');
-assert(editor.includes('ActiveTool.BUBBLE_ERASER'), 'editor: ActiveTool.BUBBLE_ERASER terdaftar');
-assert(eraserBar.includes('fun BubbleEraserOptionsBar('), 'UI: options bar bubble eraser ada');
-assert(eraserBar.includes('Margin'), 'UI: bubble eraser punya margin (ala TypeR)');
+assert(bubbleCleaner.includes('class BubbleCleanerEngine'), 'bubble cleaner: mesin bubble cleaner (ala TypeR) ada');
+assert(bubbleCleaner.includes('private fun flood('), 'bubble cleaner: flood interior span ada');
+assert(bubbleCleaner.includes('private fun labelHoles('), 'bubble cleaner: huruf dideteksi lewat label lubang');
+assert(bubbleCleaner.includes('private fun distances('), 'bubble cleaner: transform jarak untuk tebal huruf');
+assert(bubbleCleaner.includes('private fun grow('), 'bubble cleaner: margin = pelebaran huruf');
+assert(bubbleCleaner.includes('medianOf('), 'bubble cleaner: warna bubble = median kanal (ala TypeR)');
+assert(bubbleCleaner.includes('pushPull('), 'bubble cleaner: gelembung bergradien diisi warna sekitar');
+assert(bubbleCleaner.includes('holeLimit') && bubbleCleaner.includes('0.18'), 'bubble cleaner: lubang > 18% = gambar (bukan huruf)');
+assert(editor.includes('fun runBubbleCleanerAt('), 'bubble cleaner: eksekusi dari editor ada');
+assert(editor.includes('ActiveTool.BUBBLE_CLEANER'), 'editor: ActiveTool.BUBBLE_CLEANER terdaftar');
+assert(cleanerBar.includes('fun BubbleCleanerOptionsBar('), 'UI: options bar bubble cleaner ada');
+assert(cleanerBar.includes('Margin'), 'UI: bubble cleaner punya margin (ala TypeR)');
+assert(!fs.existsSync(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BubbleEraserEngine.kt')),
+  'bubble cleaner: implementasi merged yang lama DIHAPUS');
 
 // -- Live selection wand (ala Photoshop) --
 assert(editor.includes('wandLastSeed'), 'wand: titik seed tersimpan untuk live selection');
@@ -927,16 +937,6 @@ assert(renderer.includes('if (box.verticalText)'), 'teks vertikal: jalur render 
 assert(textEditor.includes('onVerticalText'), 'UI: toggle tulisan vertikal di panel teks');
 
 const wandMatchSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandColorMatch.kt'));
-
-// -- Verifikasi bubble ala TypeR (looksLikeBubble) --
-const bubbleSep = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/BubbleSeparator.kt'));
-assert(bubbleSep.includes('fun looksLikeBubble('), 'bubble: verifikasi "ini bubble?" ala TypeR ada');
-assert(bubbleSep.includes('BUBBLE_MOST = 0.15'), 'bubble: batas luas 15% halaman (ala TypeR)');
-assert(bubbleSep.includes('BUBBLE_AT_EDGE = 0.08'), 'bubble: batas di tepi halaman 8% (ala TypeR)');
-assert(bubbleSep.includes('BUBBLE_HOLE = 0.004'), 'bubble: lubang tertutup besar = bukan bubble (ala TypeR)');
-assert(bubbleSep.includes('BUBBLE_INNER_WHITE = 0.0015'), 'bubble: patch putih besar = bukan bubble (ala TypeR)');
-assert(bubbleSep.includes('fun labelPatch('), 'bubble: label patch terhubung untuk cek lubang');
-assert(bubbleEraser.includes('looksLikeBubble('), 'bubble eraser: pakai verifikasi bubble TypeR sebelum menghapus teks');
 
 // -- Tipografi lanjut ala TypeR (baseline shift, faux bold/italic) --
 assert(textBoxSrc.includes('var baselineShift: Float = 0f'), 'tipografi: baseline shift ada di TextBox');
@@ -1006,6 +1006,28 @@ assert(alignEngine.includes('fun homography(') && alignEngine.includes('fun cont
   'align: perspektif pakai kuad empat + homografi');
 assert(layerSrc.includes('var projective'), 'align: image layer bisa menyimpan transform proyektif');
 
+// -- Ikon SVG kustom per tool + rail yang rapi --
+const toolIcons = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ToolIcons.kt'));
+const toolButton = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ToolButton.kt'));
+const iconDir = path.join(ROOT, 'app/src/main/assets/tool-icons');
+assert(fs.existsSync(iconDir), 'ikon: folder assets/tool-icons ada');
+const svgFiles = fs.existsSync(iconDir) ? fs.readdirSync(iconDir).filter((f) => f.endsWith('.svg')) : [];
+assert(svgFiles.length >= 20, `ikon: ${svgFiles.length} file SVG ikon tool tersedia`);
+for (const want of ['brush', 'eraser', 'clone', 'heal', 'bubbleClean', 'reshape', 'gradient', 'wand', 'marquee', 'ellipse', 'lasso', 'polygon', 'text', 'eyedropper', 'image', 'pan', 'layers', 'script', 'color', 'inpaint']) {
+  assert(fs.existsSync(path.join(iconDir, want + '.svg')), 'ikon: SVG ' + want + ' ada');
+}
+assert(toolIcons.includes('object ToolIcons') && toolIcons.includes('PathParser'),
+  'ikon: ikon dibangun dari data path SVG pakai PathParser Compose');
+assert(toolIcons.includes('val all: Map<String, Def>'), 'ikon: peta ikon jadi sumber kebenaran generator SVG');
+assert(read(path.join(ROOT, 'scripts/gen-tool-icons.mjs')).includes('gen-tool-icons'),
+  'ikon: ada skrip generator SVG ikon');
+assert(toolButton.includes('fun ToolButton(') && toolButton.includes('fun ToolGroupSeparator('),
+  'rail: tombol rail seragam + pemisah kelompok');
+assert(editor.includes('ToolGroupSeparator()'), 'rail: toolbar pakai pemisah kelompok tool');
+assert(/icon = "brush"/.test(editor) && /icon = "gradient"/.test(editor) &&
+  /icon = "reshape"/.test(editor),
+  'rail: tombol toolbar memakai ikon SVG kustom');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -1015,15 +1037,18 @@ for (const [nm, tx] of [
   ['SelectionRefiner', refiner],
   ['CloneStampEngine', cloneEngine],
   ['GradientEngine', gradEngine],
-  ['BubbleEraserEngine', bubbleEraser],
-  ['MagicEraserOptionsBar', eraserBar],
+  ['BubbleCleanerEngine', bubbleCleaner],
+  ['BubbleCleanerOptionsBar', cleanerBar],
+  ['MagicEraserOptions', eraserBar],
   ['FontFinder', finder],
   ['FontFinderDialog', finderDlg],
   ['WandColorMatch', wandMatchSrc],
   ['KerningDialog', kernDlg],
   ['ReshapeOptionsBar', reshapeBar],
   ['LayerAlignEngine', alignEngine],
-  ['LayerAlignPanel', alignPanel]
+  ['LayerAlignPanel', alignPanel],
+  ['ToolIcons', toolIcons],
+  ['ToolButton', toolButton]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
@@ -1362,7 +1387,8 @@ assert(sfxInkSrc.includes('outlineGradientShader(') && textRenderer.includes('ou
 assert(textEditor.includes('Blur teks') && textEditor.includes('onTextBlur'), 'panel: slider blur teks');
 // 4. Ikon deteksi ganda dibuang (satu pintu dialog).
 assert(!/contentDescription = "Text Detector"/.test(editor), 'ikon: tombol Text Detector ganda dibuang');
-assert(editor.includes('contentDescription = "Inpaint"'), 'ikon: pintu Inpaint tetap ada');
+assert(editor.includes('icon = "inpaint"') && editor.includes('showMLInpaintDialog = true'),
+  'ikon: pintu Inpaint (AI) tetap ada di rail');
 // 5. Percikan menempel di sekitar tinta (bukan sejauh setengah clip).
 assert(sfxEng.includes('0.8f + rnd.nextFloat() * 1.4f'), 'spatter: titik menempel max 2.2x setengah-lebar');
 assert(!/reach = max\(clip\.width\(\), clip\.height\(\)\) \* 0\.5f/.test(sfxEng), 'spatter: sebar sejauh clip dibuang');
