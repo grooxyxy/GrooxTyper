@@ -46,3 +46,6 @@ koharu-yolo26s-seg/
 
 # keluaran uji render lokal
 scripts/out/
+
+# paket web (versi browser GrooxTyper), jangan di-commit
+*.zip
