@@ -973,6 +973,29 @@ assert(textBoxSrc.includes('kern: Map<String, Float>? = null'), 'kerning: lebar 
 assert(kernDlg.includes('fun KerningDialog('), 'UI: dialog kerning ada');
 assert(textEditor.includes('showKerning') && textEditor.includes('KerningDialog('), 'editor: kerning tersambung ke panel teks');
 
+// -- Bubble Reshaper (ala TypeR) --
+const reshapeBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ReshapeOptionsBar.kt'));
+assert(textBoxSrc.includes('val outline: List<Offset> = emptyList()'), 'reshaper: outline kustom di BubbleSpec');
+assert(textBoxSrc.includes('fun bubbleOutlinePointsPx()'), 'reshaper: titik outline dalam koordinat kanvas');
+assert(textBoxSrc.includes('fun defaultBubbleOutline()'), 'reshaper: outline default dari bentuk parametrik');
+assert(textBoxSrc.includes('put("outline"'), 'reshaper: outline ikut diserialisasi');
+assert(editor.includes('ActiveTool.RESHAPE'), 'editor: ActiveTool.RESHAPE terdaftar');
+assert(editor.includes('fun reshapeMoveHandle('), 'reshaper: titik outline bisa digeser (push/pull)');
+assert(editor.includes('reshapePoints()'), 'reshaper: handle outline digambar di kanvas');
+assert(reshapeBar.includes('fun ReshapeOptionsBar('), 'UI: options bar bubble resharper ada');
+
+// -- Auto-Align Layers (ala TypeR/Photoshop) --
+const alignEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/LayerAlignEngine.kt'));
+const alignPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/LayerAlignPanel.kt'));
+assert(alignEngine.includes('object LayerAlignEngine'), 'align: mesin alignment ada');
+assert(alignEngine.includes('fun autoAlignByContent('), 'align: auto-align berbasis korelasi konten ala TypeR');
+assert(alignEngine.includes('edgeMap') && alignEngine.includes('correlate'), 'align: korelasi tepi dipakai untuk mencocokkan isi');
+assert(alignEngine.includes('fun align(') && alignEngine.includes('fun distribute('), 'align: ratakan + sebar tersedia');
+assert(layerSrc.includes('var selectedIds'), 'align: layer bisa dipilih banyak');
+assert(layerSrc.includes('fun alignmentTargets()'), 'align: target alignment diambil dari pilihan');
+assert(alignPanel.includes('fun LayerAlignPanel('), 'UI: panel auto-align ada');
+assert(alignPanel.includes('Cocokkan isi'), 'UI: ada aksi auto-align berbasis isi');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -987,7 +1010,10 @@ for (const [nm, tx] of [
   ['FontFinder', finder],
   ['FontFinderDialog', finderDlg],
   ['WandColorMatch', wandMatchSrc],
-  ['KerningDialog', kernDlg]
+  ['KerningDialog', kernDlg],
+  ['ReshapeOptionsBar', reshapeBar],
+  ['LayerAlignEngine', alignEngine],
+  ['LayerAlignPanel', alignPanel]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');

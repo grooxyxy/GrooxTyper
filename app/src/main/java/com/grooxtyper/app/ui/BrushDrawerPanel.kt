@@ -42,6 +42,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -385,6 +387,8 @@ fun LayerPanel(
     var renameTarget by remember { mutableStateOf<LayerItem?>(null) }
     var newName by remember { mutableStateOf("") }
     var blendMenuFor by remember { mutableStateOf<String?>(null) }
+    var showAlignPanel by remember { mutableStateOf(false) }
+    var alignMessage by remember { mutableStateOf<String?>(null) }
 
     // Ubah properti display dengan satu langkah undo.
     fun mutateProps(layer: LayerItem, change: () -> Unit) {
@@ -426,6 +430,18 @@ fun LayerPanel(
             ) {
                 Text("Layers", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Row {
+                    Button(
+                        onClick = { showAlignPanel = !showAlignPanel },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (showAlignPanel) Accent else PanelBgLight
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.AlignHorizontalCenter, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Align", color = Color.White, fontSize = 12.sp)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = {
                             val created = layerManager.addLayer()
@@ -479,6 +495,45 @@ fun LayerPanel(
                 }
             }
 
+            if (showAlignPanel) {
+                LayerAlignPanel(
+                    selectedCount = layerManager.selectedIds.size,
+                    onAlign = { mode ->
+                        val targets = layerManager.alignmentTargets()
+                        val moved = com.grooxtyper.app.model.LayerAlignEngine.align(targets, mode)
+                        alignMessage = if (moved > 0) "$moved layer diratakan" else "Sudah rata"
+                        onRefresh()
+                    },
+                    onDistribute = { axis ->
+                        val targets = layerManager.alignmentTargets()
+                        val moved = com.grooxtyper.app.model.LayerAlignEngine.distribute(targets, axis)
+                        alignMessage = if (moved > 0) "$moved layer disebar" else "Butuh 3+ layer"
+                        onRefresh()
+                    },
+                    onAutoAlignContent = {
+                        val targets = layerManager.alignmentTargets()
+                        val ref = layerManager.findLayerById(layerManager.activeLayerId)
+                        val res = com.grooxtyper.app.model.LayerAlignEngine.autoAlignByContent(targets, ref)
+                        alignMessage = if (res.moved > 0) {
+                            "${res.moved} layer dicocokkan" +
+                                if (res.failed > 0) ", ${res.failed} tak cocok" else ""
+                        } else {
+                            "Tak ada yang bisa dicocokkan (pakai layer gambar)"
+                        }
+                        onRefresh()
+                    }
+                )
+                alignMessage?.let {
+                    Text(
+                        it,
+                        color = Color.Gray,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
 
             androidx.compose.foundation.lazy.LazyColumn(
@@ -488,6 +543,7 @@ fun LayerPanel(
                 items(layerManager.layers.size) { index ->
                     val layer = layerManager.layers[index]
                     val isSelected = layer.id == layerManager.activeLayerId
+                    val isPicked = layer.id in layerManager.selectedIds
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -499,7 +555,11 @@ fun LayerPanel(
                                 }
                             },
                         colors = CardDefaults.cardColors(
-                            containerColor = if (isSelected) Color(0xFF38383A) else PanelBgLight
+                            containerColor = when {
+                                isPicked -> Color(0xFF4A3A2A)
+                                isSelected -> Color(0xFF38383A)
+                                else -> PanelBgLight
+                            }
                         ),
                         shape = RoundedCornerShape(12.dp)
                     ) {
@@ -509,6 +569,17 @@ fun LayerPanel(
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Centang: masukkan layer ke pilihan banyak (untuk
+                            // Auto-Align / Distribute).
+                            Checkbox(
+                                checked = isPicked,
+                                onCheckedChange = {
+                                    layerManager.toggleSelected(layer.id)
+                                    onRefresh()
+                                },
+                                colors = CheckboxDefaults.colors(checkedColor = Accent)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                             // Preview isi layer.
                             LayerThumbnail(layer = layer, refreshTick = refreshTick)
                             Spacer(modifier = Modifier.width(10.dp))

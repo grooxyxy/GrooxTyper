@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.CenterFocusStrong
@@ -176,6 +177,7 @@ enum class ActiveTool {
     CLONE_STAMP,
     MAGIC_ERASER,
     BUBBLE_ERASER,
+    RESHAPE,
     GRADIENT,
     LASSO,
     POLYGON_LASSO,
@@ -1340,6 +1342,8 @@ fun CanvasEditorScreen(
     var lassoPath by remember { mutableStateOf<Path?>(null) }
     // Jalur sapuan kuas untuk mode Quick Mask (mask seleksi, bukan piksel).
     var quickMaskStroke by remember { mutableStateOf<Path?>(null) }
+    // Bubble Reshaper: indeks titik outline yang sedang digeser (-1 = tak ada).
+    var reshapeHandle by remember { mutableStateOf(-1) }
     // Gradient: titik awal & akhir seret (koordinat kanvas).
     var gradientStart by remember { mutableStateOf<Offset?>(null) }
     var gradientEnd by remember { mutableStateOf<Offset?>(null) }
@@ -2399,6 +2403,52 @@ fun CanvasEditorScreen(
     var bubbleEraserMargin by mutableFloatStateOf(2f)
     /** Jumlah piksel terakhir yang dibersihkan (info di options bar). */
     var bubbleEraserLastCount by mutableIntStateOf(0)
+
+    /**
+     * Bubble Reshaper: titik-titik outline gelembung yang sedang diseleksi
+     * (koordinat kanvas).
+     *
+     * Kalau bubble belum punya outline kustom, bentuk parametriknya
+     * (elips / persegi bulat) disampling jadi titik-titik supaya user
+     * bisa langsung menarik (push/pull).
+     */
+    fun reshapePoints(): List<Offset> {
+        val box = selectedTextBox ?: return emptyList()
+        val b = box.bubble ?: return emptyList()
+        if (b.bubbleW <= 0f || b.bubbleH <= 0f) return emptyList()
+        if (b.outline.isNotEmpty()) return box.bubbleOutlinePointsPx()
+        // Bentuk default: pakai outline parametrik sementara.
+        val tmp = box.copy(bubble = b.copy(outline = box.defaultBubbleOutline()))
+        return tmp.bubbleOutlinePointsPx()
+    }
+
+    /**
+     * Ubah satu titik outline gelembung (normalized 0..1) lalu segarkan.
+     *
+     * @param index indeks titik yang digeser.
+     * @param canvasPos posisi baru dalam koordinat kanvas.
+     */
+    fun reshapeMoveHandle(index: Int, canvasPos: Offset) {
+        val box = selectedTextBox ?: return
+        val b = box.bubble ?: return
+        val pts = (if (b.outline.isNotEmpty()) b.outline else box.defaultBubbleOutline())
+        if (index !in pts.indices) return
+        val w = b.bubbleW * box.scale
+        val h = b.bubbleH * box.scale
+        if (w <= 0f || h <= 0f) return
+        // Posisi kanvas -> lokal (balik rotasi) -> normal 0..1.
+        val dx = canvasPos.x - box.position.x
+        val dy = canvasPos.y - box.position.y
+        val rad = Math.toRadians((-box.rotation).toDouble())
+        val lx = dx * kotlin.math.cos(rad) - dy * kotlin.math.sin(rad)
+        val ly = dx * kotlin.math.sin(rad) + dy * kotlin.math.cos(rad)
+        val nx = ((lx + w / 2f) / w).coerceIn(-0.6f, 1.6f)
+        val ny = ((ly + h / 2f) / h).coerceIn(-0.6f, 1.6f)
+        val baru = pts.toMutableList()
+        baru[index] = Offset(nx, ny)
+        box.bubble = b.copy(outline = baru)
+        refreshComposite()
+    }
 
     /** Selesaikan lasso poligon menjadi satu region seleksi. */
     fun commitPolygonSelection() {
@@ -4846,6 +4896,18 @@ fun CanvasEditorScreen(
                                         if (wandPressStart == null && !wandBusy) {
                                             wandPressStart = change.position
                                         }
+                                    } else if (activeTool == ActiveTool.RESHAPE) {
+                                        // Bubble Reshaper: drag titik outline
+                                        // gelembung untuk push/pull bentuknya.
+                                        val pts = reshapePoints()
+                                        val tol = 22f / viewState.scale
+                                        val idx = pts.indices.firstOrNull { i ->
+                                            (pts[i] - touchCanvasPos).getDistance() <= tol
+                                        }
+                                        if (idx != null) {
+                                            reshapeHandle = idx
+                                            reshapeMoveHandle(idx, touchCanvasPos)
+                                        }
                                     } else if (activeTool == ActiveTool.MAGIC_ERASER ||
                                         activeTool == ActiveTool.BUBBLE_ERASER
                                     ) {
@@ -4854,6 +4916,11 @@ fun CanvasEditorScreen(
                                         // jari lepas (lihat blok release).
                                         if (wandPressStart == null && !wandBusy) {
                                             wandPressStart = change.position
+                                        }
+                                    } else if (activeTool == ActiveTool.RESHAPE) {
+                                        // Geser handle outline yang sedang dipegang.
+                                        if (reshapeHandle >= 0) {
+                                            reshapeMoveHandle(reshapeHandle, touchCanvasPos)
                                         }
                                     } else if (activeTool == ActiveTool.GRADIENT) {
                                         // Gradient: seret dari A ke B, isi saat
@@ -5197,6 +5264,10 @@ fun CanvasEditorScreen(
                                     // sentuh baru.
                                     if (activeTool == ActiveTool.CLONE_STAMP) {
                                         cloneStamp.endStroke()
+                                    }
+                                    // Bubble Reshaper: lepas handle.
+                                    if (activeTool == ActiveTool.RESHAPE) {
+                                        reshapeHandle = -1
                                     }
                                     // Quick mask: sapuan jadi perubahan mask seleksi.
                                     // Eraser = hitam (kurangi), brush = putih (tambah).
@@ -5694,6 +5765,35 @@ fun CanvasEditorScreen(
                     }
                     for (pt in polygonPoints) {
                         native.drawCircle(pt.x, pt.y, 5f / viewState.scale, dotPaint)
+                    }
+                }
+
+                // Handle Bubble Reshaper: titik-titik outline gelembung.
+                if (activeTool == ActiveTool.RESHAPE) {
+                    val pts = reshapePoints()
+                    if (pts.isNotEmpty()) {
+                        val native = drawContext.canvas.nativeCanvas
+                        val line = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 2f / viewState.scale
+                            color = android.graphics.Color.MAGENTA
+                        }
+                        val dot = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.MAGENTA
+                            isAntiAlias = true
+                        }
+                        val path = Path()
+                        pts.forEachIndexed { i, pt ->
+                            if (i == 0) path.moveTo(pt.x, pt.y) else path.lineTo(pt.x, pt.y)
+                        }
+                        if (pts.size > 2) {
+                            path.close()
+                            native.drawPath(path, line)
+                        }
+                        pts.forEach { pt ->
+                            native.drawCircle(pt.x, pt.y, 6f / viewState.scale, dot)
+                        }
                     }
                 }
 
@@ -6850,6 +6950,33 @@ fun CanvasEditorScreen(
             )
         }
 
+        // Options bar bubble resharper (jadikan outline / reset).
+        if (activeTool == ActiveTool.RESHAPE) {
+            ReshapeOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 4.dp, end = 4.dp),
+                hasSelection = selectedTextBox?.bubble != null,
+                pointCount = reshapePoints().size,
+                onApplyOutline = {
+                    val box = selectedTextBox
+                    val b = box?.bubble
+                    if (box != null && b != null) {
+                        box.bubble = b.copy(outline = box.defaultBubbleOutline())
+                        refreshComposite()
+                    }
+                },
+                onResetOutline = {
+                    val box = selectedTextBox
+                    val b = box?.bubble
+                    if (box != null && b != null) {
+                        box.bubble = b.copy(outline = emptyList())
+                        refreshComposite()
+                    }
+                }
+            )
+        }
+
         // Options bar bubble eraser (toleransi + margin, ala TypeR).
         if (activeTool == ActiveTool.BUBBLE_ERASER) {
             BubbleEraserOptionsBar(
@@ -7059,6 +7186,19 @@ fun CanvasEditorScreen(
                 if (selectedTextBox != null) showTextEditor = true
             }) {
                 Icon(Icons.Default.TextFields, contentDescription = "Text", tint = if (activeTool == ActiveTool.TEXT) Accent else Color.White)
+            }
+
+            // Bubble Reshaper (ala TypeR): ubah bentuk outline gelembung
+            // dengan menarik titik-titiknya (push/pull).
+            IconButton(onClick = {
+                activeTool = ActiveTool.RESHAPE
+                showBrushSettings = false
+            }) {
+                Icon(
+                    Icons.Default.BubbleChart,
+                    contentDescription = "Bubble Reshaper",
+                    tint = if (activeTool == ActiveTool.RESHAPE) Accent else Color.White
+                )
             }
 
             // Edit teks massal + gaya per kata (pindah dari panel teks ke

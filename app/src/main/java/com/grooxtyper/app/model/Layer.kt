@@ -260,6 +260,36 @@ class LayerManager(val width: Int, val height: Int) {
     val layers = mutableStateListOf<LayerItem>()
     var activeLayerId by mutableStateOf<String>("")
 
+    /**
+     * Layer yang dipilih banyak (untuk Auto-Align / Distribute).
+     *
+     * LayerManager lama hanya punya satu [activeLayerId]. Alignment &
+     * distribute butuh sekumpulan layer, jadi ditambahkan set terpisah:
+     * [activeLayerId] tetap jadi "layer utama" (untuk edit), sementara ini
+     * adalah himpunan yang mau disejajarkan.
+     */
+    var selectedIds by mutableStateOf<Set<String>>(emptySet())
+
+    /** Tambah/hapus layer dari pilihan banyak. */
+    fun toggleSelected(id: String) {
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    /** Kosongkan pilihan banyak. */
+    fun clearSelection() {
+        selectedIds = emptySet()
+    }
+
+    /**
+     * Layer-layer yang ikut alignment: pilihan banyak bila ada, kalau
+     * kosong maka layer aktif saja (supaya tombol tak pernah tak berguna).
+     */
+    fun alignmentTargets(): List<LayerItem> {
+        val picked = selectedIds.mapNotNull { findLayerById(it) }
+        if (picked.isNotEmpty()) return picked
+        return listOfNotNull(findLayerById(activeLayerId))
+    }
+
     init {
         val initialLayer = DrawingLayer(width, height, "Layer 1")
         layers.add(initialLayer)

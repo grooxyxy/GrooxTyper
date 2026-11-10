@@ -176,7 +176,17 @@ data class BubbleSpec(
     // Ukuran bubble dalam satuan poin (dikali [scale] saat dirender), supaya
     // gelembung ikut gepeng/berputar bersama kotak teksnya.
     val bubbleW: Float = 0f,
-    val bubbleH: Float = 0f
+    val bubbleH: Float = 0f,
+    /**
+     * Outline kustom gelembung (Bubble Reshaper), dalam koordinat
+     * NORMALISIR 0..1 terhadap kotak gelembung.
+     *
+     * Kosong = pakai bentuk parametrik (elips / persegi bulat). Kalau diisi,
+     * bentuk parametrik diabaikan dan outline inilah yang dipakai untuk
+     * memotong teks — jadi huruf benar-benar mengikuti gelembung yang
+     * sudah dibentuk user.
+     */
+    val outline: List<Offset> = emptyList()
 ) {
     companion object {
         const val SHAPE_ELIPS = 0
@@ -470,21 +480,93 @@ class TextBox(
         val w = b.bubbleW * scale
         val h = b.bubbleH * scale
         if (!w.isFinite() || !h.isFinite() || w < 4f || h < 4f) return null
-        val pad = min(w, h) * b.inset.coerceIn(0f, 0.35f)
-        val r = RectF(-w / 2f + pad, -h / 2f + pad, w / 2f - pad, h / 2f - pad)
-        if (r.width() < 2f || r.height() < 2f) return null
         val p = Path()
-        if (b.shape == BubbleSpec.SHAPE_BULAT) {
-            val rad = min(r.width(), r.height()) * b.roundRatio.coerceIn(0f, 0.5f)
-            p.addRoundRect(r, rad, rad, Path.Direction.CW)
+        if (b.outline.isNotEmpty()) {
+            // Bubble Reshaper: outline kustom (push/pull) yang dipakai apa
+            // adanya, bukan bentuk parametrik.
+            val pts = b.outline
+            for ((i, o) in pts.withIndex()) {
+                val x = -w / 2f + o.x * w
+                val y = -h / 2f + o.y * h
+                if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+            }
+            p.close()
         } else {
-            p.addOval(r, Path.Direction.CW)
+            val pad = min(w, h) * b.inset.coerceIn(0f, 0.35f)
+            val r = RectF(-w / 2f + pad, -h / 2f + pad, w / 2f - pad, h / 2f - pad)
+            if (r.width() < 2f || r.height() < 2f) return null
+            if (b.shape == BubbleSpec.SHAPE_BULAT) {
+                val rad = min(r.width(), r.height()) * b.roundRatio.coerceIn(0f, 0.5f)
+                p.addRoundRect(r, rad, rad, Path.Direction.CW)
+            } else {
+                p.addOval(r, Path.Direction.CW)
+            }
         }
         val m = Matrix()
         m.setRotate(rotation)
         m.postTranslate(position.x, position.y)
         p.transform(m)
         return p
+    }
+
+    /**
+     * Titik-titik outline bubble dalam koordinat KANVAS absolut.
+     *
+     * Dipakai Bubble Reshaper untuk menggambar handle dan menerjemahkan
+     * geseran jari jadi koordinat normal 0..1.
+     */
+    fun bubbleOutlinePointsPx(): List<Offset> {
+        val b = bubble ?: return emptyList()
+        if (b.bubbleW <= 0f || b.bubbleH <= 0f) return emptyList()
+        val w = b.bubbleW * scale
+        val h = b.bubbleH * scale
+        if (!w.isFinite() || !h.isFinite() || w < 4f || h < 4f) return emptyList()
+        val rad = Math.toRadians(rotation.toDouble())
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        return b.outline.map { o ->
+            val lx = -w / 2f + o.x * w
+            val ly = -h / 2f + o.y * h
+            Offset(
+                position.x + lx * cosR - ly * sinR,
+                position.y + lx * sinR + ly * cosR
+            )
+        }
+    }
+
+    /**
+     * Outline default dari bentuk parametrik saat ini (elips atau persegi
+     * bulat), dalam koordinat normal 0..1.
+     *
+     * Dipakai saat user mengaktifkan Bubble Reshaper pada bubble yang belum
+     * punya outline kustom.
+     */
+    fun defaultBubbleOutline(): List<Offset> {
+        val b = bubble ?: return emptyList()
+        val n = if (b.shape == BubbleSpec.SHAPE_BULAT) 24 else 20
+        val out = ArrayList<Offset>(n)
+        if (b.shape == BubbleSpec.SHAPE_BULAT) {
+            // Persegi bulat: titik di tepi, sudut membulat.
+            for (i in 0 until n) {
+                val t = i / n.toFloat()
+                val per = 4f
+                val side = (t * per).toInt().coerceIn(0, 3)
+                val f = (t * per) - side
+                val (x, y) = when (side) {
+                    0 -> Offset(0f + f, 0f)
+                    1 -> Offset(1f, 0f + f)
+                    2 -> Offset(1f - f, 1f)
+                    else -> Offset(0f, 1f - f)
+                }
+                out.add(Offset(x, y))
+            }
+        } else {
+            for (i in 0 until n) {
+                val a = i / n.toFloat() * 2f * Math.PI.toFloat()
+                out.add(Offset(0.5f + 0.5f * kotlin.math.cos(a), 0.5f + 0.5f * kotlin.math.sin(a)))
+            }
+        }
+        return out
     }
 
     /** Ubah teks dengan memetakan ulang span lewat diff prefix/suffix. */
@@ -1483,6 +1565,16 @@ class TextBox(
                     put("roundRatio", b.roundRatio.toDouble())
                     put("bubbleW", b.bubbleW.toDouble())
                     put("bubbleH", b.bubbleH.toDouble())
+                    if (b.outline.isNotEmpty()) {
+                        put("outline", org.json.JSONArray().apply {
+                            for (o in b.outline) {
+                                put(org.json.JSONObject().apply {
+                                    put("x", o.x.toDouble())
+                                    put("y", o.y.toDouble())
+                                })
+                            }
+                        })
+                    }
                 })
             }
         }
@@ -1651,7 +1743,20 @@ class TextBox(
                         inset = b.optDouble("inset", 0.06).toFloat(),
                         roundRatio = b.optDouble("roundRatio", 0.32).toFloat(),
                         bubbleW = b.optDouble("bubbleW", 0.0).toFloat(),
-                        bubbleH = b.optDouble("bubbleH", 0.0).toFloat()
+                        bubbleH = b.optDouble("bubbleH", 0.0).toFloat(),
+                        outline = b.optJSONArray("outline")?.let { arr ->
+                            val pts = ArrayList<Offset>(arr.length())
+                            for (i in 0 until arr.length()) {
+                                val o = arr.optJSONObject(i) ?: continue
+                                pts.add(
+                                    Offset(
+                                        o.optDouble("x", 0.5).toFloat(),
+                                        o.optDouble("y", 0.5).toFloat()
+                                    )
+                                )
+                            }
+                            pts
+                        } ?: emptyList()
                     )
                 }
             )
