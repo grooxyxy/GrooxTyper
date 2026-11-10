@@ -4,8 +4,42 @@ Editor terjemahan manga on-device (Android): deteksi teks ML Kit, deteksi balon
 teks on-device via model YOLO detect end-to-end (bubble, 2 kelas; kelas 0 dipakai),
 inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 
+> **Catatan lisensi TypeR**: repo ini mengadopsi *pola perilaku* TypeR
+> Studio (tool rail, options bar, tool seleksi, refine edge), bukan kode
+> atau asetnya. `ScanR/TypeR-Studio` tidak punya lisensi yang jelas, jadi
+> tidak ada kode/font/ikon yang disalin dari sana. Analisis lengkap ada
+> di `docs/analisis-typer-studio-web.md`.
+
 ## Fitur utama
 
+- **Tool rail ala TypeR + options bar kontekstual** — toolbar bawah
+  memakai **kelompok tool** (popup) alih-alih puluhan ikon terpisah:
+  satu tombol "Seleksi" memuat Marquee Kotak / Marquee Elips / Lasso
+  Bebas / Lasso Poligon / Magic Wand, dan satu tombol "Retouch" memuat
+  Hapus Objek / Heal MiGAN / Clone Stamp. Ikon tombol selalu
+  menampilkan tool yang sedang aktif. Tiap tool seleksi punya
+  **options bar** di atas kanvas (mode Baru/Tambah/Kurang/Iris, aksi
+  cepat, opsi lanjutan Magic Wand) — panel wand besar yang dulu menutupi
+  kanvas sudah dihapus.
+- **Seleksi lengkap ala Photoshop/TypeR** — mode gabungan (Baru, Tambah,
+  Kurang, Iris) kini berlaku untuk **semua** tool seleksi, bukan hanya
+  Magic Wand. Tool baru: **Lasso Poligon** (ketuk sudut, ketuk titik
+  pertama atau tombol Tutup untuk menutup) dan **Marquee Elips**.
+  Aksi cepat di options bar: Pilih Semua, Kosongkan, Balik, Rapi, plus
+  menu Aksi (isi warna brush, garis tepi seleksi, salin/tempel/potong,
+  hapus area, inpaint seleksi).
+- **Refine Edge untuk semua tool seleksi** — dialog Feather / Expand /
+  Contract / Border / Smooth bekerja pada path gabungan seleksi, jadi
+  berlaku untuk kotak, elips, lasso, poligon, dan wand (bukan hanya
+  wand). Semua operasi dibatasi ke potongan area seleksi (maks 4MP)
+  supaya aman di kanvas 720x16000, dan tepi feather ikut respected saat
+  isi/hapus/salin — diimplementasikan di `SelectionRefiner.kt` dengan spec
+  eksekutabel di `scripts/refine-check.mjs`.
+- **Clone Stamp & Gradient** — clone stamp: ketuk kanvas untuk
+  menetapkan sumber, lalu geser untuk menyalin (tepi bulat lembut,
+  ukuran/hardness/opacity bisa diatur). Gradient: seret untuk menentukan
+  arah, isi linear atau radial antara warna brush dan warna ujung yang
+  dipilih; bila ada seleksi, gradasi hanya mengisi area seleksi.
 - **Bubble Detector (inferensi nyata, on-device)** — model
   `assets/models/bd.onnx` (YOLO end-to-end NMS-free, 2 kelas: 0 = text_bubble,
   1 = text_free; kelas 0 yang dipakai, input 640x640, output (1,300,6) =
@@ -21,6 +55,14 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
 - **Pencarian font & style** — kolom cari di panel Teks (tab Tulis dan Style)
   serta di dialog Style Rules. Pencocokan tidak peduli huruf besar/kecil,
   spasi, atau strip, jadi "patrickhand" menemukan "PatrickHand-Regular".
+- **Bulk teks, lasso fill, outline gradasi & blur teks** — Edit Teks Massal
+  punya pencarian font, pilih semua/kosongkan, dan menerapkan font + typeface
+  yang benar; ukuran yang dipakai adalah ukuran AKTUAL di kanvas
+  (`fontSize * scale`), jadi teks yang sudah di-resize tidak berubah lagi
+  setelah bulk apply. Lasso/oval/kotak/wand bisa langsung diisi warna brush
+  dari menu seleksi (satu langkah undo). Outline teks bisa memakai gradasi
+  dua warna + sudut (solid tetap tersedia), dan slider **Blur teks**
+  memberi soft-focus pada isi + outline, termasuk mode SFX dan tinta SFX.
 - **Eyedropper tahan-geser** — tahan jari untuk membuka loupe pembesaran,
   geser untuk mengoreksi warna, lepas untuk memakai. HUD menampilkan HEX, RGB,
   nama warna, dan koordinat piksel; geser ke strip atas untuk batal, dan
@@ -107,7 +149,18 @@ punya izin sebelum mendistribusikan ulang APK yang memuat model ini.
 CI: GitHub Actions (`.github/workflows/android.yml`) mem-build APK debug +
 release dan mengunggah artefak `app-debug` / `app-release`. Jalankan lewat
 tombol **Run workflow** (`workflow_dispatch`) atau push ke `main` / PR.
-Versi saat ini: **1.1.0** (versionCode 2).
+Versi saat ini: **1.2.0** (versionCode 3).
+
+## Uji tanpa kompilator
+
+Dua skrip Node memverifikasi perilaku numerik + gate statis ke Kotlin
+(kotlinc tidak tersedia di lingkungan CI ringan):
+
+```
+node scripts/brush-check.js     # regresi brush/wand/seleksi + gate statis Kotlin
+node scripts/refine-check.mjs   # spec numerik Refine Edge (expand/contract/border/feather/smooth)
+node scripts/wand-check.mjs     # spec numerik area bubble
+```
 
 ## Font komik bawaan
 

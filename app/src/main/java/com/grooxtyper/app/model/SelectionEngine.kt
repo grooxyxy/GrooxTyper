@@ -11,11 +11,18 @@ import android.graphics.RectF
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.grooxtyper.app.model.selection.SelectionMode
 
 class SelectionEngine(val width: Int, val height: Int) {
     var hasSelection by mutableStateOf(false)
     /** Jumlah area terpisah dalam seleksi gabungan (untuk label UI). */
     var selectionCount by mutableStateOf(0)
+    /**
+     * True bila mask sekarang punya tepi feather (hasil Refine Edge).
+     * Fill memakai mask coverage supaya tepi ikut lembut; jalur cepat
+     * (path fill) dipakai kalau false.
+     */
+    var feathered by mutableStateOf(false)
     val selectionPath = Path()
     var clipboardBitmap: Bitmap? = null
 
@@ -46,11 +53,18 @@ class SelectionEngine(val width: Int, val height: Int) {
             return _maskCanvas!!
         }
 
-    /** Tambah sketsa lasso bebas sebagai SATU area baru (multi-seleksi). */
-    fun setLassoPath(path: Path) {
+    /**
+     * Terapkan sketsa lasso dengan [mode] ala Photoshop.
+     *
+     * Mode bawaan ADD mempertahankan perilaku lama (beberapa tarikan lasso
+     * menjadi beberapa area). Toolbar baru mengirim mode pilihan pengguna
+     * supaya Baru/Tambah/Kurang/Iris berlaku untuk semua tool seleksi,
+     * bukan hanya Magic Wand.
+     */
+    fun setLassoPath(path: Path, mode: SelectionMode = SelectionMode.ADD) {
         val single = Path(path)
         single.close()
-        addRegion(single)
+        addRegion(single, mode)
     }
 
     fun clearSelection() {
@@ -59,6 +73,7 @@ class SelectionEngine(val width: Int, val height: Int) {
         selectionPath.reset()
         hasSelection = false
         selectionCount = 0
+        feathered = false
         // Jangan alokasi hanya untuk clear — mask yang belum ada sudah kosong.
         _maskBitmap?.let { b ->
             if (!b.isRecycled) {
@@ -142,13 +157,127 @@ class SelectionEngine(val width: Int, val height: Int) {
         rebuildUnion()
     }
 
+    /**
+     * Path gabungan seleksi saat ini (salinan), supaya tool di luar
+     * (mis. refine edge) bisa memprosesnya tanpa menyentuh daftar region.
+     */
+    fun currentPath(): Path = Path(selectionPath)
+
+    /**
+     * Terapkan Refine Edge pada seleksi saat ini dan ganti hasilnya.
+     *
+     * Bekerja untuk SEMUA tool seleksi (kotak, elips, lasso, poligon,
+     * wand) karena sumbernya adalah [selectionPath] gabungan, bukan peta
+     * tile khusus wand.
+     *
+     * @return true bila seleksi berhasil dirapi.
+     */
+    fun refineSelection(
+        expand: Int = 0,
+        contract: Int = 0,
+        border: Int = 0,
+        feather: Int = 0,
+        smooth: Int = 0
+    ): Boolean {
+        if (!hasSelection) return false
+        val refined = com.grooxtyper.app.model.selection.SelectionRefiner.refine(
+            selectionPath, width, height,
+            expand = expand, contract = contract,
+            border = border, feather = feather, smooth = smooth
+        ) ?: return false
+        // Ganti region lama dengan outline hasil refine, lalu mask ikut
+        // diperbarui dari potongan coverage (tepi feather jadi lembut).
+        regions.clear()
+        regionBounds.clear()
+        val b = RectF()
+        refined.outline.computeBounds(b, true)
+        if (!b.isEmpty) {
+            regions.add(refined.outline)
+            regionBounds.add(b)
+        }
+        rebuildUnion()
+        applyRefinedMask(refined)
+        feathered = feather > 0
+        return hasSelection
+    }
+
+    /**
+     * Tulis coverage hasil refine ke mask bitmap.
+     *
+     * Mask adalah ARGB; piksel putih opaque = terpilih penuh, abu-abu =
+     * tepi feather (transisi halus saat copy/clear/inpaint).
+     *
+     * Bitmap hasil refine sudah RGB putih + alpha coverage, jadi bisa
+     * langsung ditempel tanpa bitmap tambahan atau color filter.
+     */
+    private fun applyRefinedMask(refined: com.grooxtyper.app.model.selection.RefinedSelection) {
+        val crop = refined.crop
+        if (crop.isRecycled) return
+        try {
+            maskCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            maskCanvas.drawBitmap(
+                crop,
+                refined.left.toFloat(),
+                refined.top.toFloat(),
+                null
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+        }
+    }
+
     private fun addRegion(region: Path) {
+        addRegion(region, SelectionMode.ADD)
+    }
+
+    /**
+     * Inti semua tool seleksi. [SelectionMode.NEW] mengganti, ADD menambah,
+     * SUBTRACT/INTERSECT memakai operasi Path pada union yang sudah ada.
+     * Untuk SUBTRACT/INTERSECT, identitas region per-bubble dilebur menjadi
+     * satu union — konsekuensi yang sama dengan Photoshop setelah Boolean.
+     */
+    private fun addRegion(region: Path, mode: SelectionMode) {
         val b = RectF()
         region.computeBounds(b, true)
         if (b.isEmpty) return
-        regions.add(region)
-        regionBounds.add(b)
+        when (mode) {
+            SelectionMode.NEW -> {
+                regions.clear()
+                regionBounds.clear()
+                regions.add(region)
+                regionBounds.add(b)
+            }
+            SelectionMode.ADD -> {
+                regions.add(region)
+                regionBounds.add(b)
+            }
+            SelectionMode.SUBTRACT -> {
+                if (regions.isEmpty()) return
+                val result = Path(selectionPath)
+                result.op(region, Path.Op.DIFFERENCE)
+                replaceRegionsWithUnion(result)
+            }
+            SelectionMode.INTERSECT -> {
+                if (regions.isEmpty()) return
+                val result = Path(selectionPath)
+                result.op(region, Path.Op.INTERSECT)
+                replaceRegionsWithUnion(result)
+            }
+        }
         rebuildUnion()
+    }
+
+    private fun replaceRegionsWithUnion(path: Path) {
+        regions.clear()
+        regionBounds.clear()
+        val b = RectF()
+        path.computeBounds(b, true)
+        if (!b.isEmpty) {
+            regions.add(path)
+            regionBounds.add(b)
+        }
     }
 
     /** Batas seleksi aktif (untuk auto-fit teks ke bubble). Null bila tak ada seleksi. */
@@ -271,10 +400,34 @@ class SelectionEngine(val width: Int, val height: Int) {
     
     
     /** Tambah oval sebagai SATU area baru (tap bubble menumpuk, multi-seleksi). */
-    fun selectOval(rect: RectF) {
+    fun selectOval(rect: RectF, mode: SelectionMode = SelectionMode.ADD) {
         val oval = Path()
         oval.addOval(rect, Path.Direction.CW)
-        addRegion(oval)
+        addRegion(oval, mode)
+    }
+
+    /** Pilih seluruh kanvas (Select All). */
+    fun selectAll() {
+        val all = Path()
+        all.addRect(0f, 0f, width.toFloat(), height.toFloat(), Path.Direction.CW)
+        addRegion(all, SelectionMode.NEW)
+    }
+
+    /**
+     * Gambar garis di sepanjang tepi seleksi dengan warna/ukuran brush.
+     * Berguna untuk outline cepat tanpa membuat layer baru.
+     */
+    fun strokeSelectedArea(layer: DrawingLayer, color: Int, widthPx: Float) {
+        if (!hasSelection) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = widthPx.coerceAtLeast(1f)
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+            this.color = color
+        }
+        Canvas(layer.getBitmap()).drawPath(selectionPath, paint)
+        layer.markDirty()
     }
 
     /**
@@ -657,7 +810,7 @@ class SelectionEngine(val width: Int, val height: Int) {
      * Koordinat dinormalisasi + dijepit ke kanvas. Dipakai untuk tambah
      * bubble manual dan seleksi area cepat via drag.
      */
-    fun selectRect(rect: RectF) {
+    fun selectRect(rect: RectF, mode: SelectionMode = SelectionMode.ADD) {
         val left = minOf(rect.left, rect.right).coerceIn(0f, width.toFloat())
         val top = minOf(rect.top, rect.bottom).coerceIn(0f, height.toFloat())
         val right = maxOf(rect.left, rect.right).coerceIn(0f, width.toFloat())
@@ -665,7 +818,7 @@ class SelectionEngine(val width: Int, val height: Int) {
         if (right - left < 2f || bottom - top < 2f) return
         val box = Path()
         box.addRect(left, top, right, bottom, Path.Direction.CW)
-        addRegion(box)
+        addRegion(box, mode)
     }
 
     private fun updateMaskFromPath() {
@@ -722,6 +875,53 @@ class SelectionEngine(val width: Int, val height: Int) {
             xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         }
         canvas.drawBitmap(selectionMaskBitmap, 0f, 0f, clearPaint)
+        layer.markDirty()
+    }
+
+    /**
+     * Isi seluruh seleksi (lasso/oval/kotak/wand/poligon) dengan [color]
+     * pada layer aktif.
+     *
+     * Kalau seleksi sudah di-feather (Refine Edge), isi memakai mask
+     * coverage supaya tepi ikut lembut. Mask dibatasi ke kotak seleksi
+     * (bukan kanvas penuh) supaya tidak alokasi besar; untuk seleksi
+     * raksasa (>4MP) dipakai jalur lama (isi path) supaya aman di HP kecil.
+     */
+    fun fillSelectedArea(layer: DrawingLayer, color: Int) {
+        if (!hasSelection) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            this.color = color
+        }
+        val bounds = selectionBounds()
+        val bw = bounds?.width()?.toInt() ?: 0
+        val bh = bounds?.height()?.toInt() ?: 0
+        val canUseMask = feathered && bounds != null && bw > 0 && bh > 0 &&
+            bw.toLong() * bh <= 4_000_000L
+        if (!canUseMask) {
+            // Jalur cepat: isi path (tepi keras), tanpa mask besar.
+            Canvas(layer.getBitmap()).drawPath(selectionPath, paint)
+            layer.markDirty()
+            return
+        }
+        val canvas = Canvas(layer.getBitmap())
+        try {
+            val save = canvas.saveLayer(
+                bounds.left, bounds.top, bounds.right, bounds.bottom, null
+            )
+            canvas.drawRect(bounds, paint)
+            val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+            }
+            canvas.drawBitmap(selectionMaskBitmap, 0f, 0f, maskPaint)
+            canvas.restoreToCount(save)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            canvas.drawPath(selectionPath, paint)
+        } catch (e: OutOfMemoryError) {
+            e.printStackTrace()
+            canvas.drawPath(selectionPath, paint)
+        }
         layer.markDirty()
     }
 

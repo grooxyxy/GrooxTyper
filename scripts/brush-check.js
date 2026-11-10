@@ -466,9 +466,9 @@ const selectEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/mod
 assert(editor.includes('SELECT_WAND,'), 'wand: ActiveTool.SELECT_WAND terdaftar');
 assert(selectEng.includes('fun selectWand(') && selectEng.includes('fun traceContour(') && selectEng.includes('fun autoTolerance('), 'wand: flood fill + marching squares + toleransi otomatis di SelectionEngine');
 assert(editor.includes('fun runWandAt(') && editor.includes('wandPressStart'), 'wand: tap-vs-geser dibedakan (seleksi hanya saat ketuk)');
-assert(editor.includes('WandToolsPanel('), 'wand: panel lengkap di file terpisah (batas JVM 64KB)');
+assert(editor.includes('SelectionOptionsBar(') && editor.includes('SelectionRefineDialog('), 'wand: options bar + refine dialog di file terpisah (batas JVM 64KB)');
 assert(!editor.includes('listOf("manual" to "Manual"'), 'wand: mode Manual/Otomatis tak lagi ada');
-assert(editor.includes('"Wand"') && editor.includes('"Magic Wand"'), 'wand: tombol toolbar + menu lasso');
+assert(editor.includes('"Magic Wand"') && editor.includes('SelectionFamilyButton('), 'wand: tombol wand di rail + menu lasso');
 assert(selectEng.includes('fun splitMergedBubble(') && editor.includes('fun splitBubbleAt('), 'wand-otomatis: pecah bubble gabung (kasus webtoon)');
 assert(selectEng.includes('fun splitMergedWatershed(') && selectEng.includes('WandEngine.splitBubbles('), 'wand-otomatis: watershed berbasis puncak distance transform (bukan erosi 1px per iterasi)');
 assert(editor.includes('Bubble gabung dipecah jadi 2 area'), 'wand-otomatis: pesan hasil pecah bubble');
@@ -786,6 +786,111 @@ for (const [nama, f] of [['SfxStyle', sfxStyle], ['SfxTextureBrush', sfxTex]]) {
 
 
 // -------------------------------------------- wand jendela adaptif (kasus 10)
+// ============ TypeR-like: tool rail + refine edge + clone stamp ============
+console.log('\n== TypeR-like: rail, refine edge, clone stamp ==');
+const rail = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ToolRail.kt'));
+const selPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/SelectionOptionsPanel.kt'));
+const cloneBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/CloneStampOptionsBar.kt'));
+const refiner = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/SelectionRefiner.kt'));
+const cloneEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/CloneStampEngine.kt'));
+const adapter = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/TiledSelectionAdapter.kt'));
+const refineCheck = read(path.join(ROOT, 'scripts/refine-check.mjs'));
+
+// -- Tool rail: satu ikon per keluarga tool (ala TypeR) --
+assert(rail.includes('fun SelectionFamilyButton(') && rail.includes('fun RetouchFamilyButton('), 'rail: komponen keluarga tool ada');
+assert(rail.includes('DropdownMenu') && rail.includes('onPick'), 'rail: keluarga tool punya popup anggota');
+assert(rail.includes('ActiveTool.SELECT_ELLIPSE') && rail.includes('ActiveTool.POLYGON_LASSO') && rail.includes('ActiveTool.SELECT_WAND'),
+  'rail: popup seleksi memuat kotak/elips/lasso/poligon/wand');
+assert(rail.includes('RetouchKind.CLONE_STAMP'), 'rail: keluarga retouch memuat clone stamp');
+assert(rail.includes('fun isSelectionTool('), 'rail: pemeriksa tool seleksi');
+
+// -- Tool baru di enum & editor --
+assert(editor.includes('POLYGON_LASSO'), 'editor: ActiveTool.POLYGON_LASSO terdaftar');
+assert(editor.includes('SELECT_ELLIPSE'), 'editor: ActiveTool.SELECT_ELLIPSE terdaftar');
+assert(editor.includes('CLONE_STAMP'), 'editor: ActiveTool.CLONE_STAMP terdaftar');
+assert(editor.includes('commitPolygonSelection'), 'editor: lasso poligon punya jalur selesai seleksi');
+assert(editor.includes('polygonPoints'), 'editor: titik poligon disimpan di state');
+
+// -- Mode seleksi berlaku untuk semua tool (bukan hanya wand) --
+assert(selectEng.includes('fun setLassoPath(path: Path, mode: SelectionMode'), 'seleksi: lasso menerima mode');
+assert(selectEng.includes('fun selectRect(rect: RectF, mode: SelectionMode'), 'seleksi: kotak menerima mode');
+assert(selectEng.includes('fun selectOval(rect: RectF, mode: SelectionMode'), 'seleksi: elips menerima mode');
+assert(selectEng.includes('SelectionMode.SUBTRACT') && selectEng.includes('SelectionMode.INTERSECT'),
+  'seleksi: mode kurang/iris diimplementasikan di engine');
+assert(selectEng.includes('Path.Op.DIFFERENCE') && selectEng.includes('Path.Op.INTERSECT'),
+  'seleksi: mode kurang/iris memakai operasi Path');
+// Mode disimpan per keluarga tool: wand default NEW, lasso default ADD
+// (multi-area gaya lama app ini). Kalau digabung, lasso lama ikut berubah.
+assert(editor.includes('var lassoSelMode') && editor.includes('SelectionMode.ADD'),
+  'seleksi: mode lasso punya state sendiri (default ADD = multi-area)');
+assert(editor.includes('setLassoPath(sketch, lassoSelMode)') && editor.includes('selectRect(rect, lassoSelMode)'),
+  'seleksi: tool lasso/marquee memakai mode lasso, bukan mode wand');
+
+// -- Refine Edge untuk semua tool seleksi --
+assert(refiner.includes('object SelectionRefiner'), 'refine: mesin refine terpisah');
+assert(refiner.includes('fun refine('), 'refine: API refine ada');
+assert(refiner.includes('unionWithStroke') && refiner.includes('subtractStroke') &&
+  refiner.includes('drawStroked') && refiner.includes('blurAlpha') && refiner.includes('thresholdAlpha'),
+  'refine: kelima operasi (expand/contract/border/feather/smooth) ada');
+assert(refiner.includes('MAX_CROP_PIXELS') && refiner.includes('4_000_000L'),
+  'refine: kerja dibatasi ke crop (tak alokasi bitmap sebesar kanvas)');
+assert(refiner.includes('MaskContour.build'), 'refine: kontur pakai marching squares MaskContour');
+assert(selectEng.includes('fun refineSelection('), 'seleksi: engine punya refineSelection');
+assert(selectEng.includes('SelectionRefiner.refine('), 'seleksi: refine diarahkan ke SelectionRefiner');
+assert(editor.includes('fun applySelectionRefine('), 'editor: refine bisa dipicu dari UI');
+assert(selPanel.includes('fun SelectionRefineDialog('), 'UI: dialog refine edge ada');
+assert(selPanel.includes('Rapi'), 'UI: tombol Rapi di options bar');
+assert(adapter.includes('fun rasterizePath('), 'adapter: path bisa di-raster ke peta tile');
+assert(refineCheck.includes('expand/contract/border/feather/smooth'), 'uji: ada spec numerik refine edge');
+assert(refineCheck.includes('refine-check PASSED'), 'uji: spec refine punya gate PASSED');
+
+// -- Options bar seleksi ala TypeR --
+assert(selPanel.includes('fun SelectionOptionsBar('), 'UI: options bar seleksi ada');
+assert(selPanel.includes('SelectionMode') && selPanel.includes('Tambah') && selPanel.includes('Iris'),
+  'UI: mode Baru/Tambah/Kurang/Iris di options bar');
+assert(selPanel.includes('0f..255f'), 'UI: slider toleransi 0..255 di options bar');
+assert(selPanel.includes('Nyambung') && selPanel.includes('Anti-alias') && selPanel.includes('Sample merged'),
+  'UI: sakelar wand (contiguous/AA/sample merged) di options bar');
+assert(editor.includes('SelectionOptionsBar('), 'editor: options bar seleksi dipakai');
+assert(!editor.includes('WandToolsPanel('), 'editor: panel wand lama dibuang (diganti options bar)');
+
+// -- Clone stamp --
+assert(cloneEngine.includes('class CloneStampEngine'), 'clone: mesin clone stamp ada');
+assert(cloneEngine.includes('fun setSource(') && cloneEngine.includes('fun stampOnLayer('),
+  'clone: ada cara set sumber + stamp');
+assert(cloneEngine.includes('RadialGradient'), 'clone: tepi bulat lembut pakai gradien radial');
+assert(editor.includes('cloneStamp.setSource('), 'editor: ketukan pertama menetapkan sumber clone');
+assert(cloneBar.includes('fun CloneStampOptionsBar('), 'UI: options bar clone stamp ada');
+assert(cloneBar.includes('Hardness') && cloneBar.includes('Opacity'), 'UI: clone punya hardness + opacity');
+
+// -- Gradient tool (TypeR/Photoshop punya) --
+const gradEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/GradientEngine.kt'));
+const gradBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/GradientOptionsBar.kt'));
+assert(gradEngine.includes('class GradientEngine'), 'gradient: mesin gradient ada');
+assert(gradEngine.includes('LinearGradient') && gradEngine.includes('RadialGradient'), 'gradient: mode linear + radial');
+assert(gradEngine.includes('enum class Mode'), 'gradient: mode punya enum');
+assert(gradEngine.includes('clipPath'), 'gradient: gradasi bisa dibatasi ke seleksi');
+assert(gradEngine.includes('endColor') && gradEngine.includes('reversed'), 'gradient: warna ujung + arah terbalik');
+assert(editor.includes('ActiveTool.GRADIENT'), 'editor: ActiveTool.GRADIENT terdaftar');
+assert(editor.includes('gradientEngine.apply('), 'editor: gradient dipakai dari UI');
+assert(gradBar.includes('fun GradientOptionsBar('), 'UI: options bar gradient ada');
+assert(gradBar.includes('Linear') && gradBar.includes('Radial'), 'UI: gradient punya linear/radial');
+
+console.log('\n== TypeR-like: braces & karakter asing ==');
+for (const [nm, tx] of [
+  ['ToolRail', rail],
+  ['SelectionOptionsPanel', selPanel],
+  ['CloneStampOptionsBar', cloneBar],
+  ['GradientOptionsBar', gradBar],
+  ['SelectionRefiner', refiner],
+  ['CloneStampEngine', cloneEngine],
+  ['GradientEngine', gradEngine]
+]) {
+  const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
+  assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
+  assert(!/[\u4E00-\u9FFF\u0400-\u04FF]/.test(tx), nm + ' bebas karakter asing');
+}
+
 console.log('\n== Wand: jendela adaptif (bukti kanvas webtoon) ==');
 const selEngine = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SelectionEngine.kt'));
 const wandWin = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandWindow.kt'));
@@ -979,13 +1084,14 @@ assert(editor.includes('HugeWandEngine(') && editor.includes('HugePixelProvider(
 assert(editor.includes('CanvasCommandRunner(') && editor.includes('WandSelectCommand('), 'editor: UI lewat mesin perintah yang sama dengan script');
 assert(editor.includes('viewport') && editor.includes('toPath('), 'editor: overlay dibatasi viewport');
 assert(!/WandSelection\.select\(/.test(editor), 'editor: jalur window tetap lama tak dipakai runWandAt');
-const wandPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/WandToolsPanel.kt'));
-assert(wandPanel.includes('fun WandToolsPanel('), 'wand: panel di file terpisah (bukan CanvasEditorScreen)');
-assert(wandPanel.includes('valueRange = 0f..255f'), 'wand: slider toleransi 0..255');
-assert(wandPanel.includes('Contiguous') && wandPanel.includes('Anti-alias') && wandPanel.includes('Sample Merged'), 'wand: sakelar Contiguous/Anti-alias/SampleMerged');
+const wandPanel = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/SelectionOptionsPanel.kt'));
+assert(wandPanel.includes('fun SelectionOptionsBar('), 'wand: options bar di file terpisah (bukan CanvasEditorScreen)');
+assert(wandPanel.includes('0f..255f'), 'wand: slider toleransi 0..255');
+assert(wandPanel.includes('Nyambung') && wandPanel.includes('Anti-alias') && wandPanel.includes('Sample merged'), 'wand: sakelar Contiguous/Anti-alias/SampleMerged');
 assert(wandPanel.includes('SelectionMode') && wandPanel.includes('Tambah') && wandPanel.includes('Iris'), 'wand: tombol mode Baru/Tambah/Kurang/Iris');
-assert(wandPanel.includes('Feather') && wandPanel.includes('Bubble Aware'), 'wand: Feather + Bubble Aware di panel');
-for (const [nm, tx] of [['CanvasPixelProvider', provider], ['HugePixelProvider', hugeProvider], ['HugeWandEngine', hugeEngine], ['SelectionTile', tile], ['SelectionTileMap', tileMap], ['WandResult', wandResult], ['SelectionMode', selMode], ['WandToolsPanel', wandPanel]]) {
+assert(wandPanel.includes('Feather') && wandPanel.includes('Bubble aware'), 'wand: Feather + Bubble Aware di panel');
+assert(wandPanel.includes('fun SelectionRefineDialog('), 'wand: Refine Edge dialog terpisah');
+for (const [nm, tx] of [['CanvasPixelProvider', provider], ['HugePixelProvider', hugeProvider], ['HugeWandEngine', hugeEngine], ['SelectionTile', tile], ['SelectionTileMap', tileMap], ['WandResult', wandResult], ['SelectionMode', selMode], ['SelectionOptionsPanel', wandPanel]]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
 }
@@ -1087,9 +1193,21 @@ assert(textEditor.includes('"Tulis", "Warna", "Efek", "Style", "Multi"'), 'multi
 // 3. Bulk edit: warna (picker), italic, font.
 assert(bulkDlg.includes('ColorPickerDialog('), 'bulk: pilih warna lewat color picker (bukan warna brush)');
 assert(bulkDlg.includes('bulkItalic') && bulkDlg.includes('Miring (italic)'), 'bulk: sakelar italic');
-assert(bulkDlg.includes('bulkFontName') && bulkDlg.includes('fonts.forEach'), 'bulk: pilih font dari daftar');
+assert(bulkDlg.includes('bulkFontName') && bulkDlg.includes('shownFonts.forEach'), 'bulk: pilih font dari daftar');
 assert(bulkDlg.includes('onApply(bulkChecked, bulkSize, bulkBold, bulkItalic, bulkFontName, bulkColor)'), 'bulk: terapkan bawa semua atribut');
-assert(editor.includes('tl.box.italic = italic') && editor.includes('tl.box.fontName = fontName'), 'bulk: call site menerapkan italic+font per kotak');
+assert(editor.includes('tl.box.italic = italic') && editor.includes('tl.box.fontName = picked.first') && editor.includes('tl.box.typeface = picked.second'), 'bulk: call site menerapkan italic+font per kotak');
+assert(editor.includes('size / tl.box.scale'), 'bulk: ukuran mengikuti ukuran aktual (fontSize * scale)');
+// 3b. Lasso fill, outline gradasi, blur teks.
+const sfxInkSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/SfxInk.kt'));
+assert(selEng.includes('fun fillSelectedArea(') && editor.includes('selectionEngine.fillSelectedArea('), 'lasso: isi seleksi langsung ke layer aktif');
+assert(editor.includes('Isi Seleksi (warna brush)'), 'lasso: aksi fill muncul di menu');
+assert(textBoxSrc.includes('var outlineGradient: TextGradientSpec? = null'), 'teks: outline gradasi tersimpan di kotak');
+assert(textRenderer.includes('applyOutlineColor(') && textRenderer.includes('outlineGradient?.let'), 'renderer: outline memakai gradasi bila diaktifkan');
+assert(textEditor.includes('Gradasi stroke awal') && textEditor.includes('onOutlineGradientOn'), 'panel: kendali outline gradasi');
+assert(textBoxSrc.includes('var textBlur: Float = 0f'), 'teks: blur teks tersimpan di kotak');
+assert(textRenderer.includes('BlurMaskFilter(') && sfxInkSrc.includes('blurRadius'), 'renderer: blur glif + tinta SFX');
+assert(sfxInkSrc.includes('outlineGradientShader(') && textRenderer.includes('outlineGradient = box.outlineGradient?.copy()'), 'renderer: outline gradasi juga di tinta SFX');
+assert(textEditor.includes('Blur teks') && textEditor.includes('onTextBlur'), 'panel: slider blur teks');
 // 4. Ikon deteksi ganda dibuang (satu pintu dialog).
 assert(!/contentDescription = "Text Detector"/.test(editor), 'ikon: tombol Text Detector ganda dibuang');
 assert(editor.includes('contentDescription = "Inpaint"'), 'ikon: pintu Inpaint tetap ada');

@@ -289,11 +289,15 @@ class TextBox(
     var strokePosition: StrokePosition = StrokePosition.OUTSIDE,
     var fillType: TextFillType = TextFillType.SOLID,
     var gradient: TextGradientSpec = TextGradientSpec(),
+    // Gradasi khusus OUTLINE. null = outline solid memakai [outlineColor].
+    var outlineGradient: TextGradientSpec? = null,
     var shadow: TextShadowSpec? = TextShadowSpec(),
     var letterSpacing: Float = 0f,
     var wordSpacing: Float = 0f,
     var lineSpacing: Float = 12f,
     var textOpacity: Float = 1f,
+    // Blur glif (px pada skala 1). 0 = tajam. Diterapkan ke isi + outline.
+    var textBlur: Float = 0f,
     var uppercase: Boolean = false,
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
@@ -659,11 +663,13 @@ class TextBox(
         strokePosition = o.strokePosition
         fillType = o.fillType
         gradient = o.gradient.copy()
+        outlineGradient = o.outlineGradient?.copy()
         shadow = o.shadow?.copy()
         letterSpacing = o.letterSpacing
         wordSpacing = o.wordSpacing
         lineSpacing = o.lineSpacing
         textOpacity = o.textOpacity
+        textBlur = o.textBlur
         uppercase = o.uppercase
         underline = o.underline
         strikethrough = o.strikethrough
@@ -1051,11 +1057,13 @@ class TextBox(
         strokePosition = strokePosition,
         fillType = fillType,
         gradient = gradient.copy(),
+        outlineGradient = outlineGradient?.copy(),
         shadow = shadow?.copy(),
         letterSpacing = letterSpacing,
         wordSpacing = wordSpacing,
         lineSpacing = lineSpacing,
         textOpacity = textOpacity,
+        textBlur = textBlur,
         uppercase = uppercase,
         underline = underline,
         strikethrough = strikethrough,
@@ -1094,11 +1102,13 @@ class TextBox(
         strokePosition = o.strokePosition
         fillType = o.fillType
         gradient = o.gradient.copy()
+        outlineGradient = o.outlineGradient?.copy()
         shadow = o.shadow?.copy()
         letterSpacing = o.letterSpacing
         wordSpacing = o.wordSpacing
         lineSpacing = o.lineSpacing
         textOpacity = o.textOpacity
+        textBlur = o.textBlur
         uppercase = o.uppercase
         underline = o.underline
         strikethrough = o.strikethrough
@@ -1137,11 +1147,13 @@ class TextBox(
             strokePosition == o.strokePosition &&
             fillType == o.fillType &&
             gradient == o.gradient &&
+            outlineGradient == o.outlineGradient &&
             shadow == o.shadow &&
             letterSpacing == o.letterSpacing &&
             wordSpacing == o.wordSpacing &&
             lineSpacing == o.lineSpacing &&
             textOpacity == o.textOpacity &&
+            textBlur == o.textBlur &&
             uppercase == o.uppercase &&
             underline == o.underline &&
             strikethrough == o.strikethrough &&
@@ -1245,6 +1257,14 @@ class TextBox(
                 put("colorEnd", gradient.colorEnd)
                 put("angle", gradient.angle.toDouble())
             })
+            outlineGradient?.let { og ->
+                put("outlineGradient", org.json.JSONObject().apply {
+                    put("colorStart", og.colorStart)
+                    put("colorEnd", og.colorEnd)
+                    put("angle", og.angle.toDouble())
+                })
+            }
+            put("textBlur", textBlur.toDouble())
             shadow?.let { s ->
                 put("shadow", org.json.JSONObject().apply {
                     put("dx", s.dx.toDouble())
@@ -1382,6 +1402,7 @@ class TextBox(
         fun boxFromJson(o: org.json.JSONObject, typefaceFor: (String) -> Typeface): TextBox {
             val fontName = o.optString("fontName", "Default Bold")
             val gradientObj = o.optJSONObject("gradient")
+            val outlineGradientObj = o.optJSONObject("outlineGradient")
             val shadowObj = o.optJSONObject("shadow")
             val glowObj = o.optJSONObject("glow")
             val bevelObj = o.optJSONObject("bevel")
@@ -1415,6 +1436,14 @@ class TextBox(
                     ) ?: android.graphics.Color.parseColor("#FF5722"),
                     angle = gradientObj?.optDouble("angle", 90.0)?.toFloat() ?: 90f
                 ),
+                outlineGradient = outlineGradientObj?.let { og ->
+                    TextGradientSpec(
+                        colorStart = og.optInt("colorStart", android.graphics.Color.WHITE),
+                        colorEnd = og.optInt("colorEnd", android.graphics.Color.BLACK),
+                        angle = og.optDouble("angle", 90.0).toFloat().coerceIn(0f, 360f)
+                    )
+                },
+                textBlur = o.optDouble("textBlur", 0.0).toFloat().coerceIn(0f, 30f),
                 shadow = shadowObj?.let { s ->
                     TextShadowSpec(
                         dx = s.optDouble("dx", 4.0).toFloat(),

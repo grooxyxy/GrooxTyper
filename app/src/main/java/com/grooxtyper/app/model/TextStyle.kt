@@ -29,11 +29,13 @@ data class TextStylePreset(
     var strokePosition: StrokePosition = StrokePosition.OUTSIDE,
     var fillType: TextFillType = TextFillType.SOLID,
     var gradient: TextGradientSpec = TextGradientSpec(),
+    var outlineGradient: TextGradientSpec? = null,
     var shadow: TextShadowSpec? = TextShadowSpec(),
     var letterSpacing: Float = 0f,
     var wordSpacing: Float = 0f,
     var lineSpacing: Float = 12f,
     var textOpacity: Float = 1f,
+    var textBlur: Float = 0f,
     var uppercase: Boolean = false,
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
@@ -56,11 +58,13 @@ data class TextStylePreset(
         box.strokePosition = strokePosition
         box.fillType = fillType
         box.gradient = gradient.copy()
+        box.outlineGradient = outlineGradient?.copy()
         box.shadow = shadow?.copy()
         box.letterSpacing = letterSpacing
         box.wordSpacing = wordSpacing
         box.lineSpacing = lineSpacing
         box.textOpacity = textOpacity
+        box.textBlur = textBlur
         box.uppercase = uppercase
         box.underline = underline
         box.strikethrough = strikethrough
@@ -90,6 +94,14 @@ data class TextStylePreset(
             put("colorEnd", gradient.colorEnd)
             put("angle", gradient.angle.toDouble())
         })
+        if (outlineGradient != null) {
+            put("outlineGradient", JSONObject().apply {
+                put("colorStart", outlineGradient!!.colorStart)
+                put("colorEnd", outlineGradient!!.colorEnd)
+                put("angle", outlineGradient!!.angle.toDouble())
+            })
+        }
+        put("textBlur", textBlur.toDouble())
         if (shadow != null) {
             put("shadow", JSONObject().apply {
                 put("dx", shadow!!.dx.toDouble())
@@ -141,11 +153,13 @@ data class TextStylePreset(
             strokePosition = box.strokePosition,
             fillType = box.fillType,
             gradient = box.gradient.copy(),
+            outlineGradient = box.outlineGradient?.copy(),
             shadow = box.shadow?.copy(),
             letterSpacing = box.letterSpacing,
             wordSpacing = box.wordSpacing,
             lineSpacing = box.lineSpacing,
             textOpacity = box.textOpacity,
+            textBlur = box.textBlur,
             uppercase = box.uppercase,
             underline = box.underline,
             strikethrough = box.strikethrough,
@@ -166,6 +180,13 @@ data class TextStylePreset(
                 angle = o.optJSONObject("gradient")?.optDouble("angle", 90.0)?.toFloat() ?: 90f
             )
             val shadowObj = o.optJSONObject("shadow")
+            val outlineGradient = o.optJSONObject("outlineGradient")?.let { og ->
+                TextGradientSpec(
+                    colorStart = og.optInt("colorStart", android.graphics.Color.WHITE),
+                    colorEnd = og.optInt("colorEnd", android.graphics.Color.BLACK),
+                    angle = og.optDouble("angle", 90.0).toFloat().coerceIn(0f, 360f)
+                )
+            }
             val shadow = if (shadowObj != null) {
                 TextShadowSpec(
                     dx = shadowObj.optDouble("dx", 4.0).toFloat(),
@@ -197,11 +218,13 @@ data class TextStylePreset(
                     TextFillType.valueOf(o.optString("fillType", "SOLID"))
                 }.getOrDefault(TextFillType.SOLID),
                 gradient = gradient,
+                outlineGradient = outlineGradient,
                 shadow = shadow,
                 letterSpacing = o.optDouble("letterSpacing", 0.0).toFloat(),
                 wordSpacing = o.optDouble("wordSpacing", 0.0).toFloat(),
                 lineSpacing = o.optDouble("lineSpacing", 12.0).toFloat(),
                 textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
+                textBlur = o.optDouble("textBlur", 0.0).toFloat().coerceIn(0f, 30f),
                 uppercase = o.optBoolean("uppercase", false),
                 underline = o.optBoolean("underline", false),
                 strikethrough = o.optBoolean("strikethrough", false),

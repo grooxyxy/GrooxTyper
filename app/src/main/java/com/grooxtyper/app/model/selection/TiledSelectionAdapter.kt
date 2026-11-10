@@ -114,6 +114,60 @@ class TiledSelectionAdapter(
     }
 
     /**
+     * Isi peta tile dari satu [Path] (seleksi non-wand: lasso, kotak,
+     * elips, poligon).
+     *
+     * Jembatan ini bikin operasi refine (expand/contract/feather/border/
+     * smooth) berlaku untuk SEMUA tool seleksi, bukan hanya Magic Wand.
+     * Path di-raster memakai coverage alpha supaya tepi anti-alias tetap
+     * jadi 0..255 (bukan boolean), lalu peta tile jadi sumber kebenaran.
+     *
+     * Batas 4MP sama seperti operasi morfologi: seleksi raksasa di kanvas
+     * 720x16000 tidak boleh.alokasi bitmap sebesar kanvas.
+     *
+     * @return true bila berhasil, false bila area terlalu besar/kosong.
+     */
+    fun rasterizePath(path: Path, canvasWidth: Int, canvasHeight: Int): Boolean {
+        val b = RectF()
+        path.computeBounds(b, true)
+        if (b.isEmpty) return false
+        val left = max(0, b.left.toInt())
+        val top = max(0, b.top.toInt())
+        val right = min(canvasWidth, b.right.toInt() + 1)
+        val bottom = min(canvasHeight, b.bottom.toInt() + 1)
+        val w = right - left
+        val h = bottom - top
+        if (w <= 0 || h <= 0) return false
+        if (w.toLong() * h > 4_000_000L) return false
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            val cv = android.graphics.Canvas(bmp)
+            val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                style = android.graphics.Paint.Style.FILL
+                color = android.graphics.Color.WHITE
+            }
+            cv.translate(-left.toFloat(), -top.toFloat())
+            cv.drawPath(path, p)
+            cv.translate(left.toFloat(), top.toFloat())
+            val px = IntArray(w * h)
+            bmp.getPixels(px, 0, w, 0, 0, w, h)
+            tileMap.clear()
+            for (y in 0 until h) {
+                val row = y * w
+                for (x in 0 until w) {
+                    val a = (px[row + x] ushr 24) and 0xFF
+                    if (a > 0) tileMap.setPixel(left + x, top + y, a, canvasWidth, canvasHeight)
+                }
+            }
+        } finally {
+            runCatching { bmp.recycle() }
+        }
+        tileMap.removeEmptyTiles()
+        history.push("Raster path", tileMap)
+        return !tileMap.isEmpty()
+    }
+
+    /**
      * Operasi morfologi dalam batas seleksi + radius, tanpa bitmap
      * sebesar kanvas.
      */

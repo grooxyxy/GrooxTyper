@@ -144,6 +144,16 @@ fun TextEditorPanel(
 
     var outlineW by remember(box.id, styleVersion) { mutableFloatStateOf(box.outlineWidth) }
     var outlineColor by remember(box.id, styleVersion) { mutableIntStateOf(box.outlineColor) }
+    var outlineGradientOn by remember(box.id, styleVersion) { mutableStateOf(box.outlineGradient != null) }
+    var outlineGradStart by remember(box.id, styleVersion) {
+        mutableIntStateOf(box.outlineGradient?.colorStart ?: box.outlineColor)
+    }
+    var outlineGradEnd by remember(box.id, styleVersion) {
+        mutableIntStateOf(box.outlineGradient?.colorEnd ?: box.color)
+    }
+    var outlineGradAngle by remember(box.id, styleVersion) {
+        mutableFloatStateOf((box.outlineGradient?.angle ?: 90f).coerceIn(0f, 360f))
+    }
     var strokeOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.strokeOpacity) }
     var strokePos by remember(box.id, styleVersion) { mutableStateOf(box.strokePosition) }
 
@@ -170,6 +180,9 @@ fun TextEditorPanel(
     var boxW by remember(box.id, styleVersion) { mutableFloatStateOf(box.boxWidth ?: 600f) }
 
     var textOpacity by remember(box.id, styleVersion) { mutableFloatStateOf(box.textOpacity) }
+    var textBlur by remember(box.id, styleVersion) {
+        mutableFloatStateOf(box.textBlur.coerceIn(0f, 30f))
+    }
     var perspX by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspX) }
     var perspY by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspY) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
@@ -237,9 +250,10 @@ fun TextEditorPanel(
         previewText, fontSize, bold, italic, box.fontName, fontTick,
         fillType, gradStart, gradEnd, gradAngle,
         outlineW, outlineColor, strokeOpacity, strokePos,
+        outlineGradientOn, outlineGradStart, outlineGradEnd, outlineGradAngle,
         shadowOn, shadowColor, shadowOpacity, shadowDist, shadowAngle, shadowSize, shadowSpread,
         letterSp, wordSp, lineSp, scaleX, styleVersion,
-        textOpacity, uppercase, underline, strike,
+        textOpacity, textBlur, uppercase, underline, strike,
         glowOn, glowColor, glowOpacity, glowSize, glowSpread,
         bevelOn, bevelSize, bevelOpacity
     ) {
@@ -253,6 +267,9 @@ fun TextEditorPanel(
                 align = TextAlignMode.CENTER,
                 outlineWidth = outlineW,
                 outlineColor = outlineColor,
+                outlineGradient = if (outlineGradientOn) {
+                    TextGradientSpec(outlineGradStart, outlineGradEnd, outlineGradAngle)
+                } else null,
                 strokeOpacity = strokeOpacity,
                 strokePosition = strokePos,
                 fillType = fillType,
@@ -267,6 +284,7 @@ fun TextEditorPanel(
                 lineSpacing = lineSp,
                 textScaleX = scaleX,
                 textOpacity = textOpacity,
+                textBlur = textBlur,
                 uppercase = uppercase,
                 underline = underline,
                 strikethrough = strike,
@@ -437,6 +455,24 @@ fun TextEditorPanel(
                         onOutlineW = { outlineW = it; box.outlineWidth = it; push() },
                         outlineColor = outlineColor,
                         onPickStrokeColor = { colorTarget = 1; showColor = true },
+                        outlineGradientOn = outlineGradientOn,
+                        onOutlineGradientOn = { on ->
+                            outlineGradientOn = on
+                            box.outlineGradient = if (on) {
+                                TextGradientSpec(outlineGradStart, outlineGradEnd, outlineGradAngle)
+                            } else null
+                            push()
+                        },
+                        outlineGradStart = outlineGradStart,
+                        onPickOutlineGradStart = { colorTarget = 6; showColor = true },
+                        outlineGradEnd = outlineGradEnd,
+                        onPickOutlineGradEnd = { colorTarget = 7; showColor = true },
+                        outlineGradAngle = outlineGradAngle,
+                        onOutlineGradAngle = {
+                            outlineGradAngle = it
+                            box.outlineGradient?.angle = it
+                            push()
+                        },
                         strokeOpacity = strokeOpacity,
                         onStrokeOpacity = { strokeOpacity = it; box.strokeOpacity = it; push() },
                         strokePos = strokePos,
@@ -521,6 +557,8 @@ fun TextEditorPanel(
                         onBevelSize = { bevelSize = it; box.bevel?.size = it; push() },
                         bevelOpacity = bevelOpacity,
                         onBevelOpacity = { bevelOpacity = it; box.bevel?.opacity = it; push() },
+                        textBlur = textBlur,
+                        onTextBlur = { textBlur = it; box.textBlur = it; push() },
                         // FIX: tombol "Buka Grid Perspektif" berada di tab Efek.
                         // Sebelumnya parameter ini tidak dioper sehingga memakai
                         // nilai default {} → tombol tampak "tidak berfungsi".
@@ -603,6 +641,8 @@ fun TextEditorPanel(
                 3 -> { gradStart = c; box.gradient.colorStart = c }
                 4 -> { gradEnd = c; box.gradient.colorEnd = c }
                 5 -> { glowColor = c; box.glow?.color = c }
+                6 -> { outlineGradStart = c; box.outlineGradient?.colorStart = c }
+                7 -> { outlineGradEnd = c; box.outlineGradient?.colorEnd = c }
                 else -> { colorVal = c; box.color = c }
             }
             push()
@@ -614,6 +654,8 @@ fun TextEditorPanel(
                 3 -> gradStart
                 4 -> gradEnd
                 5 -> glowColor
+                6 -> outlineGradStart
+                7 -> outlineGradEnd
                 else -> colorVal
             },
             onColorSelected = { c -> applyPickedColor(c) },
@@ -818,6 +860,14 @@ private fun ColorTab(
     onOutlineW: (Float) -> Unit,
     outlineColor: Int,
     onPickStrokeColor: () -> Unit,
+    outlineGradientOn: Boolean,
+    onOutlineGradientOn: (Boolean) -> Unit,
+    outlineGradStart: Int,
+    onPickOutlineGradStart: () -> Unit,
+    outlineGradEnd: Int,
+    onPickOutlineGradEnd: () -> Unit,
+    outlineGradAngle: Float,
+    onOutlineGradAngle: (Float) -> Unit,
     strokeOpacity: Float,
     onStrokeOpacity: (Float) -> Unit,
     strokePos: StrokePosition,
@@ -864,7 +914,43 @@ private fun ColorTab(
     }
     Spacer(modifier = Modifier.height(4.dp))
     Text("Stroke", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-    ColorRow("Warna stroke (color wheel)", outlineColor) { onPickStrokeColor() }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FillChip("Solid", !outlineGradientOn) { onOutlineGradientOn(false) }
+        FillChip("Gradasi", outlineGradientOn) { onOutlineGradientOn(true) }
+    }
+    if (outlineGradientOn) {
+        ColorRow("Gradasi stroke awal", outlineGradStart) { onPickOutlineGradStart() }
+        ColorRow("Gradasi stroke akhir", outlineGradEnd) { onPickOutlineGradEnd() }
+        Text("Sudut gradasi outline ${outlineGradAngle.toInt()}°", color = Color.Gray, fontSize = 12.sp)
+        Slider(
+            value = outlineGradAngle, onValueChange = onOutlineGradAngle,
+            valueRange = 0f..360f,
+            colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+        )
+        val rad = Math.toRadians(outlineGradAngle.toDouble())
+        val dx = cos(rad).toFloat()
+        val dy = sin(rad).toFloat()
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(22.dp)
+                .clip(RoundedCornerShape(8.dp))
+        ) {
+            val cx = size.width / 2f
+            val cy = size.height / 2f
+            val half = hypot(size.width, size.height) / 2f
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(outlineGradStart), Color(outlineGradEnd)),
+                    start = Offset(cx - dx * half, cy - dy * half),
+                    end = Offset(cx + dx * half, cy + dy * half)
+                ),
+                size = size
+            )
+        }
+    } else {
+        ColorRow("Warna stroke (color wheel)", outlineColor) { onPickStrokeColor() }
+    }
     Text("Tebal stroke ${outlineW.toInt()} px", color = Color.Gray, fontSize = 12.sp)
     Slider(
         value = outlineW, onValueChange = onOutlineW,
@@ -933,6 +1019,8 @@ private fun EffectTab(
     onBevelSize: (Float) -> Unit,
     bevelOpacity: Float,
     onBevelOpacity: (Float) -> Unit,
+    textBlur: Float,
+    onTextBlur: (Float) -> Unit,
     onOpenPerspectiveGrid: () -> Unit = {},
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1098,6 +1186,18 @@ private fun EffectTab(
             colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
         )
     }
+    Spacer(modifier = Modifier.height(4.dp))
+    Text("Blur teks", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+    Text(
+        if (textBlur <= 0f) "Tajam — geser untuk soft-focus"
+        else "Soft-focus ${textBlur.toInt()} px (isi + outline)",
+        color = Color.Gray, fontSize = 11.sp
+    )
+    Slider(
+        value = textBlur, onValueChange = onTextBlur,
+        valueRange = 0f..30f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
 }
 
 @Composable
@@ -1230,6 +1330,7 @@ private fun StyleTab(
                             align = TextAlignMode.CENTER,
                             outlineWidth = preset.outlineWidth,
                             outlineColor = preset.outlineColor,
+                            outlineGradient = preset.outlineGradient?.copy(),
                             strokeOpacity = preset.strokeOpacity,
                             strokePosition = preset.strokePosition,
                             fillType = preset.fillType,
@@ -1239,6 +1340,7 @@ private fun StyleTab(
                             wordSpacing = preset.wordSpacing,
                             lineSpacing = preset.lineSpacing,
                             textOpacity = preset.textOpacity,
+                            textBlur = preset.textBlur,
                             uppercase = preset.uppercase,
                             underline = preset.underline,
                             strikethrough = preset.strikethrough,

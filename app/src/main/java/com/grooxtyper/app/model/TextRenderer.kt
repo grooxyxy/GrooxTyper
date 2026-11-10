@@ -1,9 +1,11 @@
 package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.MaskFilter
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
@@ -118,8 +120,8 @@ object TextRenderer {
                 strokeWidth = box.outlineWidth * box.scale
                 strokeJoin = Paint.Join.ROUND
                 strokeCap = Paint.Cap.ROUND
-                color = withAlpha(box.outlineColor, box.strokeOpacity)
-                alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+                applyOutlineColor(this, box, contentW, contentH)
+                maskFilter = textBlurMask(box)
                 clearShadowLayer()
             }
         } else null
@@ -134,6 +136,7 @@ object TextRenderer {
                 color = box.color
             }
             alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+            maskFilter = textBlurMask(box)
         }
 
         // Outer glow di bawah segalanya (cahaya di balik glif).
@@ -222,7 +225,9 @@ object TextRenderer {
             gradEnd = style?.gradEnd,
             gradAngle = style?.gradAngle ?: 90f,
             spatter = style?.spatter ?: spec.spatter,
-            alpha = box.textOpacity
+            alpha = box.textOpacity,
+            blurRadius = box.textBlur * box.scale,
+            outlineGradient = box.outlineGradient?.copy()
         )
         val shadowDx = (style?.shadowDx ?: 0f) * capH
         val shadowDy = (style?.shadowDy ?: 0f) * capH
@@ -258,7 +263,7 @@ object TextRenderer {
                     basePaint.getTextPath(ch, 0, 1, hx - cw / 2f, 0f, gp)
                     SfxInk.hardShadowGlyph(
                         canvas, gp, shadowColor, shadowDx, shadowDy,
-                        outerW, box.textOpacity
+                        outerW, box.textOpacity, box.textBlur * box.scale
                     )
                     hx += cw
                 }
@@ -312,6 +317,7 @@ object TextRenderer {
         val shader = if (box.fillType == TextFillType.GRADIENT) {
             gradientShader(box, areaW, areaH)
         } else null
+        val outlineShader = box.outlineGradient?.let { gradientShader(it, areaW, areaH) }
         var y = -lay.contentH / 2f
         for (line in lay.lines) {
             val lh = (line.descent - line.ascent) + box.lineSpacing * box.scale
@@ -329,7 +335,7 @@ object TextRenderer {
                 }
                 when (box.strokePosition) {
                     StrokePosition.OUTSIDE -> {
-                        richOutlinePaint(box, line, shader)?.let { op ->
+                        richOutlinePaint(box, line, outlineShader)?.let { op ->
                             drawRichLine(canvas, box, line, x0, baseline, op, wordExtra)
                         }
                         drawRichLine(canvas, box, line, x0, baseline, richFillPaint(box, line, shader, true), wordExtra)
@@ -337,7 +343,7 @@ object TextRenderer {
                     else -> {
                         drawRichLine(canvas, box, line, x0, baseline, richFillPaint(box, line, shader, true), wordExtra)
                         if (box.strokePosition == StrokePosition.CENTER) {
-                            richOutlinePaint(box, line, shader)?.let { op ->
+                            richOutlinePaint(box, line, outlineShader)?.let { op ->
                                 drawRichLine(canvas, box, line, x0, baseline, op, wordExtra)
                             }
                         }
@@ -388,6 +394,7 @@ object TextRenderer {
         }
         p.shader = if (col == null) fillShader else null
         p.alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+        p.maskFilter = textBlurMask(box)
         if (withShadow) applyRichShadow(box, r, p) else p.clearShadowLayer()
         p
     }
@@ -396,7 +403,7 @@ object TextRenderer {
     private fun richOutlinePaint(
         box: TextBox,
         line: RichTextLayout.Line,
-        fillShader: Shader?
+        outlineShader: Shader?
     ): ((RichTextLayout.Run) -> Paint)? {
         val any = line.runs.any {
             val w = it.style?.outlineWidth ?: box.outlineWidth
@@ -405,17 +412,28 @@ object TextRenderer {
         if (!any) return null
         return { r ->
             val w = (r.style?.outlineWidth ?: box.outlineWidth) * box.scale
-            val oc = r.style?.outlineColor ?: box.outlineColor
-            val op = (255 * box.textOpacity).toInt().coerceIn(0, 255)
-            val ocAlpha = withAlpha(oc, box.strokeOpacity)
+            val oc = r.style?.outlineColor
             Paint(r.paint).apply {
                 style = Paint.Style.STROKE
                 strokeWidth = maxOf(0.5f, w)
                 strokeJoin = Paint.Join.ROUND
                 strokeCap = Paint.Cap.ROUND
-                this.shader = null
-                color = ocAlpha
-                alpha = op
+                if (oc != null) {
+                    // Span boleh menimpa outline dengan warna solid.
+                    this.shader = null
+                    color = withAlpha(oc, box.strokeOpacity)
+                    alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                } else if (outlineShader != null) {
+                    this.shader = outlineShader
+                    color = Color.WHITE
+                    alpha = (255f * box.strokeOpacity * box.textOpacity)
+                        .toInt().coerceIn(0, 255)
+                } else {
+                    this.shader = null
+                    color = withAlpha(box.outlineColor, box.strokeOpacity)
+                    alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                }
+                maskFilter = textBlurMask(box)
                 clearShadowLayer()
             }
         }
@@ -434,6 +452,7 @@ object TextRenderer {
             strokeWidth = spreadChokePx(g.spread, g.blur, box.scale)
             strokeJoin = Paint.Join.ROUND
             this.shader = null
+            maskFilter = null
             color = Color.WHITE
             alpha = ga
             setShadowLayer(maxOf(1f, g.blur * box.scale), 0f, 0f, gc)
@@ -531,8 +550,8 @@ object TextRenderer {
                 strokeWidth = box.outlineWidth * box.scale
                 strokeJoin = Paint.Join.ROUND
                 strokeCap = Paint.Cap.ROUND
-                color = withAlpha(box.outlineColor, box.strokeOpacity)
-                alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+                applyOutlineColor(this, box, total, fs * 1.5f)
+                maskFilter = textBlurMask(box)
                 clearShadowLayer()
             }
         } else null
@@ -546,10 +565,12 @@ object TextRenderer {
                 color = box.color
             }
             alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+            maskFilter = textBlurMask(box)
         }
         val glowPaint = if (box.glow != null) {
             Paint(fill).apply {
                 shader = null
+                maskFilter = null
                 style = Paint.Style.FILL_AND_STROKE
                 strokeWidth = spreadChokePx(box.glow!!.spread, box.glow!!.blur, box.scale)
                 strokeJoin = Paint.Join.ROUND
@@ -582,7 +603,11 @@ object TextRenderer {
                 outline?.let {
                     Paint(it).apply {
                         strokeWidth = (sp.outlineWidth ?: box.outlineWidth) * box.scale
-                        color = withAlpha(sp.outlineColor ?: box.outlineColor, box.strokeOpacity)
+                        if (sp.outlineColor != null) {
+                            shader = null
+                            color = withAlpha(sp.outlineColor, box.strokeOpacity)
+                            alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
+                        }
                     }
                 }
             } else outline
@@ -616,6 +641,7 @@ object TextRenderer {
         val glowColor = withAlpha(g.color, g.opacity)
         val glowPaint = Paint(fill).apply {
             shader = null
+            maskFilter = null
             style = if (g.spread > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
             strokeWidth = spreadChokePx(g.spread, g.blur, box.scale)
             strokeJoin = Paint.Join.ROUND
@@ -800,14 +826,45 @@ object TextRenderer {
         strokeBmp.recycle()
     }
 
-    private fun gradientShader(box: TextBox, contentW: Float, contentH: Float): Shader {
-        val rad = Math.toRadians(box.gradient.angle.toDouble())
+    private fun applyOutlineColor(
+        paint: Paint,
+        box: TextBox,
+        contentW: Float,
+        contentH: Float
+    ) {
+        val og = box.outlineGradient
+        if (og != null) {
+            paint.shader = gradientShader(og, contentW, contentH)
+            paint.color = Color.WHITE
+            paint.alpha = (255f * box.strokeOpacity * box.textOpacity)
+                .toInt().coerceIn(0, 255)
+        } else {
+            paint.shader = null
+            paint.color = withAlpha(box.outlineColor, box.strokeOpacity)
+            paint.alpha = (paint.alpha * box.textOpacity).toInt().coerceIn(0, 255)
+        }
+    }
+
+    private fun textBlurMask(box: TextBox): MaskFilter? {
+        val r = (box.textBlur * box.scale).coerceIn(0f, 200f)
+        return if (r > 0.05f) BlurMaskFilter(r, BlurMaskFilter.Blur.NORMAL) else null
+    }
+
+    private fun gradientShader(box: TextBox, contentW: Float, contentH: Float): Shader =
+        gradientShader(box.gradient, contentW, contentH)
+
+    private fun gradientShader(
+        spec: TextGradientSpec,
+        contentW: Float,
+        contentH: Float
+    ): Shader {
+        val rad = Math.toRadians(spec.angle.toDouble())
         val dx = cos(rad).toFloat()
         val dy = sin(rad).toFloat()
         val half = hypot(contentW, contentH) / 2f
         return LinearGradient(
             -dx * half, -dy * half, dx * half, dy * half,
-            box.gradient.colorStart, box.gradient.colorEnd,
+            spec.colorStart, spec.colorEnd,
             Shader.TileMode.CLAMP
         )
     }
@@ -869,11 +926,13 @@ object TextRenderer {
             strokePosition = base.strokePosition,
             fillType = base.fillType,
             gradient = base.gradient.copy(),
+            outlineGradient = base.outlineGradient?.copy(),
             shadow = base.shadow?.copy(),
             letterSpacing = base.letterSpacing,
             wordSpacing = base.wordSpacing,
             lineSpacing = base.lineSpacing,
             textOpacity = base.textOpacity,
+            textBlur = base.textBlur,
             uppercase = base.uppercase,
             underline = base.underline,
             strikethrough = base.strikethrough,

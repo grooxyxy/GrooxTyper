@@ -69,13 +69,18 @@ fun BulkTextDialog(
     onClose: () -> Unit
 ) {
     var bulkChecked by remember { mutableStateOf(initialChecked) }
-    var bulkSize by remember { mutableFloatStateOf(initialSize) }
+    var bulkSize by remember { mutableFloatStateOf(initialSize.coerceIn(1f, 400f)) }
     var bulkBold by remember { mutableStateOf(initialBold) }
     var bulkItalic by remember { mutableStateOf(initialItalic) }
     var bulkFontName by remember { mutableStateOf(initialFontName) }
     var bulkColor by remember { mutableIntStateOf(initialColor) }
     var showColor by remember { mutableStateOf(false) }
     var fontExpanded by remember { mutableStateOf(false) }
+    var fontQuery by remember { mutableStateOf("") }
+    val shownFonts = remember(fonts, fontQuery) {
+        if (fontQuery.isBlank()) fonts
+        else fonts.filter { matchesSearchQuery(it.first, fontQuery) }
+    }
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Edit Teks Massal", color = Color.White, fontWeight = FontWeight.Bold) },
@@ -86,6 +91,21 @@ fun BulkTextDialog(
                     color = Color.Gray, fontSize = 11.sp
                 )
                 Spacer(modifier = Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${bulkChecked.size}/${layers.size} dipilih",
+                        color = Color.LightGray, fontSize = 11.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { bulkChecked = layers.map { it.id }.toSet() },
+                        enabled = layers.isNotEmpty()
+                    ) { Text("Pilih semua", color = BulkAccent, fontSize = 11.sp) }
+                    TextButton(
+                        onClick = { bulkChecked = emptySet() },
+                        enabled = bulkChecked.isNotEmpty()
+                    ) { Text("Kosongkan", color = Color.Gray, fontSize = 11.sp) }
+                }
                 if (layers.isEmpty()) {
                     Text("Belum ada teks di kanvas.", color = Color.LightGray, fontSize = 12.sp)
                 } else {
@@ -125,7 +145,7 @@ fun BulkTextDialog(
                 Slider(
                     value = bulkSize,
                     onValueChange = { bulkSize = it },
-                    valueRange = 1f..220f,
+                    valueRange = 1f..400f,
                     colors = SliderDefaults.colors(thumbColor = BulkAccent, activeTrackColor = BulkAccent)
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,11 +184,18 @@ fun BulkTextDialog(
                     }
                 }
                 if (fontExpanded) {
+                    SearchField(
+                        value = fontQuery,
+                        onValueChange = { fontQuery = it },
+                        placeholder = "Cari font (mis. Bangers, Patrick)"
+                    )
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         if (fonts.isEmpty()) {
                             Text("Belum ada font.", color = Color.Gray, fontSize = 12.sp)
+                        } else if (shownFonts.isEmpty()) {
+                            Text("Font tidak ditemukan.", color = Color.Gray, fontSize = 12.sp)
                         }
-                        fonts.forEach { (name, _) ->
+                        shownFonts.forEach { (name, _) ->
                             Text(
                                 name,
                                 color = if (name == bulkFontName) BulkAccent else Color.LightGray,

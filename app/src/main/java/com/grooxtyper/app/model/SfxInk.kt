@@ -1,9 +1,11 @@
 package com.grooxtyper.app.model
 
 import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.MaskFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PathMeasure
@@ -144,8 +146,36 @@ object SfxInk {
         val gradAngle: Float = 90f,
         /** Jumlah percikan (spatter); 0 = mati. */
         val spatter: Int = 0,
-        val alpha: Float = 1f
+        val alpha: Float = 1f,
+        /** Radius blur glif dalam piksel kanvas; 0 = tajam. */
+        val blurRadius: Float = 0f,
+        /** Gradasi outline (null = solid [outlineColor]). */
+        val outlineGradient: TextGradientSpec? = null
     ) {
+        /** MaskFilter blur siap pakai (null bila blur mati). */
+        fun blurFilter(): MaskFilter? =
+            if (blurRadius > 0.05f) {
+                BlurMaskFilter(blurRadius.coerceAtMost(200f), BlurMaskFilter.Blur.NORMAL)
+            } else null
+
+        /** Shader gradasi outline untuk kotak glyph [bounds] (null bila mati). */
+        fun outlineGradientShader(bounds: RectF): Shader? {
+            val og = outlineGradient ?: return null
+            if (bounds.width() < 0.5f && bounds.height() < 0.5f) return null
+            val rad = Math.toRadians(og.angle.toDouble())
+            val dx = cos(rad).toFloat()
+            val dy = sin(rad).toFloat()
+            val half = hypot(bounds.width(), bounds.height()) / 2f
+            val cx = bounds.centerX()
+            val cy = bounds.centerY()
+            return LinearGradient(
+                cx - dx * half, cy - dy * half,
+                cx + dx * half, cy + dy * half,
+                og.colorStart, og.colorEnd,
+                Shader.TileMode.CLAMP
+            )
+        }
+
         /** Skalakan semua ukuran ke huruf acuan (tinggi huruf H). */
         fun scaled(h: Float, mul: Float = 1f): InkSpec {
             if (h <= 0f || strokeWidth <= 1e-3f) return this
@@ -260,6 +290,7 @@ object SfxInk {
                     style = Paint.Style.FILL
                     color = spec.keylineColor
                     this.alpha = (a * 0.85f).toInt().coerceIn(0, 255)
+                    maskFilter = spec.blurFilter()
                 }
                 canvas.drawPath(rk, p)
             }
@@ -274,7 +305,10 @@ object SfxInk {
                 val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     style = Paint.Style.FILL
                     color = spec.outlineColor
+                    shader = spec.outlineGradientShader(bounds)
+                    if (shader != null) color = Color.WHITE
                     this.alpha = a
+                    maskFilter = spec.blurFilter()
                 }
                 canvas.drawPath(r, p)
             }
@@ -284,6 +318,7 @@ object SfxInk {
             style = Paint.Style.FILL
             color = spec.inkColor
             this.alpha = a
+            maskFilter = spec.blurFilter()
             if (spec.gradient && bounds.height() > 1f) {
                 val top: Int
                 val bottom: Int
@@ -329,7 +364,8 @@ object SfxInk {
         dx: Float,
         dy: Float,
         outerWidth: Float,
-        alpha: Float
+        alpha: Float,
+        blurRadius: Float = 0f
     ) {
         if (dx == 0f && dy == 0f) return
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -337,6 +373,12 @@ object SfxInk {
             this.color = color
             this.alpha = (alpha * 255f).toInt().coerceIn(0, 255)
             strokeWidth = (outerWidth * 2f).coerceAtLeast(1f)
+            if (blurRadius > 0.05f) {
+                maskFilter = BlurMaskFilter(
+                    blurRadius.coerceAtMost(200f),
+                    BlurMaskFilter.Blur.NORMAL
+                )
+            }
         }
         val saved = canvas.save()
         canvas.translate(dx, dy)
@@ -365,6 +407,7 @@ object SfxInk {
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
             color = spec.inkColor
+            maskFilter = spec.blurFilter()
         }
         var placed = 0
         var guard = 0

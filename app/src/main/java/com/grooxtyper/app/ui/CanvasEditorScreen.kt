@@ -40,7 +40,6 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.Healing
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Refresh
@@ -53,6 +52,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.FlipToBack
+import androidx.compose.material.icons.filled.Gradient
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
@@ -61,7 +61,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
-import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PanTool
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Preview
@@ -106,6 +105,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -173,8 +173,12 @@ enum class ActiveTool {
     BRUSH,
     ERASER,
     INPAINT,
+    CLONE_STAMP,
+    GRADIENT,
     LASSO,
+    POLYGON_LASSO,
     SELECT_BOX,
+    SELECT_ELLIPSE,
     SELECT_WAND,
     TEXT,
     IMAGE,
@@ -483,6 +487,10 @@ private class EditorUiState {
     var exportQuality by mutableFloatStateOf(90f)
     var isExporting by mutableStateOf(false)
     var showLassoMenu by mutableStateOf(false)
+    /** Opsi lanjutan Magic Wand (toleransi, anti-alias, sample merged, dll.). */
+    var showSelectionAdvanced by mutableStateOf(false)
+    /** Dialog Refine Edge untuk seleksi wand. */
+    var showSelectionRefine by mutableStateOf(false)
     var showQuickSlider by mutableStateOf(true)
     var showMLInpaintDialog by mutableStateOf(false)
     var makeEditableText by mutableStateOf(true)
@@ -574,6 +582,8 @@ fun CanvasEditorScreen(
     }
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
+    val cloneStamp = remember { com.grooxtyper.app.model.CloneStampEngine() }
+    val gradientEngine = remember { com.grooxtyper.app.model.GradientEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
     val fontRegistry = remember { FontRegistry(context) }
     val inpaintingManager = remember { InpaintingManager() }
@@ -937,6 +947,8 @@ fun CanvasEditorScreen(
         selectedImageId?.let { layerManager.findLayerById(it) as? com.grooxtyper.app.model.ImageLayer }
 
     var showColorPicker by uiState::showColorPicker
+    // Picker warna khusus ujung gradasi (bukan warna brush).
+    var showGradientColorPicker by remember { mutableStateOf(false) }
     var showLayersPanel by uiState::showLayersPanel
     var showBrushSettings by uiState::showBrushSettings
     var showTextEditor by uiState::showTextEditor
@@ -961,6 +973,22 @@ fun CanvasEditorScreen(
     var isExporting by uiState::isExporting
     var exportResult by remember { mutableStateOf<String?>(null) }
     var showLassoMenu by uiState::showLassoMenu
+    var showSelectionAdvanced by uiState::showSelectionAdvanced
+    var showSelectionRefine by uiState::showSelectionRefine
+    // Tool seleksi terakhir yang dipakai — rail menampilkan ikon ini,
+    // jadi user tahu tool aktif walau menunya tertutup.
+    var lastSelectionTool by remember { mutableStateOf(ActiveTool.LASSO) }
+    // Anggota keluarga retouch yang terakhir dipakai.
+    var lastRetouchKind by remember { mutableStateOf(RetouchKind.OBJECT_ERASER) }
+    // Mode seleksi untuk keluarga lasso/marquee/poligon.
+    //
+    // Dipisah dari mode wand karena default-nya berbeda: lasso sengaja
+    // ADD (drag tambah, ketuk hapus = multi-area), sedangkan wand NEW
+    // (ketuk = satu seleksi baru, seperti Photoshop). Opsi bar
+    // menampilkan mode milik tool yang sedang aktif.
+    var lassoSelMode by remember {
+        mutableStateOf(com.grooxtyper.app.model.selection.SelectionMode.ADD)
+    }
     var referenceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     // Inpaint PatchMatch brush: mask akumulasi selama stroke
     var inpaintMask by remember { mutableStateOf<Bitmap?>(null) }
@@ -1293,9 +1321,24 @@ fun CanvasEditorScreen(
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by uiState::bubbleEraseMode
     var lassoPath by remember { mutableStateOf<Path?>(null) }
-    // Drag kotak seleksi (tool SELECT_BOX): titik awal/akhir kanvas.
+    // Gradient: titik awal & akhir seret (koordinat kanvas).
+    var gradientStart by remember { mutableStateOf<Offset?>(null) }
+    var gradientEnd by remember { mutableStateOf<Offset?>(null) }
+    // Lasso poligon: ketuk menambah titik, ketuk titik pertama / tombol
+    // Tutup untuk menyelesaikan. Koordinat kanvas.
+    var polygonPoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    // Drag kotak seleksi (tool SELECT_BOX/SELECT_ELLIPSE): awal/akhir kanvas.
     var boxStart by remember { mutableStateOf<Offset?>(null) }
     var boxCurrent by remember { mutableStateOf<Offset?>(null) }
+
+    // Titik poligon tidak boleh tertinggal saat user pindah tool.
+    LaunchedEffect(activeTool) {
+        if (activeTool != ActiveTool.POLYGON_LASSO) polygonPoints = emptyList()
+        if (activeTool != ActiveTool.GRADIENT) {
+            gradientStart = null
+            gradientEnd = null
+        }
+    }
 
     fun runBubbleDetection() {
         if (bubbleDetecting) return
@@ -2324,6 +2367,104 @@ fun CanvasEditorScreen(
     var bubbleAreaMode by uiState::bubbleAreaMode
     var showBubbleAreaPanel by uiState::showBubbleAreaPanel
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
+
+    /** Selesaikan lasso poligon menjadi satu region seleksi. */
+    fun commitPolygonSelection() {
+        val pts = polygonPoints
+        if (pts.size < 3) {
+            polygonPoints = emptyList()
+            refreshComposite()
+            return
+        }
+        val path = Path()
+        path.moveTo(pts[0].x, pts[0].y)
+        for (i in 1 until pts.size) path.lineTo(pts[i].x, pts[i].y)
+        path.close()
+        selectionEngine.setLassoPath(path, lassoSelMode)
+        polygonPoints = emptyList()
+        wandAdapter.clear()
+        wandPixelCount = 0L
+        refreshComposite()
+    }
+
+    /**
+     * Bersihkan seleksi dari semua mesin (engine lama + tile wand) agar
+     * aksi berikutnya tidak memakai sisa seleksi yang tak terlihat.
+     */
+    fun clearSelectionEverywhere() {
+        selectionEngine.clearSelection()
+        wandAdapter.clear()
+        wandPixelCount = 0L
+        polygonPoints = emptyList()
+        refreshComposite()
+    }
+
+    fun selectAllEverywhere() {
+        try {
+            selectionEngine.selectAll()
+            wandAdapter.clear()
+            wandPixelCount = 0L
+        } catch (e: OutOfMemoryError) {
+            healError = "Pilih semua butuh memori besar di kanvas ini"
+        } catch (e: Exception) {
+            healError = "Pilih semua gagal: ${e.message ?: "error"}"
+        }
+        refreshComposite()
+    }
+
+    fun invertSelectionEverywhere() {
+        if (!selectionEngine.hasSelection) return
+        try {
+            selectionEngine.invertSelection()
+            wandAdapter.clear()
+            wandPixelCount = 0L
+        } catch (e: OutOfMemoryError) {
+            healError = "Balik seleksi OOM — coba area lebih kecil"
+        } catch (e: Exception) {
+            healError = "Balik seleksi gagal: ${e.message ?: "error"}"
+        }
+        refreshComposite()
+    }
+
+    /**
+     * Terapkan Refine Edge pada seleksi saat ini.
+     *
+     * Berlaku untuk SEMUA tool seleksi (kotak, elips, lasso, poligon, wand)
+     * karena mesin refine bekerja pada path gabungan, bukan peta tile wand.
+     * Hasil juga dipush balik ke adapter wand supaya script/script API
+     * tetap melihat seleksi yang sama.
+     */
+    fun applySelectionRefine(featherPx: Int, expandPx: Int, contractPx: Int, borderPx: Int, smoothPx: Int) {
+        if (!selectionEngine.hasSelection) {
+            healError = "Belum ada seleksi untuk dirapi"
+            return
+        }
+        try {
+            val ok = selectionEngine.refineSelection(
+                expand = expandPx,
+                contract = contractPx,
+                border = borderPx,
+                feather = featherPx,
+                smooth = smoothPx
+            )
+            if (!ok) {
+                healError = "Rapi tepi gagal — area seleksi terlalu besar atau kosong"
+            } else {
+                // Sinkronkan peta tile wand (kalau seleksi berasal dari wand)
+                // supaya script & overlay lanjut konsisten.
+                if (wandAdapter.pixelCount() > 0L) {
+                    if (wandAdapter.rasterizePath(selectionEngine.currentPath(), canvasWidth, canvasHeight)) {
+                        wandPixelCount = wandAdapter.pixelCount()
+                    }
+                }
+                refreshComposite()
+            }
+        } catch (e: OutOfMemoryError) {
+            healError = "Rapi tepi OOM — kurangi radius"
+        } catch (e: Exception) {
+            healError = "Rapi tepi gagal: ${e.message ?: "error"}"
+        }
+    }
 
     /**
      * Pecah bubble gabung yang diketuk (mode Otomatis): cari "leher" interior
@@ -3430,6 +3571,7 @@ fun CanvasEditorScreen(
                                 modifier = Modifier.weight(1f),
                                 onClick = {
                                     activeTool = ActiveTool.SELECT_BOX
+                                    lastSelectionTool = ActiveTool.SELECT_BOX
                                     showScriptPanel = false
                                 }
                             )
@@ -4037,6 +4179,11 @@ fun CanvasEditorScreen(
                                 strokeIsMigan = false
                                 strokeIsAi = false
                                 brushEngine.endStroke()
+                                // Clone stamp: gesture dua jari membatalkan
+                                // sapuan, jadi offset juga dilepas.
+                                if (activeTool == ActiveTool.CLONE_STAMP) {
+                                    cloneStamp.endStroke()
+                                }
                                 colorPickActive = false
                                 // Dua jari membatalkan sesi pipet & mode pipet dialog.
                                 eyeCtl.abort()
@@ -4442,8 +4589,13 @@ fun CanvasEditorScreen(
                                                 if (bubbleEraseMode) {
                                                     removeBubbleAt(hitIdx)
                                                 } else {
-                                                    selectionEngine.selectOval(detectedBubbles[hitIdx].boundingBox)
+                                                    selectionEngine.selectOval(
+                                                        detectedBubbles[hitIdx].boundingBox,
+                                                        lassoSelMode
+                                                    )
                                                     lassoPath = null
+                                                    wandAdapter.clear()
+                                                    wandPixelCount = 0L
                                                     refreshComposite()
                                                 }
                                             } else {
@@ -4456,8 +4608,25 @@ fun CanvasEditorScreen(
                                             lassoPath?.lineTo(touchCanvasPos.x, touchCanvasPos.y)
                                             refreshComposite()
                                         }
-                                    } else if (activeTool == ActiveTool.SELECT_BOX) {
-                                        // Kotak seleksi: drag untuk bentuk persegi.
+                                    } else if (activeTool == ActiveTool.POLYGON_LASSO) {
+                                        // Poligon: setiap ketuk menambah sudut. Ketuk
+                                        // titik pertama (atau tombol Tutup) untuk
+                                        // menyelesaikan. Titik disimpan di koordinat
+                                        // kanvas agar tetap benar saat zoom/pan.
+                                        val first = polygonPoints.firstOrNull()
+                                        val nearFirst = first != null &&
+                                            polygonPoints.size >= 3 &&
+                                            (touchCanvasPos - first).getDistance() <= 18f / viewState.scale
+                                        if (nearFirst) {
+                                            commitPolygonSelection()
+                                        } else {
+                                            polygonPoints = polygonPoints + touchCanvasPos
+                                            refreshComposite()
+                                        }
+                                    } else if (activeTool == ActiveTool.SELECT_BOX ||
+                                        activeTool == ActiveTool.SELECT_ELLIPSE
+                                    ) {
+                                        // Marquee kotak/elips: drag untuk bentuk.
                                         // Ketuk bubble saat mode hapus → hapus bubble itu.
                                         if (boxStart == null) {
                                             var textConsumed = false
@@ -4490,6 +4659,48 @@ fun CanvasEditorScreen(
                                         // saat jari dilepas (lihat blok release).
                                         if (wandPressStart == null && !wandBusy) {
                                             wandPressStart = change.position
+                                        }
+                                    } else if (activeTool == ActiveTool.GRADIENT) {
+                                        // Gradient: seret dari A ke B, isi saat
+                                        // jari lepas. Kalau ada seleksi, isi
+                                        // hanya di dalam seleksi.
+                                        if (lastCanvasPoint == null) {
+                                            gradientStart = touchCanvasPos
+                                            gradientEnd = touchCanvasPos
+                                        } else {
+                                            gradientEnd = touchCanvasPos
+                                        }
+                                        refreshComposite()
+                                    } else if (activeTool == ActiveTool.CLONE_STAMP) {
+                                        // Clone stamp: ketuk pertama = titik
+                                        // sumber, setelah itu geser untuk
+                                        // menyalin piksel sumber ke posisi baru.
+                                        if (lastCanvasPoint == null) {
+                                            if (cloneStamp.sourcePoint == null) {
+                                                // Ketuk pertama hanya menetapkan
+                                                // sumber (belum ada yang digambar),
+                                                // jadi belum perlu snapshot undo.
+                                                cloneStamp.setSource(touchCanvasPos)
+                                                refreshCanvasLight()
+                                            } else {
+                                                val activeLayer = layerManager.ensureDrawingLayer()
+                                                // Snapshot undo diambil saat sapuan
+                                                // benar-benar dimulai.
+                                                undoRedoManager.saveSnapshot(activeLayer)
+                                                strokeLayer = activeLayer
+                                                lockedStrokeLayer = activeLayer
+                                                cloneStamp.beginStroke()
+                                                cloneStamp.stampOnLayer(
+                                                    activeLayer, touchCanvasPos, touchCanvasPos
+                                                )
+                                                lastCanvasPoint = touchCanvasPos
+                                            }
+                                        } else {
+                                            val activeLayer = strokeLayer ?: layerManager.ensureDrawingLayer()
+                                            if (cloneStamp.stampOnLayer(activeLayer, lastCanvasPoint!!, touchCanvasPos)) {
+                                                refreshCanvasLight()
+                                            }
+                                            lastCanvasPoint = touchCanvasPos
                                         }
                                     } else if (activeTool == ActiveTool.INPAINT) {
                                         if (lastCanvasPoint == null) {
@@ -4769,6 +4980,31 @@ fun CanvasEditorScreen(
                                     pressId++
                                     twoFingerActive = false
                                     rotAccum = 0f
+                                    // Clone stamp: sapuan selesai, offset dilepas
+                                    // supaya sapuan berikutnya mulai dari titik
+                                    // sentuh baru.
+                                    if (activeTool == ActiveTool.CLONE_STAMP) {
+                                        cloneStamp.endStroke()
+                                    }
+                                    // Gradient: isi gradasi saat jari lepas.
+                                    if (activeTool == ActiveTool.GRADIENT) {
+                                        val gs = gradientStart
+                                        val ge = gradientEnd
+                                        gradientStart = null
+                                        gradientEnd = null
+                                        if (gs != null && ge != null) {
+                                            val activeLayer = layerManager.ensureDrawingLayer()
+                                            undoRedoManager.saveSnapshot(activeLayer)
+                                            val ok = gradientEngine.apply(
+                                                activeLayer, gs, ge,
+                                                brushEngine.color,
+                                                selectionEngine.selectionPath,
+                                                selectionEngine.hasSelection
+                                            )
+                                            if (ok) refreshComposite()
+                                            else healError = "Gradient gagal digambar"
+                                        }
+                                    }
                                     // Wand: lepas tanpa geser = seleksi tongkat
                                     // sihir di titik tekan (tap, bukan drag).
                                     if (activeTool == ActiveTool.SELECT_WAND) {
@@ -4790,11 +5026,13 @@ fun CanvasEditorScreen(
                                         if (lb.width() < 8f && lb.height() < 8f && lp != null) {
                                             selectionEngine.removeRegionAt(lp.x, lp.y)
                                         } else {
-                                            selectionEngine.setLassoPath(sketch)
+                                            selectionEngine.setLassoPath(sketch, lassoSelMode)
                                         }
                                         lassoPath = null
+                                        wandAdapter.clear()
+                                        wandPixelCount = 0L
                                     }
-                                    // Kunci drag kotak menjadi SATU area persegi baru (multi).
+                                    // Kunci drag kotak/elips menjadi SATU area baru.
                                     // Tap tanpa drag = hapus area yang diketuk.
                                     val s = boxStart
                                     val e = boxCurrent
@@ -4804,12 +5042,18 @@ fun CanvasEditorScreen(
                                             maxOf(s.x, e.x), maxOf(s.y, e.y)
                                         )
                                         if (rect.width() >= 8f && rect.height() >= 8f) {
-                                            selectionEngine.selectRect(rect)
+                                            if (activeTool == ActiveTool.SELECT_ELLIPSE) {
+                                                selectionEngine.selectOval(rect, lassoSelMode)
+                                            } else {
+                                                selectionEngine.selectRect(rect, lassoSelMode)
+                                            }
                                         } else {
                                             selectionEngine.removeRegionAt(s.x, s.y)
                                         }
                                         boxStart = null
                                         boxCurrent = null
+                                        wandAdapter.clear()
+                                        wandPixelCount = 0L
                                     }
                                     // Satu render penuh per stroke menutup jalur cepat
                                     // inkremental (menjamin konsisten bila ada teks/layer).
@@ -4837,6 +5081,12 @@ fun CanvasEditorScreen(
                                         }
                                     }
                                     if (hadStroke && wasBrush && !wasHealBrush) refreshComposite()
+                                    // Clone stamp: render penuh penutup supaya
+                                    // hasil sapuan pasti ikut di komposit
+                                    // (blit inkremental tak dipakai tool ini).
+                                    if (activeTool == ActiveTool.CLONE_STAMP && hadStroke) {
+                                        refreshComposite()
+                                    }
                                     textHandleMode = TextHandle.NONE
                                     imageHandleMode = ImageHandleMode.NONE
                                     imageAnchorPoint = null
@@ -4864,9 +5114,11 @@ fun CanvasEditorScreen(
                                     if (lb.width() < 8f && lb.height() < 8f && lp != null) {
                                         selectionEngine.removeRegionAt(lp.x, lp.y)
                                     } else {
-                                        selectionEngine.setLassoPath(sketch)
+                                        selectionEngine.setLassoPath(sketch, lassoSelMode)
                                     }
                                     lassoPath = null
+                                    wandAdapter.clear()
+                                    wandPixelCount = 0L
                                 }
                                 boxStart = null
                                 boxCurrent = null
@@ -5150,6 +5402,75 @@ fun CanvasEditorScreen(
                     drawContext.canvas.nativeCanvas.drawPath(sketch, previewPaint)
                 }
 
+                // Pratinjau lasso poligon: garis antarsudut + titik sudut.
+                if (activeTool == ActiveTool.POLYGON_LASSO && polygonPoints.isNotEmpty()) {
+                    val native = drawContext.canvas.nativeCanvas
+                    val linePaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.STROKE
+                        strokeWidth = 3f / viewState.scale
+                        color = android.graphics.Color.CYAN
+                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                    }
+                    val dotPaint = android.graphics.Paint().apply {
+                        style = android.graphics.Paint.Style.FILL
+                        color = android.graphics.Color.CYAN
+                        isAntiAlias = true
+                    }
+                    if (polygonPoints.size >= 2) {
+                        val path = Path()
+                        val first = polygonPoints[0]
+                        path.moveTo(first.x, first.y)
+                        for (i in 1 until polygonPoints.size) {
+                            path.lineTo(polygonPoints[i].x, polygonPoints[i].y)
+                        }
+                        native.drawPath(path, linePaint)
+                    }
+                    for (pt in polygonPoints) {
+                        native.drawCircle(pt.x, pt.y, 5f / viewState.scale, dotPaint)
+                    }
+                }
+
+                // Pratinjau arah gradient (garis Start-End + titik ujung).
+                if (activeTool == ActiveTool.GRADIENT) {
+                    val gs = gradientStart
+                    val ge = gradientEnd
+                    if (gs != null && ge != null) {
+                        val native = drawContext.canvas.nativeCanvas
+                        val linePaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f / viewState.scale
+                            color = android.graphics.Color.CYAN
+                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(12f, 12f), 0f)
+                        }
+                        val dotPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = android.graphics.Color.CYAN
+                            isAntiAlias = true
+                        }
+                        native.drawLine(gs.x, gs.y, ge.x, ge.y, linePaint)
+                        native.drawCircle(gs.x, gs.y, 5f / viewState.scale, dotPaint)
+                        native.drawCircle(ge.x, ge.y, 5f / viewState.scale, dotPaint)
+                    }
+                }
+
+                // Penanda sumber clone stamp (crosshair) + lingkaran radius.
+                if (activeTool == ActiveTool.CLONE_STAMP) {
+                    cloneStamp.sourcePoint?.let { sp ->
+                        val native = drawContext.canvas.nativeCanvas
+                        val r = cloneStamp.stampSize / 2f
+                        val mark = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 2f / viewState.scale
+                            color = android.graphics.Color.MAGENTA
+                        }
+                        native.drawCircle(sp.x, sp.y, r, mark)
+                        native.drawLine(sp.x - 8f / viewState.scale, sp.y,
+                            sp.x + 8f / viewState.scale, sp.y, mark)
+                        native.drawLine(sp.x, sp.y - 8f / viewState.scale,
+                            sp.x, sp.y + 8f / viewState.scale, mark)
+                    }
+                }
+
                 // Bingkai seleksi image layer + handle SCALE (sudut) + ROTATE (atas).
                 // Sudut digambar dari cornerPoints (ikut rotasi) supaya titik
                 // yang terlihat = titik yang bisa digenggam.
@@ -5210,8 +5531,14 @@ fun CanvasEditorScreen(
                     val t = minOf(bs.y, bc.y)
                     val r = maxOf(bs.x, bc.x)
                     val b = maxOf(bs.y, bc.y)
-                    drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, fillPaint)
-                    drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, boxPaint)
+                    if (activeTool == ActiveTool.SELECT_ELLIPSE) {
+                        val oval = RectF(l, t, r, b)
+                        drawContext.canvas.nativeCanvas.drawOval(oval, fillPaint)
+                        drawContext.canvas.nativeCanvas.drawOval(oval, boxPaint)
+                    } else {
+                        drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, fillPaint)
+                        drawContext.canvas.nativeCanvas.drawRect(l, t, r, b, boxPaint)
+                    }
                 }
             }
 
@@ -6072,6 +6399,16 @@ fun CanvasEditorScreen(
             )
         }
 
+        // Dialog Refine Edge untuk seleksi (semua tool seleksi).
+        if (showSelectionRefine) {
+            SelectionRefineDialog(
+                onDismiss = { showSelectionRefine = false },
+                onApply = { featherPx, expandPx, contractPx, borderPx, smoothPx ->
+                    applySelectionRefine(featherPx, expandPx, contractPx, borderPx, smoothPx)
+                }
+            )
+        }
+
         // Dialog export: format + kualitas + progres + hasil (tak lagi gagal diam-diam).
         if (showExportDialog) {
             showExportDialogUi()
@@ -6200,45 +6537,125 @@ fun CanvasEditorScreen(
             }
         }
 
-        // Panel Magic Wand lengkap di file terpisah (batas method JVM 64KB).
-        if (activeTool == ActiveTool.SELECT_WAND) {
-            Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-                WandToolsPanel(
-                    tolerance = wandTolerance,
-                    onTolerance = { wandTolerance = it },
-                    contiguous = wandContiguous,
-                    onContiguous = { wandContiguous = it },
-                    antialias = wandAntialias,
-                    onAntialias = { wandAntialias = it },
-                    sampleMerged = wandSampleMerged,
-                    onSampleMerged = { wandSampleMerged = it },
-                    mode = wandSelMode,
-                    onMode = { wandSelMode = it },
-                    feather = wandFeather,
-                    onFeather = { wandFeather = it },
-                    bubbleAware = wandBubbleAware,
-                    onBubbleAware = { wandBubbleAware = it },
-                    bubbleMode = bubbleAreaMode,
-                    onBubbleMode = {
-                        bubbleAreaMode = it
-                        showBubbleAreaPanel = it
-                    },
-                    busy = wandBusy,
-                    pixelCount = wandPixelCount,
-                    onClear = {
-                        wandJob?.cancel()
-                        wandAdapter.clear()
-                        selectionEngine.clearSelection()
-                        wandPixelCount = 0L
-                        refreshComposite()
-                    }
-                )
-            }
+        // Options bar gradient (mode linear/radial, warna akhir, opacity).
+        if (activeTool == ActiveTool.GRADIENT) {
+            GradientOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 4.dp, end = 4.dp),
+                mode = gradientEngine.mode,
+                onMode = { gradientEngine.mode = it },
+                startColor = Color(brushEngine.color),
+                endColor = Color(gradientEngine.endColor),
+                onEndColor = { gradientEngine.endColor = it.toArgb() },
+                reversed = gradientEngine.reversed,
+                onReversed = { gradientEngine.reversed = it },
+                respectSelection = gradientEngine.respectSelection,
+                onRespectSelection = { gradientEngine.respectSelection = it },
+                opacity = gradientEngine.opacity,
+                onOpacity = { gradientEngine.opacity = it },
+                onPickEndColor = { showGradientColorPicker = true }
+            )
+        }
+
+        // Dialog warna ujung gradasi (terpisah dari picker warna brush).
+        if (showGradientColorPicker) {
+            ColorPickerDialog(
+                initialColor = gradientEngine.endColor,
+                onColorSelected = { gradientEngine.endColor = it },
+                onPickFromCanvas = {
+                    showGradientColorPicker = false
+                    eyedropConsumer = { c -> gradientEngine.endColor = c }
+                    eyedropSampled = false
+                },
+                onDismiss = { showGradientColorPicker = false }
+            )
+        }
+
+        // Options bar clone stamp (ukuran/softness/opacity + status sumber).
+        if (activeTool == ActiveTool.CLONE_STAMP) {
+            CloneStampOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 4.dp, end = 4.dp),
+                size = cloneStamp.stampSize,
+                onSize = { cloneStamp.stampSize = it },
+                hardness = cloneStamp.hardness,
+                onHardness = { cloneStamp.hardness = it },
+                opacity = cloneStamp.opacity,
+                onOpacity = { cloneStamp.opacity = it },
+                hasSource = cloneStamp.sourcePoint != null,
+                onResetSource = { cloneStamp.clearSource() }
+            )
+        }
+
+        // Options bar seleksi ala TypeR/Photoshop: satu bar untuk semua tool
+        // seleksi, bukan panel wand besar yang menutupi kanvas.
+        val selectionToolActive =
+            activeTool == ActiveTool.LASSO ||
+                activeTool == ActiveTool.POLYGON_LASSO ||
+                activeTool == ActiveTool.SELECT_BOX ||
+                activeTool == ActiveTool.SELECT_ELLIPSE ||
+                activeTool == ActiveTool.SELECT_WAND
+        if (selectionToolActive) {
+            SelectionOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    // Kalau ada teks terpilih, toolbar teks ada di atas —
+                    // options bar digeser ke bawahnya supaya tak bertumpuk.
+                    .padding(
+                        top = if (selectedTextBox != null) 104.dp else 52.dp,
+                        start = 4.dp,
+                        end = 4.dp
+                    ),
+                tool = activeTool,
+                mode = if (activeTool == ActiveTool.SELECT_WAND) wandSelMode else lassoSelMode,
+                onMode = { m ->
+                    // Mode disimpan per keluarga tool: wand default NEW
+                    // (satu seleksi baru), lasso/marquee default ADD
+                    // (multi-area, gaya lama app ini).
+                    if (activeTool == ActiveTool.SELECT_WAND) wandSelMode = m else lassoSelMode = m
+                },
+                tolerance = wandTolerance,
+                onTolerance = { wandTolerance = it },
+                contiguous = wandContiguous,
+                onContiguous = { wandContiguous = it },
+                antialias = wandAntialias,
+                onAntialias = { wandAntialias = it },
+                sampleMerged = wandSampleMerged,
+                onSampleMerged = { wandSampleMerged = it },
+                bubbleAware = wandBubbleAware,
+                onBubbleAware = { wandBubbleAware = it },
+                bubbleMode = bubbleAreaMode,
+                onBubbleMode = {
+                    bubbleAreaMode = it
+                    showBubbleAreaPanel = it
+                },
+                feather = wandFeather,
+                onFeather = { wandFeather = it },
+                hasSelection = selectionEngine.hasSelection,
+                selectionCount = selectionEngine.selectionCount,
+                pixelCount = wandPixelCount,
+                busy = wandBusy,
+                polygonPointCount = polygonPoints.size,
+                advanced = showSelectionAdvanced,
+                onAdvanced = { showSelectionAdvanced = it },
+                onClosePolygon = { commitPolygonSelection() },
+                onSelectAll = { selectAllEverywhere() },
+                onDeselect = { clearSelectionEverywhere() },
+                onInvert = { invertSelectionEverywhere() },
+                onRefine = { showSelectionRefine = true },
+                onActions = { showLassoMenu = true }
+            )
         }
 
         // Hint bar multi-seleksi (di atas toolbar bawah, gantian dengan bubble).
         if (!isMultiBubbleActive() &&
-            (activeTool == ActiveTool.LASSO || activeTool == ActiveTool.SELECT_BOX || activeTool == ActiveTool.SELECT_WAND) &&
+            (activeTool == ActiveTool.LASSO ||
+                activeTool == ActiveTool.POLYGON_LASSO ||
+                activeTool == ActiveTool.SELECT_BOX ||
+                activeTool == ActiveTool.SELECT_ELLIPSE ||
+                activeTool == ActiveTool.SELECT_WAND) &&
             selectionEngine.hasSelection
         ) {
             Row(
@@ -6256,12 +6673,12 @@ fun CanvasEditorScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${selectionEngine.selectionCount} area — drag tambah, ketuk hapus",
+                    "${selectionEngine.selectionCount} area — atur di bar seleksi",
                     color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 TextButton(
-                    onClick = { selectionEngine.clearSelection(); refreshComposite() }
+                    onClick = { clearSelectionEverywhere() }
                 ) { Text("Bersihkan", color = Color.Red, fontSize = 12.sp) }
             }
         }
@@ -6363,14 +6780,43 @@ fun CanvasEditorScreen(
                 Icon(Icons.Default.Colorize, contentDescription = "Eyedropper", tint = if (activeTool == ActiveTool.EYEDROPPER) Accent else Color.White)
             }
 
-            // Inpaint Content-Aware Fill — brush penghapus objek (tekstur sekitar tersalin, gradasi tersambung)
+            // Keluarga RETOUCH: hapus objek (content-aware), heal on-device,
+            // dan clone stamp dalam satu tombol (popup).
+            RetouchFamilyButton(
+                activeTool = activeTool,
+                current = lastRetouchKind,
+                onPick = { kind ->
+                    lastRetouchKind = kind
+                    when (kind) {
+                        RetouchKind.OBJECT_ERASER -> {
+                            activeTool = ActiveTool.INPAINT
+                            brushEngine.brushType = BrushType.OBJECT_ERASER
+                        }
+                        RetouchKind.HEAL_MIGAN -> {
+                            activeTool = ActiveTool.INPAINT
+                            brushEngine.brushType = BrushType.HEAL_MIGAN
+                        }
+                        RetouchKind.CLONE_STAMP -> {
+                            activeTool = ActiveTool.CLONE_STAMP
+                            cloneStamp.clearSource()
+                        }
+                    }
+                    showBrushSettings = false
+                    layerManager.ensureDrawingLayer()
+                }
+            )
+
+            // Gradient: isi gradasi (linear/radial) ala Photoshop/TypeR.
             IconButton(onClick = {
-                activeTool = ActiveTool.INPAINT
+                activeTool = ActiveTool.GRADIENT
                 showBrushSettings = false
-                brushEngine.brushType = BrushType.OBJECT_ERASER
                 layerManager.ensureDrawingLayer()
             }) {
-                Icon(Icons.Default.Healing, contentDescription = "Hapus Objek", tint = if (activeTool == ActiveTool.INPAINT) Accent else Color.White)
+                Icon(
+                    Icons.Default.Gradient,
+                    contentDescription = "Gradient",
+                    tint = if (activeTool == ActiveTool.GRADIENT) Accent else Color.White
+                )
             }
 
             // Color circle
@@ -6383,32 +6829,18 @@ fun CanvasEditorScreen(
                     .clickable { showColorPicker = true }
             )
 
-            // Lasso
-            IconButton(onClick = { activeTool = ActiveTool.LASSO; showBrushSettings = false; showLassoMenu = true }) {
-                Icon(Icons.Default.SelectAll, contentDescription = "Lasso", tint = if (activeTool == ActiveTool.LASSO) Accent else Color.White)
-            }
-
-            // Kotak Seleksi: drag persegi untuk seleksi cepat / tambah bubble.
-            IconButton(onClick = { activeTool = ActiveTool.SELECT_BOX; showBrushSettings = false }) {
-                Icon(Icons.Default.OpenInFull, contentDescription = "Kotak Seleksi", tint = if (activeTool == ActiveTool.SELECT_BOX) Accent else Color.White)
-            }
-
-            // Magic Wand: ketuk area warna mirip untuk seleksi (manual/otomatis).
-            // Ikon tongkat sihir (bukan teks "Wand") supaya bar toolbar konsisten
-            // dengan tool lain yang semuanya memakai ikon.
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (activeTool == ActiveTool.SELECT_WAND) Accent else PanelBg)
-                    .clickable {
-                        activeTool = ActiveTool.SELECT_WAND
-                        showBrushSettings = false
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Default.AutoFixHigh, contentDescription = "Tongkat Sihir", tint = Color.White)
-            }
+            // Keluarga SELEKSI (ala TypeR): satu tombol, popup isi tool
+            // (kotak/elips/lasso/poligon/wand). Toolbar jadi lega dan tool
+            // aktif selalu kelihatan lewat ikon tombolnya.
+            SelectionFamilyButton(
+                activeTool = activeTool,
+                current = lastSelectionTool,
+                onPick = { t ->
+                    lastSelectionTool = t
+                    activeTool = t
+                    showBrushSettings = false
+                }
+            )
 
             // Image: pindah/putar/ubah ukuran image layer.
             IconButton(onClick = {
@@ -6466,6 +6898,40 @@ fun CanvasEditorScreen(
 
             DropdownMenu(expanded = showLassoMenu, onDismissRequest = { showLassoMenu = false }) {
                 DropdownMenuItem(
+                    text = { Text("Pilih Semua") },
+                    onClick = {
+                        selectAllEverywhere()
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Rapi Tepi Seleksi…") },
+                    enabled = selectionEngine.hasSelection,
+                    onClick = {
+                        showSelectionRefine = true
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Garis Tepi (warna brush)") },
+                    enabled = selectionEngine.hasSelection,
+                    onClick = {
+                        val active = layerManager.getActiveLayer()
+                        if (active == null) {
+                            healError = "Pilih layer gambar dulu untuk garis tepi"
+                        } else {
+                            undoRedoManager.saveSnapshot(active)
+                            selectionEngine.strokeSelectedArea(
+                                active,
+                                brushEngine.color,
+                                brushEngine.size.coerceAtLeast(2f)
+                            )
+                            refreshComposite()
+                        }
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
                     text = { Text("Deteksi Bubble…") },
                     onClick = {
                         showLassoMenu = false
@@ -6474,9 +6940,28 @@ fun CanvasEditorScreen(
                     }
                 )
                 DropdownMenuItem(
-                    text = { Text("Kotak Seleksi") },
+                    text = { Text("Marquee Kotak") },
                     onClick = {
                         activeTool = ActiveTool.SELECT_BOX
+                        lastSelectionTool = ActiveTool.SELECT_BOX
+                        showBrushSettings = false
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Marquee Elips") },
+                    onClick = {
+                        activeTool = ActiveTool.SELECT_ELLIPSE
+                        lastSelectionTool = ActiveTool.SELECT_ELLIPSE
+                        showBrushSettings = false
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Lasso Poligon") },
+                    onClick = {
+                        activeTool = ActiveTool.POLYGON_LASSO
+                        lastSelectionTool = ActiveTool.POLYGON_LASSO
                         showBrushSettings = false
                         showLassoMenu = false
                     }
@@ -6485,6 +6970,7 @@ fun CanvasEditorScreen(
                     text = { Text("Magic Wand") },
                     onClick = {
                         activeTool = ActiveTool.SELECT_WAND
+                        lastSelectionTool = ActiveTool.SELECT_WAND
                         showBrushSettings = false
                         showLassoMenu = false
                     }
@@ -6522,8 +7008,23 @@ fun CanvasEditorScreen(
                     }
                     showLassoMenu = false
                 })
-                DropdownMenuItem(text = { Text("Invert Selection") }, onClick = {
-                    selectionEngine.invertSelection(); refreshComposite(); showLassoMenu = false
+                DropdownMenuItem(
+                    text = { Text("Isi Seleksi (warna brush)") },
+                    enabled = selectionEngine.hasSelection,
+                    onClick = {
+                        val active = layerManager.getActiveLayer()
+                        if (active == null) {
+                            healError = "Pilih layer gambar dulu untuk fill"
+                        } else {
+                            undoRedoManager.saveSnapshot(active)
+                            selectionEngine.fillSelectedArea(active, brushEngine.color)
+                            refreshComposite()
+                        }
+                        showLassoMenu = false
+                    }
+                )
+                DropdownMenuItem(text = { Text("Balik Seleksi") }, onClick = {
+                    invertSelectionEverywhere(); showLassoMenu = false
                 })
                 DropdownMenuItem(
                     text = { Text("Hapus area terakhir (${selectionEngine.selectionCount})") },
@@ -6538,8 +7039,7 @@ fun CanvasEditorScreen(
                     text = { Text("Bersihkan seleksi") },
                     enabled = selectionEngine.hasSelection,
                     onClick = {
-                        selectionEngine.clearSelection()
-                        refreshComposite()
+                        clearSelectionEverywhere()
                         showLassoMenu = false
                     }
                 )
@@ -6842,8 +7342,9 @@ fun CanvasEditorScreen(
             BulkTextDialog(
                 layers = bulkLayers,
                 initialChecked = bulkInitChecked,
-                initialSize = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.fontSize
-                    ?: selectedTextBox?.fontSize ?: 64f,
+                initialSize = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box
+                    ?.let { it.fontSize * it.scale }
+                    ?: selectedTextBox?.let { it.fontSize * it.scale } ?: 64f,
                 initialBold = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.bold ?: true,
                 initialItalic = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.italic ?: false,
                 initialFontName = bulkLayers.firstOrNull { it.id in bulkInitChecked }?.box?.fontName,
@@ -6851,12 +7352,19 @@ fun CanvasEditorScreen(
                     ?: brushEngine.color,
                 fonts = fontList,
                 onApply = { ids, size, bold, italic, fontName, color ->
+                    val picked = fontName?.let { name -> fontList.find { it.first == name } }
                     for (tl in bulkLayers.filter { it.id in ids }) {
                         undoRedoManager.pushTextBox(tl.id, tl.box.copy())
-                        tl.box.fontSize = size
+                        // Slider bulk menampilkan ukuran AKTUAL di kanvas:
+                        // bagi dengan scale agar hasil visualnya sama untuk
+                        // semua kotak (sama seperti panel teks tunggal).
+                        tl.box.fontSize = if (tl.box.scale > 0.01f) size / tl.box.scale else size
                         tl.box.bold = bold
                         tl.box.italic = italic
-                        if (fontName != null) tl.box.fontName = fontName
+                        if (picked != null) {
+                            tl.box.fontName = picked.first
+                            tl.box.typeface = picked.second
+                        }
                         tl.box.color = color
                     }
                     refreshComposite()
@@ -7000,6 +7508,7 @@ fun CanvasEditorScreen(
                 onAddFromSelection = { addBubbleFromSelection() },
                 onSelectBox = {
                     activeTool = ActiveTool.SELECT_BOX
+                    lastSelectionTool = ActiveTool.SELECT_BOX
                     showBubbleDialog = false
                 },
                 onClearAll = {
