@@ -107,12 +107,14 @@ fun SelectionOptionsBar(
         verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = selectionToolIcon(tool),
-                contentDescription = null,
-                tint = SelAccent,
-                modifier = Modifier.size(18.dp)
-            )
+            ToolIcons.of(selectionToolIconName(tool))?.let { vec ->
+                Icon(
+                    imageVector = vec,
+                    contentDescription = null,
+                    tint = SelAccent,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
             Spacer(modifier = Modifier.width(6.dp))
             Text(
                 selectionToolLabel(tool),

@@ -5,7 +5,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.graphics.vector.PathClose
+import androidx.compose.ui.graphics.vector.PathCurveTo
+import androidx.compose.ui.graphics.vector.PathLineTo
+import androidx.compose.ui.graphics.vector.PathMoveTo
+import androidx.compose.ui.graphics.vector.PathNode
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
@@ -105,9 +109,9 @@ object ToolIcons {
             "M4 12 C4 8 7 5 11.5 5 C16 5 19 8 19 12 C19 15.5 16.5 18 13 18.5 L9 20 L10 17.5 C6.5 17 4 15 4 12 Z"
         ),
         fills = listOf(
-            "M12 10.5 A1.5 1.5 0 1 1 12 13.5 A1.5 1.5 0 1 1 12 10.5 Z",
-            "M8 10.5 A1.5 1.5 0 1 1 8 13.5 A1.5 1.5 0 1 1 8 10.5 Z",
-            "M16 10.5 A1.5 1.5 0 1 1 16 13.5 A1.5 1.5 0 1 1 16 10.5 Z"
+            "M12 10.5 C12.83 10.5 13.5 11.17 13.5 12 C13.5 12.83 12.83 13.5 12 13.5 C11.17 13.5 10.5 12.83 10.5 12 C10.5 11.17 11.17 10.5 12 10.5 Z",
+            "M8 10.5 C8.83 10.5 9.5 11.17 9.5 12 C9.5 12.83 8.83 13.5 8 13.5 C7.17 13.5 6.5 12.83 6.5 12 C6.5 11.17 7.17 10.5 8 10.5 Z",
+            "M16 10.5 C16.83 10.5 17.5 11.17 17.5 12 C17.5 12.83 16.83 13.5 16 13.5 C15.17 13.5 14.5 12.83 14.5 12 C14.5 11.17 15.17 10.5 16 10.5 Z"
         )
     )
 
@@ -176,7 +180,7 @@ object ToolIcons {
             "M4 5 L20 5 L20 19 L4 19 Z",
             "M4 16 L9 11 L13 15 L16 12 L20 16"
         ),
-        fills = listOf("M8.5 8.5 A1.5 1.5 0 1 1 8.5 11.5 A1.5 1.5 0 1 1 8.5 8.5 Z")
+        fills = listOf("M8.5 7 C9.33 7 10 7.67 10 8.5 C10 9.33 9.33 10 8.5 10 C7.67 10 7 9.33 7 8.5 C7 7.67 7.67 7 8.5 7 Z")
     )
 
     val pan = Def(
@@ -254,8 +258,8 @@ object ToolIcons {
 
     /** Bangun ImageVector dari definisi ikon. */
     private fun build(def: Def): ImageVector {
-        val strokes = def.strokes.map { PathParser().parsePathNodes(it) }.filter { it.isNotEmpty() }
-        val fills = def.fills.map { PathParser().parsePathNodes(it) }.filter { it.isNotEmpty() }
+        val strokes = def.strokes.map { parsePath(it) }.filter { it.isNotEmpty() }
+        val fills = def.fills.map { parsePath(it) }.filter { it.isNotEmpty() }
         return ImageVector.Builder(
             name = "GrooxTool",
             defaultWidth = 24.dp,
@@ -281,5 +285,55 @@ object ToolIcons {
                 )
             }
         }.build()
+    }
+
+    /**
+     * Parser data path SVG sederhana: perintah `M`, `L`, `C`, `Z` (absolut),
+     * koordinat dipisah spasi.
+     *
+     * `PathParser` bawaan Compose sebenarnya internal, jadi parser sendiri
+     * dipakai. Format ikon di sini sengaja dibatasi supaya parsingnya
+     * sederhana dan pasti benar.
+     */
+    private fun parsePath(d: String): List<PathNode> {
+        val tokens = d.trim().split(Regex("[\\s,]+")).filter { it.isNotEmpty() }
+        val nodes = mutableListOf<PathNode>()
+        var i = 0
+        var cmd = ' '
+        fun num(): Float {
+            val t = tokens.getOrNull(i) ?: return 0f
+            i++
+            return t.toFloatOrNull() ?: 0f
+        }
+        while (i < tokens.size) {
+            val t = tokens[i]
+            if (t.length == 1 && t[0].isLetter()) {
+                cmd = t[0]
+                i++
+                continue
+            }
+            when (cmd) {
+                'M' -> {
+                    val x = num()
+                    val y = num()
+                    nodes.add(PathMoveTo(x, y))
+                    cmd = 'L'
+                }
+                'L' -> {
+                    val x = num()
+                    val y = num()
+                    nodes.add(PathLineTo(x, y))
+                }
+                'C' -> {
+                    val x1 = num(); val y1 = num()
+                    val x2 = num(); val y2 = num()
+                    val x3 = num(); val y3 = num()
+                    nodes.add(PathCurveTo(x1, y1, x2, y2, x3, y3))
+                }
+                'Z' -> nodes.add(PathClose())
+                else -> i++
+            }
+        }
+        return nodes
     }
 }

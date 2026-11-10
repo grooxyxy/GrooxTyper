@@ -175,7 +175,10 @@ class BubbleCleanerEngine {
             keep[id] = id > 0 && holes.sizes[id] <= filled * holeLimit
         }
         // Untuk ketukan (bukan kotak): hole yang terlalu tebal = gambar.
-        val depth = distances(holes.label, aw, ah)
+        // Jarak dihitung dari piksel yang TERISI label (lubang), jadi
+        // bentuknya dulu jadi BooleanArray.
+        val insideHoles = BooleanArray(aw * ah) { holes.label[it] > 0 }
+        val depth = distances(insideHoles, aw, ah)
         val thickest = FloatArray(holes.sizes.size)
         for (i in 0 until aw * ah) {
             if (holes.label[i] > 0 && depth[i] > thickest[holes.label[i]]) {
@@ -560,7 +563,7 @@ class BubbleCleanerEngine {
             if (index < w * (h - 1)) push(index + w)
         }
         val label = IntArray(w * h)
-        val sizes = intArrayOf(0)
+        var sizes = intArrayOf(0)
         for (start in 0 until w * h) {
             if (mask[start] || outside[start] || label[start] != 0) continue
             val id = sizes.size

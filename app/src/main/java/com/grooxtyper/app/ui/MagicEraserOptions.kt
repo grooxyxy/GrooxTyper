@@ -111,3 +111,27 @@ fun MagicEraserOptionsBar(
         }
     }
 }
+
+@Composable
+private fun EraserToggle(
+    label: String,
+    active: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .background(
+                if (active) EraserAccent else Color(0xFF38383A),
+                RoundedCornerShape(9.dp)
+            )
+            .clickable { onToggle(!active) }
+            .padding(horizontal = 8.dp, vertical = 5.dp)
+    ) {
+        Text(
+            label,
+            color = Color.White,
+            fontSize = 10.sp,
+            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
