@@ -1097,6 +1097,9 @@ fun CanvasEditorScreen(
     var mlScripts by remember { mutableStateOf(setOf(MLScript.LATIN, MLScript.CHINESE, MLScript.JAPANESE, MLScript.KOREAN)) }
     var mlDetecting by uiState::mlDetecting
     var fontList by remember { mutableStateOf(fontRegistry.fonts()) }
+    // Font Finder: cari + unduh font dari katalog Google Fonts (OFL).
+    val fontFinder = remember { com.grooxtyper.app.model.FontFinder(context) }
+    var showFontFinder by remember { mutableStateOf(false) }
 
     // Konfirmasi keluar: cegah ketekan Back tak sengaja langsung terlempar.
     // (Flag showExitDialog/isSavingExit/discardOnExit dideklarasikan di atas.)
@@ -6612,6 +6615,36 @@ fun CanvasEditorScreen(
             )
         }
 
+        // Dialog Font Finder: cari + unduh font dari katalog Google Fonts.
+        if (showFontFinder) {
+            FontFinderDialog(
+                finder = fontFinder,
+                currentFontName = selectedTextBox?.fontName ?: "",
+                onDismiss = { showFontFinder = false },
+                onDownloaded = { bytes, fileName ->
+                    val safe = fileName
+                        .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                        .take(64)
+                        .ifBlank { "font_${System.currentTimeMillis()}.ttf" }
+                    val customDir = java.io.File(context.filesDir, "custom_fonts")
+                    val target = if (java.io.File(customDir, safe).exists()) {
+                        "${System.currentTimeMillis()}_$safe"
+                    } else {
+                        safe
+                    }
+                    val tf = fontRegistry.import(
+                        java.io.ByteArrayInputStream(bytes),
+                        target
+                    )
+                    if (tf != null) {
+                        // Daftar font langsung diperbarui supaya font baru
+                        // bisa dipilih seketika.
+                        fontList = fontRegistry.fonts()
+                    }
+                }
+            )
+        }
+
         // Dialog export: format + kualitas + progres + hasil (tak lagi gagal diam-diam).
         if (showExportDialog) {
             showExportDialogUi()
@@ -7510,6 +7543,7 @@ fun CanvasEditorScreen(
                         box = box,
                         fonts = fontList,
                         onImportFont = { fontPickerLauncher.launch(arrayOf("*/*")) },
+                        onOpenFontFinder = { showFontFinder = true },
                         geomTick = textGeomTick,
                         onChange = { refreshCompositeCoalesced() },
                         onPushTextHistory = { before ->

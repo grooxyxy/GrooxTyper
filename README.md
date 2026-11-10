@@ -35,11 +35,28 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
   supaya aman di kanvas 720x16000, dan tepi feather ikut respected saat
   isi/hapus/salin — diimplementasikan di `SelectionRefiner.kt` dengan spec
   eksekutabel di `scripts/refine-check.mjs`.
-- **Clone Stamp & Gradient** — clone stamp: ketuk kanvas untuk
-  menetapkan sumber, lalu geser untuk menyalin (tepi bulat lembut,
-  ukuran/hardness/opacity bisa diatur). Gradient: seret untuk menentukan
-  arah, isi linear atau radial antara warna brush dan warna ujung yang
-  dipilih; bila ada seleksi, gradasi hanya mengisi area seleksi.
+- **Clone Stamp, Magic Eraser, Bubble Eraser & Gradient** — clone stamp:
+  ketuk kanvas untuk menetapkan sumber, lalu geser untuk menyalin (tepi
+  bulat lembut, ukuran/hardness/opacity bisa diatur). Magic Eraser: satu
+  ketukan membuat area warna mirip jadi transparan. Bubble Eraser (ala
+  TypeR "Bubble Cleaner"): ketuk **di dalam gelembung** → teksnya hilang
+  dan diganti **warna gelembung itu sendiri**, outline tetap utuh.
+  Gradient: seret untuk menentukan arah, isi linear atau radial antara
+  warna brush dan warna ujung yang dipilih; bila ada seleksi, gradasi
+  hanya mengisi area seleksi.
+- **Font Finder** — cari font di katalog **Google Fonts** (publik, lisensi
+  OFL) lalu unduh + pasang dengan satu ketukan; font langsung muncul di
+  daftar font. Mode **"Mirip"** mencari font yang mirip font yang sedang
+  dipakai (skor memakai koefisien Sørensen–Dice + bonus kategori, ala
+  TypeR). Metadata katalog di-cache di perangkat. API/layanan milik
+  TypeR sendiri tidak dipakai.
+- **Tulisan vertikal** — teks bisa disusun ke bawah per kolom, kolom
+  dibaca kanan-ke-kiri (gaya manga/Tate). Outline, isi, bayangan,
+  underline, dan coret ikut berlaku; jalur render terpisah sehingga teks
+  horizontal tak terpengaruh.
+- **Live selection wand** — melepas slider toleransi menghitung ulang
+  seleksi Magic Wand di titik yang sama tanpa perlu mengetuk ulang
+  (ala Photoshop "Live Path Selection").
 - **Bubble Detector (inferensi nyata, on-device)** — model
   `assets/models/bd.onnx` (YOLO end-to-end NMS-free, 2 kelas: 0 = text_bubble,
   1 = text_free; kelas 0 yang dipakai, input 640x640, output (1,300,6) =

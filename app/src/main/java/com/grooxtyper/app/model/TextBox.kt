@@ -301,6 +301,14 @@ class TextBox(
     var uppercase: Boolean = false,
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
+    /**
+     * Tulisan VERTIKAL (ala manga Jepang): huruf disusun ke bawah per
+     * kolom, kolom dibaca dari kanan ke kiri.
+     *
+     * Berguna untuk lettering manga vertikal dan SFX tegak. Text layout
+     * horizontal (default) tak terpengaruh.
+     */
+    var verticalText: Boolean = false,
     var glow: TextGlowSpec? = null,
     var bevel: TextBevelSpec? = null,
     var scale: Float = 1f,
@@ -671,6 +679,7 @@ class TextBox(
         textOpacity = o.textOpacity
         textBlur = o.textBlur
         uppercase = o.uppercase
+        verticalText = o.verticalText
         underline = o.underline
         strikethrough = o.strikethrough
         glow = o.glow?.copy()
@@ -1065,6 +1074,7 @@ class TextBox(
         textOpacity = textOpacity,
         textBlur = textBlur,
         uppercase = uppercase,
+        verticalText = verticalText,
         underline = underline,
         strikethrough = strikethrough,
         glow = glow?.copy(),
@@ -1110,6 +1120,7 @@ class TextBox(
         textOpacity = o.textOpacity
         textBlur = o.textBlur
         uppercase = o.uppercase
+        verticalText = o.verticalText
         underline = o.underline
         strikethrough = o.strikethrough
         glow = o.glow?.copy()
@@ -1155,6 +1166,7 @@ class TextBox(
             textOpacity == o.textOpacity &&
             textBlur == o.textBlur &&
             uppercase == o.uppercase &&
+            verticalText == o.verticalText &&
             underline == o.underline &&
             strikethrough == o.strikethrough &&
             glow == o.glow &&
@@ -1280,6 +1292,7 @@ class TextBox(
             put("lineSpacing", lineSpacing.toDouble())
             put("textOpacity", textOpacity.toDouble())
             put("uppercase", uppercase)
+            put("verticalText", verticalText)
             put("underline", underline)
             put("strikethrough", strikethrough)
             glow?.let { g ->
@@ -1459,6 +1472,7 @@ class TextBox(
                 lineSpacing = o.optDouble("lineSpacing", 12.0).toFloat(),
                 textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
                 uppercase = o.optBoolean("uppercase", false),
+                verticalText = o.optBoolean("verticalText", false),
                 underline = o.optBoolean("underline", false),
                 strikethrough = o.optBoolean("strikethrough", false),
                 glow = glowObj?.let { g ->

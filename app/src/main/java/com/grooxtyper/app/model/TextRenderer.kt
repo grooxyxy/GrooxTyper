@@ -78,6 +78,14 @@ object TextRenderer {
             // Sempitkan horizontal (menyatukan lebar baris tanpa mematahkan kata).
             textScaleX = box.textScaleX.coerceIn(0.3f, 1f)
         }
+        // Teks VERTIKAL (ala manga): huruf ditumpuk ke bawah per kolom,
+        // kolom dibaca kanan -> kiri. Jalur terpisah supaya render
+        // horizontal yang sudah mapan tak tersentuh.
+        if (box.verticalText) {
+            renderVertical(canvas, box, paint)
+            canvas.restore()
+            return
+        }
         val fm = paint.fontMetrics
         val extra = box.letterSpacing * box.scale
         val wordExtra = box.wordSpacing * box.scale
@@ -177,6 +185,123 @@ object TextRenderer {
             drawDecorations(canvas, layouts, widths, box, fill, fm)
         }
         canvas.restore()
+    }
+
+    /**
+     * Render teks VERTIKAL (ala manga Jepang).
+     *
+     * Huruf disusun ke bawah per kolom; kolom dibaca dari kanan ke kiri
+     * (gaya tategaki). Outline, isi, bayangan, underline, dan coret ikut
+     * diterapkan seperti pada jalur horizontal.
+     *
+     * Jarak antar huruf memakai [TextBox.letterSpacing]; jarak antar kolom
+     * memakai [TextBox.lineSpacing]. Lebar kolom = tinggi glif, jadi
+     * huruf CJK tidak saling tumpang tindih.
+     */
+    private fun renderVertical(canvas: Canvas, box: TextBox, paint: Paint) {
+        val lines = box.displayText().split("\n").ifEmpty { listOf("") }
+        if (lines.all { it.isBlank() }) return
+        val fm = paint.fontMetrics
+        val glyphH = kotlin.math.max(1f, fm.descent - fm.ascent)
+        val stepY = glyphH + box.letterSpacing * box.scale
+        val stepX = glyphH + box.lineSpacing * box.scale
+
+        // Tinggi kolom = jumlah huruf di kolom itu (semua kolom sama tinggi
+        // supaya kotak kontennya persegi rapi).
+        var maxChars = 0
+        for (line in lines) if (line.length > maxChars) maxChars = line.length
+        val totalH = maxChars * stepY
+        val totalW = stepX * lines.size
+        if (totalW <= 0f || totalH <= 0f) return
+
+        val topY = -totalH / 2f
+
+        // Perspektif: pakai kotak konten (lebar x tinggi).
+        PerspectiveGrid.matrix(box, totalW, totalH)?.let { canvas.concat(it) }
+
+        val outline = if (box.outlineWidth > 0f) {
+            Paint(paint).apply {
+                shader = null
+                style = Paint.Style.STROKE
+                strokeWidth = box.outlineWidth * box.scale
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+                applyOutlineColor(this, box, totalW, totalH)
+                maskFilter = textBlurMask(box)
+                clearShadowLayer()
+            }
+        } else null
+
+        val fill = Paint(paint).apply {
+            style = Paint.Style.FILL
+            if (box.fillType == TextFillType.GRADIENT) {
+                shader = gradientShader(box, totalW, totalH)
+                color = Color.WHITE
+            } else {
+                shader = null
+                color = box.color
+            }
+            alpha = (alpha * box.textOpacity).toInt().coerceIn(0, 255)
+            maskFilter = textBlurMask(box)
+        }
+
+        // Bayangan: shadow layer pada paint isi.
+        val shadow = box.shadow
+        if (shadow != null) {
+            val shadowColor = withAlpha(shadow.color, shadow.opacity)
+            fill.setShadowLayer(
+                shadow.blur * box.scale,
+                shadow.dx * box.scale,
+                shadow.dy * box.scale,
+                shadowColor
+            )
+        }
+
+        // Kolom digambar dari kanan ke kiri supaya kolom pertama di kanan.
+        for (ci in lines.indices.reversed()) {
+            val x = totalW / 2f - stepX * (ci + 0.5f)
+            var y = topY + fm.ascent
+            for (ch in lines[ci]) {
+                val glyph = ch.toString()
+                val gx = x - paint.measureText(glyph) / 2f
+                if (outline != null) canvas.drawText(glyph, gx, y, outline)
+                canvas.drawText(glyph, gx, y, fill)
+                y += stepY
+            }
+        }
+
+        // Underline / coret vertikal: garis melintang tiap kolom.
+        if (box.underline || box.strikethrough) {
+            val deco = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = box.color
+                alpha = (Color.alpha(box.color) * box.textOpacity).toInt().coerceIn(0, 255)
+                strokeWidth = kotlin.math.max(1f, box.fontSize * box.scale * 0.06f)
+            }
+            val underlineDy = fm.descent + box.letterSpacing * box.scale * 0.35f
+            for (ci in lines.indices.reversed()) {
+                val x = totalW / 2f - stepX * (ci + 0.5f)
+                var y = topY + fm.ascent
+                for (ch in lines[ci]) {
+                    val glyph = ch.toString()
+                    val gw = paint.measureText(glyph)
+                    if (box.underline) {
+                        canvas.drawLine(
+                            x - gw / 2f, y + underlineDy,
+                            x + gw / 2f, y + underlineDy,
+                            deco
+                        )
+                    }
+                    if (box.strikethrough) {
+                        canvas.drawLine(
+                            x - gw / 2f, y - glyphH * 0.25f,
+                            x + gw / 2f, y - glyphH * 0.25f,
+                            deco
+                        )
+                    }
+                    y += stepY
+                }
+            }
+        }
     }
 
     /**

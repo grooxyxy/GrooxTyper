@@ -900,6 +900,32 @@ assert(editor.includes('wandLastSeed'), 'wand: titik seed tersimpan untuk live s
 assert(editor.includes('onToleranceCommit'), 'wand: slider toleransi memicu live selection');
 assert(selPanel.includes('onToleranceCommit'), 'UI: slider toleransi punya callback commit');
 
+// -- Font Finder (ala TypeR "Font FindeR") --
+const finder = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/FontFinder.kt'));
+const finderDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/FontFinderDialog.kt'));
+assert(finder.includes('class FontFinder'), 'font finder: mesin Font Finder ada');
+assert(finder.includes('diceSimilarity'), 'font finder: skor pakai koefisien Dice (bigram) ala TypeR');
+assert(finder.includes('STYLE_SUFFIX') && finder.includes('NOISE_TOKENS'), 'font finder: sufiks gaya + token noise dibuang');
+assert(finder.includes('fonts.google.com/metadata/fonts'), 'font finder: katalog Google Fonts (publik, OFL)');
+assert(!/carbonscans/.test(finder), 'font finder: API privat TypeR tak dipakai');
+assert(finder.includes('cacheDir'), 'font finder: metadata di-cache di perangkat');
+assert(finder.includes('fun download('), 'font finder: bisa unduh TTF');
+assert(finder.includes('fonts.googleapis.com/css2'), 'font finder: unduh lewat CSS2 (TTF, bukan woff2)');
+assert(finderDlg.includes('fun FontFinderDialog('), 'UI: dialog Font Finder ada');
+assert(finderDlg.includes('Mirip'), 'UI: ada mode "Mirip" (cari font mirip font aktif)');
+assert(editor.includes('showFontFinder') && editor.includes('onOpenFontFinder'), 'editor: Font Finder tersambung ke panel teks');
+assert(editor.includes('fontRegistry.import('), 'editor: font terpasang langsung masuk daftar font');
+
+// -- Tulisan vertikal (ala manga / TypeR vertical text) --
+const renderer = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/TextRenderer.kt'));
+assert(textBoxSrc.includes('var verticalText: Boolean = false'), 'teks vertikal: field ada di TextBox');
+assert(textBoxSrc.includes('put("verticalText", verticalText)'), 'teks vertikal: ikut diserialisasi ke JSON');
+assert(textBoxSrc.includes('optBoolean("verticalText", false)'), 'teks vertikal: dibaca lagi dari JSON');
+assert(textBoxSrc.includes('verticalText = o.verticalText'), 'teks vertikal: ikut disalin (copy/snapshot)');
+assert(renderer.includes('fun renderVertical('), 'teks vertikal: renderer vertikal terpisah');
+assert(renderer.includes('if (box.verticalText)'), 'teks vertikal: jalur render vertikal dipicu');
+assert(textEditor.includes('onVerticalText'), 'UI: toggle tulisan vertikal di panel teks');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -910,7 +936,9 @@ for (const [nm, tx] of [
   ['CloneStampEngine', cloneEngine],
   ['GradientEngine', gradEngine],
   ['BubbleEraserEngine', bubbleEraser],
-  ['MagicEraserOptionsBar', eraserBar]
+  ['MagicEraserOptionsBar', eraserBar],
+  ['FontFinder', finder],
+  ['FontFinderDialog', finderDlg]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');

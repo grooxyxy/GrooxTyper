@@ -99,6 +99,8 @@ fun TextEditorPanel(
     box: TextBox,
     fonts: List<Pair<String, Typeface>>,
     onImportFont: () -> Unit,
+    /** Buka dialog Font Finder (cari + unduh font dari katalog). */
+    onOpenFontFinder: () -> Unit = {},
     // Dinaikkan saat geometri box berubah di kanvas (handle SCALE/lebar/perspektif)
     // agar slider ukuran ikut menampilkan ukuran AKTUAL (fontSize * scale).
     geomTick: Int = 0,
@@ -186,6 +188,7 @@ fun TextEditorPanel(
     var perspX by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspX) }
     var perspY by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspY) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
+    var verticalText by remember(box.id, styleVersion) { mutableStateOf(box.verticalText) }
     var underline by remember(box.id, styleVersion) { mutableStateOf(box.underline) }
     var strike by remember(box.id, styleVersion) { mutableStateOf(box.strikethrough) }
 
@@ -253,7 +256,7 @@ fun TextEditorPanel(
         outlineGradientOn, outlineGradStart, outlineGradEnd, outlineGradAngle,
         shadowOn, shadowColor, shadowOpacity, shadowDist, shadowAngle, shadowSize, shadowSpread,
         letterSp, wordSp, lineSp, scaleX, styleVersion,
-        textOpacity, textBlur, uppercase, underline, strike,
+        textOpacity, textBlur, uppercase, underline, strike, verticalText,
         glowOn, glowColor, glowOpacity, glowSize, glowSpread,
         bevelOn, bevelSize, bevelOpacity
     ) {
@@ -286,6 +289,7 @@ fun TextEditorPanel(
                 textOpacity = textOpacity,
                 textBlur = textBlur,
                 uppercase = uppercase,
+                verticalText = verticalText,
                 underline = underline,
                 strikethrough = strike,
                 glow = if (glowOn) TextGlowSpec(glowColor, glowSize, glowSpread, glowOpacity) else null,
@@ -440,6 +444,7 @@ fun TextEditorPanel(
                             }
                         },
                         onImportFont = onImportFont,
+                        onOpenFontFinder = onOpenFontFinder,
                         onOpenMultiBubble = onOpenMultiBubble
                     )
                     1 -> ColorTab(
@@ -529,6 +534,8 @@ fun TextEditorPanel(
                         onTextOpacity = { textOpacity = it; box.textOpacity = it; push() },
                         uppercase = uppercase,
                         onUppercase = { uppercase = it; box.uppercase = it; push() },
+                        verticalText = verticalText,
+                        onVerticalText = { verticalText = it; box.verticalText = it; push() },
                         underline = underline,
                         onUnderline = { underline = it; box.underline = it; push() },
                         strike = strike,
@@ -688,6 +695,7 @@ private fun WriteTab(
     boxFontName: String,
     onPickFont: (String) -> Unit,
     onImportFont: () -> Unit,
+    onOpenFontFinder: () -> Unit = {},
     onOpenMultiBubble: () -> Unit
 ) {
     var fontQuery by rememberSaveable { mutableStateOf("") }
@@ -762,8 +770,17 @@ private fun WriteTab(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text("Font", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Text("Import TTF/OTF", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.clickable { onImportFont() })
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Font Finder",
+                color = Accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onOpenFontFinder() }
+            )
+            Text("Import TTF/OTF", color = Accent, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { onImportFont() })
+        }
     }
     SearchField(
         value = fontQuery,
@@ -999,6 +1016,8 @@ private fun EffectTab(
     onTextOpacity: (Float) -> Unit,
     uppercase: Boolean,
     onUppercase: (Boolean) -> Unit,
+    verticalText: Boolean,
+    onVerticalText: (Boolean) -> Unit,
     underline: Boolean,
     onUnderline: (Boolean) -> Unit,
     strike: Boolean,
@@ -1110,6 +1129,19 @@ private fun EffectTab(
         Switch(
             checked = uppercase,
             onCheckedChange = onUppercase,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "Tulisan vertikal",
+            color = Color.White,
+            fontSize = 13.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Switch(
+            checked = verticalText,
+            onCheckedChange = onVerticalText,
             colors = SwitchDefaults.colors(checkedThumbColor = Accent)
         )
     }
