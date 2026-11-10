@@ -564,6 +564,70 @@ object LayerAlignEngine {
         reference: LayerItem?
     ): AlignResult = autoAlign(targets, reference, Projection.REPOSITION)
 
+    /** Peta tepi (gradien luminansi) layer acuan, di kotak acuan. */
+    private fun edgeMap(bitmap: Bitmap, rect: RectF): FloatArray? {
+        val w = MAP_SIZE
+        val h = MAP_SIZE
+        val luma = lumaMap(bitmap, rect, w, h) ?: return null
+        val out = FloatArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val xm = (x - 1).coerceAtLeast(0)
+                val xp = (x + 1).coerceAtMost(w - 1)
+                val ym = (y - 1).coerceAtLeast(0)
+                val yp = (y + 1).coerceAtMost(h - 1)
+                val gx = luma[y * w + xp] - luma[y * w + xm]
+                val gy = luma[yp * w + x] - luma[ym * w + x]
+                out[y * w + x] = kotlin.math.sqrt(gx * gx + gy * gy)
+            }
+        }
+        return out
+    }
+
+    /** Peta cakupan (alpha) layer yang digeser, di kotaknya sendiri. */
+    private fun coverageMap(bitmap: Bitmap, rect: RectF): FloatArray? {
+        val w = MAP_SIZE
+        val h = MAP_SIZE
+        val out = FloatArray(w * h)
+        val sx = (rect.width() / w).coerceAtLeast(0.5f)
+        val sy = (rect.height() / h).coerceAtLeast(0.5f)
+        val left = rect.left.toInt()
+        val top = rect.top.toInt()
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val px = left + (x * sx).toInt()
+                val py = top + (y * sy).toInt()
+                if (px < 0 || py < 0 || px >= bitmap.width || py >= bitmap.height) continue
+                out[y * w + x] = (bitmap.getPixel(px, py) ushr 24) / 255f
+            }
+        }
+        return out
+    }
+
+    /** Peta luminansi (abu-abu) dalam kotak, diskalakan ke w x h. */
+    private fun lumaMap(bitmap: Bitmap, rect: RectF, w: Int, h: Int): FloatArray? {
+        val out = FloatArray(w * h)
+        val sx = (rect.width() / w).coerceAtLeast(0.5f)
+        val sy = (rect.height() / h).coerceAtLeast(0.5f)
+        val left = rect.left.toInt()
+        val top = rect.top.toInt()
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val px = left + (x * sx).toInt()
+                val py = top + (y * sy).toInt()
+                if (px < 0 || py < 0 || px >= bitmap.width || py >= bitmap.height) continue
+                val p = bitmap.getPixel(px, py)
+                val a = (p ushr 24) and 0xFF
+                if (a == 0) continue
+                val r = (p shr 16) and 0xFF
+                val g = (p shr 8) and 0xFF
+                val b = p and 0xFF
+                out[y * w + x] = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+            }
+        }
+        return out
+    }
+
     /** Kandidat pergeseran terbaik: skor korelasi tertinggi. */
     private data class Shift(val dx: Float, val dy: Float, val score: Float)
 
