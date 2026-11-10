@@ -977,6 +977,9 @@ assert(textEditor.includes('showKerning') && textEditor.includes('KerningDialog(
 const reshapeBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/ReshapeOptionsBar.kt'));
 assert(textBoxSrc.includes('val outline: List<Offset> = emptyList()'), 'reshaper: outline kustom di BubbleSpec');
 assert(textBoxSrc.includes('fun bubbleOutlinePointsPx()'), 'reshaper: titik outline dalam koordinat kanvas');
+assert(textBoxSrc.includes('val tail: Offset? = null'), 'reshaper: ekor gelembung (tail) punya model');
+assert(textBoxSrc.includes('fun bubbleTailTipPx()'), 'reshaper: ujung ekor punya koordinat kanvas');
+assert(editor.includes('reshapeMoveTail('), 'reshaper: ujung ekor bisa digeser (ala TypeR)');
 assert(textBoxSrc.includes('fun defaultBubbleOutline()'), 'reshaper: outline default dari bentuk parametrik');
 assert(textBoxSrc.includes('put("outline"'), 'reshaper: outline ikut diserialisasi');
 assert(editor.includes('ActiveTool.RESHAPE'), 'editor: ActiveTool.RESHAPE terdaftar');
@@ -994,7 +997,14 @@ assert(alignEngine.includes('fun align(') && alignEngine.includes('fun distribut
 assert(layerSrc.includes('var selectedIds'), 'align: layer bisa dipilih banyak');
 assert(layerSrc.includes('fun alignmentTargets()'), 'align: target alignment diambil dari pilihan');
 assert(alignPanel.includes('fun LayerAlignPanel('), 'UI: panel auto-align ada');
-assert(alignPanel.includes('Cocokkan isi'), 'UI: ada aksi auto-align berbasis isi');
+assert(alignPanel.includes('Geser saja') && alignPanel.includes('Collage') && alignPanel.includes('Perspektif'),
+  'UI: ada 3 proyeksi auto-align ala TypeR (geser/collage/perspektif)');
+assert(alignEngine.includes('enum class Projection'), 'align: proyeksi auto-align didefinisikan');
+assert(alignEngine.includes('Projection.COLLAGE') && alignEngine.includes('Projection.PERSPECTIVE'),
+  'align: proyeksi collage + perspektif diimplementasikan');
+assert(alignEngine.includes('fun homography(') && alignEngine.includes('fun contentQuad('),
+  'align: perspektif pakai kuad empat + homografi');
+assert(layerSrc.includes('var projective'), 'align: image layer bisa menyimpan transform proyektif');
 
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [

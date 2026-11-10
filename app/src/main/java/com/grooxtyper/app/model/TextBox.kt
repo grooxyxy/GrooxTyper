@@ -186,7 +186,18 @@ data class BubbleSpec(
      * memotong teks — jadi huruf benar-benar mengikuti gelembung yang
      * sudah dibentuk user.
      */
-    val outline: List<Offset> = emptyList()
+    val outline: List<Offset> = emptyList(),
+    /**
+     * Ujung ekor gelembung (bubble tail), koordinat NORMALISIR 0..1
+     * terhadap kotak gelembung.
+     *
+     * Null = tanpa ekor. Kalau diisi, bentuk gelembung diberi(runut)
+     * kerucut dari tepi terdekat menuju ujung ini — Anarchism manga
+     * banyak memakai ekor untuk(ttk) menunjukkan arah bicara.
+     */
+    val tail: Offset? = null,
+    /** Lebar pangkal ekor, fraksi dari sisi kecil gelembung (0..0.5). */
+    val tailWidth: Float = 0.16f
 ) {
     companion object {
         const val SHAPE_ELIPS = 0
@@ -502,11 +513,80 @@ class TextBox(
                 p.addOval(r, Path.Direction.CW)
             }
         }
+        // Ekor (tail): kerucut dari tepi terdekat menuju ujung ekor.
+        b.tail?.let { tail ->
+            val tip = Offset(-w / 2f + tail.x * w, -h / 2f + tail.y * h)
+            val dirX = tip.x
+            val dirY = tip.y
+            val dirLen = kotlin.math.hypot(dirX, dirY)
+            if (dirLen > 1e-3f) {
+                // Titik tepi gelembung paling dekat arah ekor.
+                val edge = when {
+                    b.outline.isNotEmpty() -> {
+                        var best = b.outline[0]
+                        var bestDot = -Float.MAX_VALUE
+                        for (o in b.outline) {
+                            val ox = -w / 2f + o.x * w
+                            val oy = -h / 2f + o.y * h
+                            val dot = ox * dirX + oy * dirY
+                            if (dot > bestDot) {
+                                bestDot = dot
+                                best = o
+                            }
+                        }
+                        Offset(-w / 2f + best.x * w, -h / 2f + best.y * h)
+                    }
+                    else -> {
+                        // Elips: titik batas pada arah ekor.
+                        val rx = (w / 2f).coerceAtLeast(1f)
+                        val ry = (h / 2f).coerceAtLeast(1f)
+                        val k = 1f / kotlin.math.sqrt(
+                            (dirX / rx) * (dirX / rx) + (dirY / ry) * (dirY / ry)
+                        ).coerceAtLeast(1e-6f)
+                        Offset(dirX * k, dirY * k)
+                    }
+                }
+                // Basis kerucut: tegak lurus arah ekor.
+                val ex = edge.x - tip.x
+                val ey = edge.y - tip.y
+                val eLen = kotlin.math.hypot(ex, ey)
+                if (eLen > 1e-3f) {
+                    val half = min(w, h) * b.tailWidth.coerceIn(0.02f, 0.5f) / 2f
+                    val px = -ey / eLen * half
+                    val py = ex / eLen * half
+                    p.moveTo(edge.x + px, edge.y + py)
+                    p.lineTo(tip.x, tip.y)
+                    p.lineTo(edge.x - px, edge.y - py)
+                    p.close()
+                }
+            }
+        }
         val m = Matrix()
         m.setRotate(rotation)
         m.postTranslate(position.x, position.y)
         p.transform(m)
         return p
+    }
+
+    /**
+     * Ujung ekor gelembung dalam koordinat KANVAS absolut (null bila
+     * gelembung tak punya ekor).
+     */
+    fun bubbleTailTipPx(): Offset? {
+        val b = bubble ?: return null
+        val t = b.tail ?: return null
+        val w = b.bubbleW * scale
+        val h = b.bubbleH * scale
+        if (!w.isFinite() || !h.isFinite() || w < 4f || h < 4f) return null
+        val lx = -w / 2f + t.x * w
+        val ly = -h / 2f + t.y * h
+        val rad = Math.toRadians(rotation.toDouble())
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        return Offset(
+            position.x + lx * cosR - ly * sinR,
+            position.y + lx * sinR + ly * cosR
+        )
     }
 
     /**

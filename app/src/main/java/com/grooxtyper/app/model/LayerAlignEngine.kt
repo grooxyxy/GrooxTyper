@@ -41,6 +41,18 @@ object LayerAlignEngine {
     /** Sumbu distribute. */
     enum class Distribute { HORIZONTAL, VERTICAL }
 
+    /**
+     * Proyeksi auto-align (ala TypeR).
+     *
+     *  - **REPOSITION**: layer hanya digeser (whole pixel), isi pikselnya
+     *    tak disentuh. Proyeksi paling aman.
+     *  - **COLLAGE**: digeser, diputar, dan diskala (seragam, tak
+     *    distort) — seperti "Collage" di Photoshop.
+     *  - **PERSPECTIVE**: layer diproyeksikan ke kuad halaman acuan,
+     *    untuk halaman foto yang miring.
+     */
+    enum class Projection { REPOSITION, COLLAGE, PERSPECTIVE }
+
     /** Hasil auto-align berbasis konten. */
     data class AlignResult(
         /** Berapa layer yang benar-benar bergeser. */
@@ -196,27 +208,271 @@ object LayerAlignEngine {
         return RectF(l, t, r, b)
     }
 
+
     // ------------------------------------------------------------------
-    // Auto-align berbasis korelasi konten (proyeksi "Reposition")
+    // Auto-align dengan transform (proyeksi Collage / Perspective)
     // ------------------------------------------------------------------
 
-    /** Ukuran peta tepi (piksel) untuk korelasi. */
-    private const val MAP_SIZE = 96
+    /** Kandidat transform: geser + putar + skala seragam. */
+    private data class Xform(
+        val dx: Float,
+        val dy: Float,
+        val angleDeg: Float,
+        val scale: Float,
+        val score: Float
+    )
 
     /**
-     * Geser layer terpilih sampai isinya paling cocok dengan [reference]
-     * (proyeksi "Reposition" ala TypeR).
+     * Cari transform terbaik (geser + putar + skala) yang paling cocok
+     * dengan [refEdge].
      *
-     * Yang bisa dicocokkan hanya layer **gambar** (punya bitmap). Layer
-     * teks tak punya pikseluntil dirender, jadi dilewati.
+     * Pencarian dua tahap: kasar (48x48, sudut & skala jarang) lalu
+     * halus (96x96, di sekitar terbaik). Semua dihitung dari peta tepi
+     * acuan & peta cakupan layer yang digeser.
+     */
+    private fun bestXform(
+        refEdge: FloatArray,
+        cov: FloatArray,
+        rect: RectF,
+        refRect: RectF,
+        centerX: Float,
+        centerY: Float
+    ): Xform? {
+        val coarse = searchXform(
+            refEdge, cov, rect, refRect, centerX, centerY,
+            mapSize = 48,
+            angles = floatArrayOf(-30f, -20f, -10f, 0f, 10f, 20f, 30f),
+            scales = floatArrayOf(0.85f, 1f, 1.15f),
+            steps = 10
+        ) ?: return null
+        return searchXform(
+            refEdge, cov, rect, refRect, centerX, centerY,
+            mapSize = 96,
+            angles = floatArrayOf(
+                coarse.angleDeg - 4f, coarse.angleDeg - 2f, coarse.angleDeg,
+                coarse.angleDeg + 2f, coarse.angleDeg + 4f
+            ),
+            scales = floatArrayOf(
+                coarse.scale - 0.06f, coarse.scale, coarse.scale + 0.06f
+            ),
+            steps = 14,
+            around = coarse
+        ) ?: coarse
+    }
+
+    /** Satu tahap pencarian transform. */
+    private fun searchXform(
+        refEdge: FloatArray,
+        cov: FloatArray,
+        rect: RectF,
+        refRect: RectF,
+        centerX: Float,
+        centerY: Float,
+        mapSize: Int,
+        angles: FloatArray,
+        scales: FloatArray,
+        steps: Int,
+        around: Xform? = null
+    ): Xform? {
+        val refScaleX = refRect.width() / mapSize
+        val refScaleY = refRect.height() / mapSize
+        if (refScaleX <= 0f || refScaleY <= 0f) return null
+        val spanX = refRect.width() * 0.7f
+        val spanY = refRect.height() * 0.7f
+        val stepX = spanX / steps
+        val stepY = spanY / steps
+        val dx0 = around?.dx ?: -spanX
+        val dy0 = around?.dy ?: -spanY
+        val dxMax = around?.dx?.plus(spanX / 5f) ?: spanX
+        val dyMax = around?.dy?.plus(spanY / 5f) ?: spanY
+
+        var best: Xform? = null
+        for (angle in angles) {
+            for (sc in scales) {
+                if (sc <= 0.05f) continue
+                var dx = dx0
+                while (dx <= dxMax) {
+                    var dy = dy0
+                    while (dy <= dyMax) {
+                        val score = correlateXform(
+                            refEdge, cov, rect, refRect, centerX, centerY,
+                            angle, sc, dx, dy, refScaleX, refScaleY
+                        )
+                        val cur = best
+                        if (cur == null || score > cur.score) {
+                            best = Xform(dx, dy, angle, sc, score)
+                        }
+                        dy += stepY
+                    }
+                    dx += stepX
+                }
+            }
+        }
+        return best
+    }
+
+    /** Korelasi dengan transform (rotasi + skala seragam + geser). */
+    private fun correlateXform(
+        refEdge: FloatArray,
+        cov: FloatArray,
+        rect: RectF,
+        refRect: RectF,
+        centerX: Float,
+        centerY: Float,
+        angleDeg: Float,
+        scale: Float,
+        dx: Float,
+        dy: Float,
+        refScaleX: Float,
+        refScaleY: Float
+    ): Float {
+        val w = MAP_SIZE
+        val h = MAP_SIZE
+        val rad = Math.toRadians(angleDeg.toDouble())
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        val sc = scale.coerceAtLeast(0.05f)
+        var sum = 0f
+        var n = 0
+        // Iterasi isi layer yang digeser, transform ke ruang kanvas, lalu
+        // ambil nilai tepi acuan di sana.
+        for (iy in 0 until h) {
+            val ly = rect.top + (iy + 0.5f) * (rect.height() / h)
+            for (ix in 0 until w) {
+                val c = cov[iy * w + ix]
+                if (c <= 0.35f) continue
+                val lx = rect.left + (ix + 0.5f) * (rect.width() / w)
+                val rx0 = lx - centerX
+                val ry0 = ly - centerY
+                val ox = (rx0 * cosR - ry0 * sinR) * sc + centerX + dx
+                val oy = (rx0 * sinR + ry0 * cosR) * sc + centerY + dy
+                val rx = ((ox - refRect.left) / refScaleX).toInt()
+                val ry = ((oy - refRect.top) / refScaleY).toInt()
+                if (rx < 0 || ry < 0 || rx >= w || ry >= h) continue
+                sum += refEdge[ry * w + rx] * c
+                n++
+            }
+        }
+        if (n < 24) return 0f
+        return sum / n
+    }
+
+    // ------------------------------------------------------------------
+    // Proyeksi Perspective: kuad empat + homografi
+    // ------------------------------------------------------------------
+
+    /**
+     * Kuad empat (TL, TR, BR, BL) dari ISI layer, dalam koordinat kanvas.
+     *
+     * Titik diambil dari sudut-sudut extremal isi (sum x+y dan x-y),
+     * jadi kuad mengikuti halaman foto yang miring.
+     */
+    private fun contentQuad(
+        bitmap: Bitmap,
+        rect: RectF
+    ): FloatArray? {
+        val w = MAP_SIZE
+        val h = MAP_SIZE
+        val sx = rect.width() / w
+        val sy = rect.height() / h
+        if (sx <= 0f || sy <= 0f) return null
+        // Cari titik extremal di atas HANYA piksel yang punya isi.
+        var tlScore = Float.MAX_VALUE
+        var brScore = -Float.MAX_VALUE
+        var trScore = -Float.MAX_VALUE
+        var blScore = Float.MAX_VALUE
+        var tlX = 0f; var tlY = 0f
+        var brX = 0f; var brY = 0f
+        var trX = 0f; var trY = 0f
+        var blX = 0f; var blY = 0f
+        var found = false
+        for (y in 0 until h) {
+            val py = rect.top + y * sy
+            for (x in 0 until w) {
+                val px = rect.left + x * sx
+                val ix = rect.left.toInt() + (x * sx).toInt()
+                val iy = rect.top.toInt() + (y * sy).toInt()
+                if (ix < 0 || iy < 0 || ix >= bitmap.width || iy >= bitmap.height) continue
+                if ((bitmap.getPixel(ix, iy) ushr 24) < 24) continue
+                found = true
+                val a = px + py
+                val b = px - py
+                if (a < tlScore) { tlScore = a; tlX = px; tlY = py }
+                if (a > brScore) { brScore = a; brX = px; brY = py }
+                if (b > trScore) { trScore = b; trX = px; trY = py }
+                if (b < blScore) { blScore = b; blX = px; blY = py }
+            }
+        }
+        if (!found) return null
+        return floatArrayOf(tlX, tlY, trX, trY, brX, brY, blX, blY)
+    }
+
+    /**
+     * Homografi 3x3 yang memetakan empat titik [src] ke empat titik [dst].
+     *
+     * Diselesaikan dengan sistem linear 8x8 (h33 = 1) + eliminasi Gauss.
+     */
+    private fun homography(src: FloatArray, dst: FloatArray): FloatArray? {
+        val a = Array(8) { DoubleArray(9) }
+        for (i in 0 until 4) {
+            val sx = src[i * 2].toDouble()
+            val sy = src[i * 2 + 1].toDouble()
+            val dx = dst[i * 2].toDouble()
+            val dy = dst[i * 2 + 1].toDouble()
+            val r = i * 2
+            a[r][0] = sx; a[r][1] = sy; a[r][2] = 1.0
+            a[r][3] = 0.0; a[r][4] = 0.0; a[r][5] = 0.0
+            a[r][6] = -sx * dx; a[r][7] = -sy * dx; a[r][8] = dx
+            a[r + 1][0] = 0.0; a[r + 1][1] = 0.0; a[r + 1][2] = 0.0
+            a[r + 1][3] = sx; a[r + 1][4] = sy; a[r + 1][5] = 1.0
+            a[r + 1][6] = -sx * dy; a[r + 1][7] = -sy * dy; a[r + 1][8] = dy
+        }
+        val h = solve(a) ?: return null
+        return floatArrayOf(
+            h[0].toFloat(), h[1].toFloat(), h[2].toFloat(),
+            h[3].toFloat(), h[4].toFloat(), h[5].toFloat(),
+            h[6].toFloat(), h[7].toFloat(), 1f
+        )
+    }
+
+    /** Eliminasi Gauss pada sistem augmented 8x9. */
+    private fun solve(m: Array<DoubleArray>): DoubleArray? {
+        val n = 8
+        for (col in 0 until n) {
+            var pivot = col
+            for (r in col + 1 until n) {
+                if (kotlin.math.abs(m[r][col]) > kotlin.math.abs(m[pivot][col])) pivot = r
+            }
+            if (kotlin.math.abs(m[pivot][col]) < 1e-9) return null
+            val tmp = m[col]; m[col] = m[pivot]; m[pivot] = tmp
+            for (r in 0 until n) {
+                if (r == col) continue
+                val f = m[r][col] / m[col][col]
+                if (f == 0.0) continue
+                for (c in col until n + 1) {
+                    m[r][c] -= f * m[col][c]
+                }
+            }
+        }
+        val out = DoubleArray(n)
+        for (i in 0 until n) out[i] = m[i][n] / m[i][i]
+        return out
+    }
+
+    /**
+     * Auto-align lapisan dengan proyeksi pilihan (ala TypeR).
+     *
+     *  - REPOSITION: layer hanya digeser (isi piksel tak disentuh).
+     *  - COLLAGE: digeser + diputar + diskala seragam (tak distort).
+     *  - PERSPECTIVE: diproyeksikan ke kuad empat halaman acuan.
      *
      * @param targets layer yang dipilih.
      * @param reference layer acuan (default: layer aktif).
-     * @return jumlah yang bergeser & yang gagal.
      */
-    fun autoAlignByContent(
+    fun autoAlign(
         targets: List<LayerItem>,
-        reference: LayerItem?
+        reference: LayerItem?,
+        projection: Projection
     ): AlignResult {
         val images = targets.filterIsInstance<ImageLayer>()
             .filter { !it.bitmap.isRecycled && it.bitmap.width > 0 && it.bitmap.height > 0 }
@@ -231,81 +487,82 @@ object LayerAlignEngine {
         for (layer in images) {
             if (layer.id == ref.id) continue
             val rect = contentRect(layer) ?: continue
-            val cov = coverageMap(layer.bitmap, rect) ?: continue
-            val best = bestShift(refEdge, cov, rect, refRect)
-            if (best == null || best.score <= 0f) {
-                failed++
-                continue
+            when (projection) {
+                Projection.REPOSITION -> {
+                    val cov = coverageMap(layer.bitmap, rect) ?: continue
+                    val best = bestShift(refEdge, cov, rect, refRect)
+                    if (best == null || best.score <= 0f) {
+                        failed++
+                        continue
+                    }
+                    moveLayer(layer, best.dx, best.dy)
+                    moved++
+                }
+                Projection.COLLAGE -> {
+                    val cov = coverageMap(layer.bitmap, rect) ?: continue
+                    val cx = rect.centerX()
+                    val cy = rect.centerY()
+                    val best = bestXform(refEdge, cov, rect, refRect, cx, cy)
+                    if (best == null || best.score <= 0f) {
+                        failed++
+                        continue
+                    }
+                    moveLayer(layer, best.dx, best.dy)
+                    layer.rotationDeg = (layer.rotationDeg + best.angleDeg) % 360f
+                    layer.widthPx *= best.scale
+                    layer.heightPx *= best.scale
+                    moved++
+                }
+                Projection.PERSPECTIVE -> {
+                    val srcQuad = contentQuad(layer.bitmap, rect) ?: continue
+                    val dstQuad = contentQuad(ref.bitmap, refRect) ?: continue
+                    val h = homography(srcQuad, dstQuad) ?: continue
+                    // Homografi memetakan ruang gambar -> kanvas.
+                    val m = android.graphics.Matrix().apply { setValues(h) }
+                    layer.projective = m
+                    // Perkiraan ukuran baru = kotak hasil proyeksi.
+                    val pts = floatArrayOf(
+                        0f, 0f, layer.bitmap.width.toFloat(), 0f,
+                        layer.bitmap.width.toFloat(), layer.bitmap.height.toFloat(),
+                        0f, layer.bitmap.height.toFloat()
+                    )
+                    m.mapPoints(pts)
+                    var l = Float.MAX_VALUE
+                    var t = Float.MAX_VALUE
+                    var r = -Float.MAX_VALUE
+                    var b = -Float.MAX_VALUE
+                    for (i in 0 until 4) {
+                        l = min(l, pts[i * 2]); r = max(r, pts[i * 2])
+                        t = min(t, pts[i * 2 + 1]); b = max(b, pts[i * 2 + 1])
+                    }
+                    layer.widthPx = r - l
+                    layer.heightPx = b - t
+                    layer.centerX = (l + r) / 2f
+                    layer.centerY = (t + b) / 2f
+                    moved++
+                }
             }
-            moveLayer(layer, best.dx, best.dy)
-            moved++
         }
         return AlignResult(moved, failed)
     }
 
-    /** Peta tepi (gradien luminansi) layer acuan, di kotak acuan. */
-    private fun edgeMap(bitmap: Bitmap, rect: RectF): FloatArray? {
-        val w = MAP_SIZE
-        val h = MAP_SIZE
-        val luma = lumaMap(bitmap, rect, w, h) ?: return null
-        val out = FloatArray(w * h)
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val xm = (x - 1).coerceAtLeast(0)
-                val xp = (x + 1).coerceAtMost(w - 1)
-                val ym = (y - 1).coerceAtLeast(0)
-                val yp = (y + 1).coerceAtMost(h - 1)
-                val gx = luma[y * w + xp] - luma[y * w + xm]
-                val gy = luma[yp * w + x] - luma[ym * w + x]
-                out[y * w + x] = sqrt(gx * gx + gy * gy)
-            }
-        }
-        return out
-    }
+    // ------------------------------------------------------------------
+    // Auto-align berbasis korelasi konten (proyeksi "Reposition")
+    // ------------------------------------------------------------------
 
-    /** Peta cakupan (alpha) layer yang digeser, di kotaknya sendiri. */
-    private fun coverageMap(bitmap: Bitmap, rect: RectF): FloatArray? {
-        val w = MAP_SIZE
-        val h = MAP_SIZE
-        val out = FloatArray(w * h)
-        val sx = (rect.width() / w).coerceAtLeast(0.5f)
-        val sy = (rect.height() / h).coerceAtLeast(0.5f)
-        val left = rect.left.toInt()
-        val top = rect.top.toInt()
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val px = left + (x * sx).toInt()
-                val py = top + (y * sy).toInt()
-                if (px < 0 || py < 0 || px >= bitmap.width || py >= bitmap.height) continue
-                out[y * w + x] = (bitmap.getPixel(px, py) ushr 24) / 255f
-            }
-        }
-        return out
-    }
+    /** Ukuran peta tepi (piksel) untuk korelasi. */
+    private const val MAP_SIZE = 96
 
-    /** Peta luminansi (abu-abu) dalam kotak, diskalakan ke w x h. */
-    private fun lumaMap(bitmap: Bitmap, rect: RectF, w: Int, h: Int): FloatArray? {
-        val out = FloatArray(w * h)
-        val sx = (rect.width() / w).coerceAtLeast(0.5f)
-        val sy = (rect.height() / h).coerceAtLeast(0.5f)
-        val left = rect.left.toInt()
-        val top = rect.top.toInt()
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val px = left + (x * sx).toInt()
-                val py = top + (y * sy).toInt()
-                if (px < 0 || py < 0 || px >= bitmap.width || py >= bitmap.height) continue
-                val p = bitmap.getPixel(px, py)
-                val a = (p ushr 24) and 0xFF
-                if (a == 0) continue
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                out[y * w + x] = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
-            }
-        }
-        return out
-    }
+    /**
+     * Geser layer terpilih sampai isinya paling cocok dengan [reference]
+     * (proyeksi "Reposition" ala TypeR).
+     *
+     * Shorthand dari [autoAlign] dengan proyeksi REPOSITION.
+     */
+    fun autoAlignByContent(
+        targets: List<LayerItem>,
+        reference: LayerItem?
+    ): AlignResult = autoAlign(targets, reference, Projection.REPOSITION)
 
     /** Kandidat pergeseran terbaik: skor korelasi tertinggi. */
     private data class Shift(val dx: Float, val dy: Float, val score: Float)

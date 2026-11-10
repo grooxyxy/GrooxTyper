@@ -50,7 +50,7 @@ fun LayerAlignPanel(
     selectedCount: Int,
     onAlign: (LayerAlignEngine.Align) -> Unit,
     onDistribute: (LayerAlignEngine.Distribute) -> Unit,
-    onAutoAlignContent: () -> Unit,
+    onAutoAlignContent: (LayerAlignEngine.Projection) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -99,9 +99,26 @@ fun LayerAlignPanel(
             AlignChip("Sebar V", enabled = selectedCount > 2) {
                 onDistribute(LayerAlignEngine.Distribute.VERTICAL)
             }
-            AlignChip("Cocokkan isi", enabled = selectedCount > 1) {
-                onAutoAlignContent()
-            }
+        }
+        Text(
+            "Auto-align (ala TypeR):",
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            AlignChip(
+                "Geser saja",
+                enabled = selectedCount > 1
+            ) { onAutoAlignContent(LayerAlignEngine.Projection.REPOSITION) }
+            AlignChip(
+                "Collage",
+                enabled = selectedCount > 1
+            ) { onAutoAlignContent(LayerAlignEngine.Projection.COLLAGE) }
+            AlignChip(
+                "Perspektif",
+                enabled = selectedCount > 1
+            ) { onAutoAlignContent(LayerAlignEngine.Projection.PERSPECTIVE) }
         }
     }
 }

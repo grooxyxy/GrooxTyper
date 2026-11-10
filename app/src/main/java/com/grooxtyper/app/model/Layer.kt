@@ -133,7 +133,19 @@ class ImageLayer(
     fun scaleY(): Float = if (flipY) -baseScaleY() else baseScaleY()
 
     /** Matrix kanvas: T(center) · R · S(±flip) · T(-half). */
+    /**
+     * Transform proyektif opsional (hasil Auto-Align proyeksi
+     * "Perspective" ala TypeR).
+     *
+     * Null = pakai similarity biasa (pusat/rotasi/skala). Kalau diisi,
+     * matriks ini yang dipakai: ia memetakan kuad empat gambar di ruang
+     * gambar ke kuad empat di kanvas, jadi layer bisa "ditempel" ke
+     * halaman foto yang miring.
+     */
+    var projective: android.graphics.Matrix? = null
+
     fun matrix(): android.graphics.Matrix {
+        projective?.let { return android.graphics.Matrix(it) }
         val sx = scaleX()
         val sy = scaleY()
         return android.graphics.Matrix().apply {

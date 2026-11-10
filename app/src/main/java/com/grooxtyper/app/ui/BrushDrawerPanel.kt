@@ -61,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.grooxtyper.app.model.BrushEngine
 import com.grooxtyper.app.model.BrushType
 import com.grooxtyper.app.model.DrawingLayer
@@ -390,6 +394,8 @@ fun LayerPanel(
     var blendMenuFor by remember { mutableStateOf<String?>(null) }
     var showAlignPanel by remember { mutableStateOf(false) }
     var alignMessage by remember { mutableStateOf<String?>(null) }
+    var alignBusy by remember { mutableStateOf(false) }
+    val alignScope = rememberCoroutineScope()
 
     // Ubah properti display dengan satu langkah undo.
     fun mutateProps(layer: LayerItem, change: () -> Unit) {
@@ -511,17 +517,30 @@ fun LayerPanel(
                         alignMessage = if (moved > 0) "$moved layer disebar" else "Butuh 3+ layer"
                         onRefresh()
                     },
-                    onAutoAlignContent = {
+                    onAutoAlignContent = { projection ->
+                        // Korelasi konten itu berat (ratusan juta operasi
+                        // untuk proyeksi Collage), jadi JALAN DI BACKGROUND
+                        // supaya UI tak beku.
+                        if (alignBusy) return@LayerAlignPanel
+                        alignBusy = true
+                        alignMessage = "Menyelaraskan..."
                         val targets = layerManager.alignmentTargets()
                         val ref = layerManager.findLayerById(layerManager.activeLayerId)
-                        val res = com.grooxtyper.app.model.LayerAlignEngine.autoAlignByContent(targets, ref)
-                        alignMessage = if (res.moved > 0) {
-                            "${res.moved} layer dicocokkan" +
-                                if (res.failed > 0) ", ${res.failed} tak cocok" else ""
-                        } else {
-                            "Tak ada yang bisa dicocokkan (pakai layer gambar)"
+                        alignScope.launch {
+                            val res = withContext(Dispatchers.Default) {
+                                com.grooxtyper.app.model.LayerAlignEngine.autoAlign(
+                                    targets, ref, projection
+                                )
+                            }
+                            alignBusy = false
+                            alignMessage = if (res.moved > 0) {
+                                "${res.moved} layer dicocokkan" +
+                                    if (res.failed > 0) ", ${res.failed} tak cocok" else ""
+                            } else {
+                                "Tak ada yang bisa dicocokkan (pakai layer gambar)"
+                            }
+                            onRefresh()
                         }
-                        onRefresh()
                     }
                 )
                 alignMessage?.let {

@@ -38,6 +38,9 @@ private val ReshapePanel = Color(0xE61C1C1E)
 fun ReshapeOptionsBar(
     hasSelection: Boolean,
     pointCount: Int,
+    hasTail: Boolean = false,
+    onAddTail: () -> Unit = {},
+    onRemoveTail: () -> Unit = {},
     onApplyOutline: () -> Unit,
     onResetOutline: () -> Unit,
     modifier: Modifier = Modifier
@@ -64,6 +67,11 @@ fun ReshapeOptionsBar(
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.weight(1f))
+        if (hasTail) {
+            ReshapeChip("Buang ekor", hasSelection) { onRemoveTail() }
+        } else {
+            ReshapeChip("Tambah ekor", hasSelection) { onAddTail() }
+        }
         ReshapeChip("Jadikan outline", hasSelection) { onApplyOutline() }
         ReshapeChip("Reset", hasSelection) { onResetOutline() }
     }

@@ -1344,6 +1344,8 @@ fun CanvasEditorScreen(
     var quickMaskStroke by remember { mutableStateOf<Path?>(null) }
     // Bubble Reshaper: indeks titik outline yang sedang digeser (-1 = tak ada).
     var reshapeHandle by remember { mutableStateOf(-1) }
+    // Bubble Reshaper: ekornya sedang digeser?
+    var reshapeTail by remember { mutableStateOf(false) }
     // Gradient: titik awal & akhir seret (koordinat kanvas).
     var gradientStart by remember { mutableStateOf<Offset?>(null) }
     var gradientEnd by remember { mutableStateOf<Offset?>(null) }
@@ -2449,6 +2451,47 @@ fun CanvasEditorScreen(
         val baru = pts.toMutableList()
         baru[index] = Offset(nx, ny)
         box.bubble = b.copy(outline = baru)
+        refreshComposite()
+    }
+
+    /**
+     * Geser ujung ekor gelembung (ala TypeR: "the ● at the tail to move
+     * its tip").
+     */
+    fun reshapeMoveTail(canvasPos: Offset) {
+        val box = selectedTextBox ?: return
+        val b = box.bubble ?: return
+        val w = b.bubbleW * box.scale
+        val h = b.bubbleH * box.scale
+        if (w <= 0f || h <= 0f) return
+        val dx = canvasPos.x - box.position.x
+        val dy = canvasPos.y - box.position.y
+        val rad = Math.toRadians((-box.rotation).toDouble())
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        val lx = dx * cosR - dy * sinR
+        val ly = dx * sinR + dy * cosR
+        val nx = ((lx + w / 2f) / w).coerceIn(-0.8f, 1.8f)
+        val ny = ((ly + h / 2f) / h).coerceIn(-0.8f, 1.8f)
+        box.bubble = b.copy(tail = Offset(nx, ny))
+        refreshComposite()
+    }
+
+    /** Tambah ekor gelembung di luar kanan atas kotak gelembung. */
+    fun reshapeAddTail() {
+        val box = selectedTextBox ?: return
+        val b = box.bubble ?: return
+        if (b.tail != null) return
+        box.bubble = b.copy(tail = Offset(1.15f, 0.2f))
+        refreshComposite()
+    }
+
+    /** Buang ekor gelembung. */
+    fun reshapeRemoveTail() {
+        val box = selectedTextBox ?: return
+        val b = box.bubble ?: return
+        if (b.tail == null) return
+        box.bubble = b.copy(tail = null)
         refreshComposite()
     }
 
@@ -4901,14 +4944,23 @@ fun CanvasEditorScreen(
                                     } else if (activeTool == ActiveTool.RESHAPE) {
                                         // Bubble Reshaper: drag titik outline
                                         // gelembung untuk push/pull bentuknya.
+                                        // Ujung ekor (●) dicek lebih dulu.
                                         val pts = reshapePoints()
                                         val tol = 22f / viewState.scale
-                                        val idx = pts.indices.firstOrNull { i ->
-                                            (pts[i] - touchCanvasPos).getDistance() <= tol
-                                        }
-                                        if (idx != null) {
-                                            reshapeHandle = idx
-                                            reshapeMoveHandle(idx, touchCanvasPos)
+                                        val tip = selectedTextBox?.bubbleTailTipPx()
+                                        if (tip != null &&
+                                            (tip - touchCanvasPos).getDistance() <= tol
+                                        ) {
+                                            reshapeTail = true
+                                            reshapeMoveTail(touchCanvasPos)
+                                        } else {
+                                            val idx = pts.indices.firstOrNull { i ->
+                                                (pts[i] - touchCanvasPos).getDistance() <= tol
+                                            }
+                                            if (idx != null) {
+                                                reshapeHandle = idx
+                                                reshapeMoveHandle(idx, touchCanvasPos)
+                                            }
                                         }
                                     } else if (activeTool == ActiveTool.MAGIC_ERASER ||
                                         activeTool == ActiveTool.BUBBLE_ERASER
@@ -4920,8 +4972,10 @@ fun CanvasEditorScreen(
                                             wandPressStart = change.position
                                         }
                                     } else if (activeTool == ActiveTool.RESHAPE) {
-                                        // Geser handle outline yang sedang dipegang.
-                                        if (reshapeHandle >= 0) {
+                                        // Geser handle outline / ujung ekor.
+                                        if (reshapeTail) {
+                                            reshapeMoveTail(touchCanvasPos)
+                                        } else if (reshapeHandle >= 0) {
                                             reshapeMoveHandle(reshapeHandle, touchCanvasPos)
                                         }
                                     } else if (activeTool == ActiveTool.GRADIENT) {
@@ -5270,6 +5324,7 @@ fun CanvasEditorScreen(
                                     // Bubble Reshaper: lepas handle.
                                     if (activeTool == ActiveTool.RESHAPE) {
                                         reshapeHandle = -1
+                                        reshapeTail = false
                                     }
                                     // Quick mask: sapuan jadi perubahan mask seleksi.
                                     // Eraser = hitam (kurangi), brush = putih (tambah).
@@ -5795,6 +5850,22 @@ fun CanvasEditorScreen(
                         }
                         pts.forEach { pt ->
                             native.drawCircle(pt.x, pt.y, 6f / viewState.scale, dot)
+                        }
+                        // Ujung ekor (●) ala TypeR: bisa digeser untuk
+                        // memindahkan ujung ekor gelembung.
+                        selectedTextBox?.bubbleTailTipPx()?.let { tip ->
+                            val tailPaint = android.graphics.Paint().apply {
+                                style = android.graphics.Paint.Style.FILL
+                                color = android.graphics.Color.CYAN
+                                isAntiAlias = true
+                            }
+                            native.drawCircle(tip.x, tip.y, 9f / viewState.scale, tailPaint)
+                            val ring = android.graphics.Paint().apply {
+                                style = android.graphics.Paint.Style.STROKE
+                                strokeWidth = 2f / viewState.scale
+                                color = android.graphics.Color.WHITE
+                            }
+                            native.drawCircle(tip.x, tip.y, 9f / viewState.scale, ring)
                         }
                     }
                 }
@@ -6960,6 +7031,9 @@ fun CanvasEditorScreen(
                     .padding(top = 52.dp, start = 4.dp, end = 4.dp),
                 hasSelection = selectedTextBox?.bubble != null,
                 pointCount = reshapePoints().size,
+                hasTail = selectedTextBox?.bubble?.tail != null,
+                onAddTail = { reshapeAddTail() },
+                onRemoveTail = { reshapeRemoveTail() },
                 onApplyOutline = {
                     val box = selectedTextBox
                     val b = box?.bubble
