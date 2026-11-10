@@ -302,6 +302,14 @@ class TextBox(
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
     /**
+     * Kerning per-pasangan huruf (ala Photoshop/TypeR).
+     *
+     * Kunci = dua huruf berurutan (mis. "AV"), nilai = jarak tambahan (px
+     * pada skala 1). Berguna untuk merapatkan pasangan huruf yang oleh
+     * fontnya masih terlihat renggang.
+     */
+    var kernPairs: MutableMap<String, Float> = mutableMapOf(),
+    /**
      * Naikkan/turunkan baseline teks (px pada skala 1).
      *
      * Positif = naik, negatif = turun. Berguna untuk SFX yang harus
@@ -604,6 +612,15 @@ class TextBox(
     fun displayText(): String = if (uppercase) text.uppercase() else text
 
     /**
+     * Jarak kerning untuk pasangan huruf [a][b] (px pada skala 1).
+     * Nol bila pasangan tak ada di [kernPairs].
+     */
+    fun kernOffset(a: Char, b: Char): Float {
+        if (kernPairs.isEmpty()) return 0f
+        return kernPairs["$a$b"] ?: 0f
+    }
+
+    /**
      * Pas-kan box ke dalam [rect] (gaya TypeR auto-fit): posisi ke tengah, lalu
      * ukuran font dikecilkan sampai muat. Bila font sudah mentok di lantai dan
      * teks masih terlalu lebar, teks DISEMPITKAN secara horizontal lewat
@@ -704,6 +721,7 @@ class TextBox(
         textBlur = o.textBlur
         uppercase = o.uppercase
         verticalText = o.verticalText
+        kernPairs = o.kernPairs.toMutableMap()
         baselineShift = o.baselineShift
         fauxBold = o.fauxBold
         fauxItalic = o.fauxItalic
@@ -1102,6 +1120,7 @@ class TextBox(
         textBlur = textBlur,
         uppercase = uppercase,
         verticalText = verticalText,
+        kernPairs = kernPairs.toMutableMap(),
         baselineShift = baselineShift,
         fauxBold = fauxBold,
         fauxItalic = fauxItalic,
@@ -1201,6 +1220,7 @@ class TextBox(
             uppercase == o.uppercase &&
             verticalText == o.verticalText &&
             baselineShift == o.baselineShift &&
+            kernPairs == o.kernPairs &&
             fauxBold == o.fauxBold &&
             fauxItalic == o.fauxItalic &&
             underline == o.underline &&
@@ -1270,13 +1290,27 @@ class TextBox(
             return if (out.isEmpty()) null else out
         }
 
-        fun spacedWidth(paint: Paint, line: String, extraPerChar: Float, wordExtra: Float = 0f): Float {
+        fun spacedWidth(
+            paint: Paint,
+            line: String,
+            extraPerChar: Float,
+            wordExtra: Float = 0f,
+            kern: Map<String, Float>? = null
+        ): Float {
             if (line.isEmpty()) return 0f
-            if (extraPerChar == 0f && wordExtra == 0f) return paint.measureText(line)
+            if (extraPerChar == 0f && wordExtra == 0f && kern.isNullOrEmpty()) {
+                return paint.measureText(line)
+            }
             var w = 0f
+            var prev: Char? = null
             for (ch in line) {
+                // Kerning per-pasangan: jarak tambahan antara huruf lalu & ini.
+                if (prev != null && kern != null) {
+                    w += kern["$prev$ch"] ?: 0f
+                }
                 w += paint.measureText(ch.toString()) + extraPerChar
                 if (ch == ' ') w += wordExtra
+                prev = ch
             }
             return w - extraPerChar
         }
@@ -1329,6 +1363,9 @@ class TextBox(
             put("textOpacity", textOpacity.toDouble())
             put("uppercase", uppercase)
             put("verticalText", verticalText)
+            put("kernPairs", org.json.JSONObject().apply {
+                for ((k, v) in kernPairs) put(k, v.toDouble())
+            })
             put("baselineShift", baselineShift.toDouble())
             put("fauxBold", fauxBold)
             put("fauxItalic", fauxItalic)
@@ -1512,6 +1549,13 @@ class TextBox(
                 textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
                 uppercase = o.optBoolean("uppercase", false),
                 verticalText = o.optBoolean("verticalText", false),
+                kernPairs = mutableMapOf<String, Float>().apply {
+                    o.optJSONObject("kernPairs")?.let { jo ->
+                        jo.keys().forEach { key ->
+                            put(key, jo.optDouble(key, 0.0).toFloat())
+                        }
+                    }
+                },
                 baselineShift = o.optDouble("baselineShift", 0.0).toFloat(),
                 fauxBold = o.optBoolean("fauxBold", false),
                 fauxItalic = o.optBoolean("fauxItalic", false),

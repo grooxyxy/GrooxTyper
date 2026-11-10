@@ -192,6 +192,7 @@ fun TextEditorPanel(
     var baselineShift by remember(box.id, styleVersion) { mutableFloatStateOf(box.baselineShift) }
     var fauxBold by remember(box.id, styleVersion) { mutableStateOf(box.fauxBold) }
     var fauxItalic by remember(box.id, styleVersion) { mutableStateOf(box.fauxItalic) }
+    var showKerning by remember { mutableStateOf(false) }
     var underline by remember(box.id, styleVersion) { mutableStateOf(box.underline) }
     var strike by remember(box.id, styleVersion) { mutableStateOf(box.strikethrough) }
 
@@ -686,6 +687,18 @@ fun TextEditorPanel(
             onDismiss = { showColor = false }
         )
     }
+
+    // Dialog kerning per-pasangan (ala Photoshop/TypeR).
+    if (showKerning) {
+        KerningDialog(
+            pairs = box.kernPairs,
+            onDismiss = { showKerning = false },
+            onChange = { baru ->
+                box.kernPairs = baru.toMutableMap()
+                push()
+            }
+        )
+    }
 }
 
 @Composable
@@ -784,6 +797,13 @@ private fun WriteTab(
     ) {
         Text("Font", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Kerning",
+                color = Accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable { showKerning = true }
+            )
             Text(
                 "Font Finder",
                 color = Accent,

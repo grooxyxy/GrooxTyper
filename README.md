@@ -54,6 +54,26 @@ inpainting Telea native C++, dan kanvas jangkung hingga 720x16000.
   dibaca kanan-ke-kiri (gaya manga/Tate). Outline, isi, bayangan,
   underline, dan coret ikut berlaku; jalur render terpisah sehingga teks
   horizontal tak terpengaruh.
+- **Tipografi lanjut ala TypeR** — **baseline shift** (naik/turunkan
+  baseline), **tebal sintetis / faux bold** (glif digambar ulang dengan
+  sapuan tipis, jadi font yang sudah Bold pun bisa ditebalkan),
+  **miring sintetis / faux italic** (condongkan teks), dan **kerning
+  per-pasangan** (mis. rapatkan hanya pasangan "AV" lewat dialog Kerning).
+- **Quick Mask** — toggle di options bar seleksi: kuas tak menggambar
+  piksel, tapi mengubah **mask seleksi** (brush = putih menambah, eraser
+  = hitam mengurangi). Seleksi ditampilkan sebagai tint merah ala
+  Photoshop saat mode aktif.
+- **Aturan warna Magic Wand ala TypeR/Photoshop** — satu sumber
+  kebenaran untuk **kedua** mesin wand: selisih absolut per-kanal
+  terhadap warna seed (`|dr| <= tol && |dg| <= tol && |db| <= tol`), jadi
+  slider "Toleransi" berarti persis "tiap kanal boleh beda paling jauh
+  segitu". Sebelumnya dua mesin memakai metrik berbeda (linear-light vs
+  Euclidean) dan ambang untuk seed gelap runtuh ke ~1/255 sehingga
+  mengetuk area gelap praktis tak milih apa pun.
+- **Verifikasi bubble ala TypeR** (`looksLikeBubble`) — wilayah hasil
+  wand diperiksa apakah memang gelembung: luas, lubang tertutup besar
+  (panel), dan patch putih besar (wajah) disingkirkan. Bubble Eraser
+  memakainya supaya tak menghapus teks di area gambar.
 - **Live selection wand** — melepas slider toleransi menghitung ulang
   seleksi Magic Wand di titik yang sama tanpa perlu mengetuk ulang
   (ala Photoshop "Live Path Selection").

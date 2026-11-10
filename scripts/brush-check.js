@@ -962,6 +962,17 @@ assert(selPanel.includes('Quick Mask'), 'UI: toggle quick mask di options bar se
 // -- Spot Healing (nama ala TypeR untuk content-aware fill) --
 assert(rail.includes('Spot Healing'), 'rail: Spot Healing (ala TypeR) ada di keluarga retouch');
 
+// -- Kerning per-pasangan (ala Photoshop/TypeR) --
+const kernDlg = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/KerningDialog.kt'));
+assert(textBoxSrc.includes('var kernPairs: MutableMap<String, Float>'), 'kerning: tabel pasangan huruf ada di TextBox');
+assert(textBoxSrc.includes('fun kernOffset('), 'kerning: helper jarak pasangan ada');
+assert(textBoxSrc.includes('put("kernPairs"'), 'kerning: tabel ikut diserialisasi ke JSON');
+assert(renderer.includes('box.kernPairs'), 'kerning: renderer memakai tabel pasangan');
+assert(renderer.includes('kern["$prev$ch"]'), 'kerning: jarak diterapkan antar huruf berurutan');
+assert(textBoxSrc.includes('kern: Map<String, Float>? = null'), 'kerning: lebar konten ikut memperhitungkan kerning');
+assert(kernDlg.includes('fun KerningDialog('), 'UI: dialog kerning ada');
+assert(textEditor.includes('showKerning') && textEditor.includes('KerningDialog('), 'editor: kerning tersambung ke panel teks');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -975,7 +986,8 @@ for (const [nm, tx] of [
   ['MagicEraserOptionsBar', eraserBar],
   ['FontFinder', finder],
   ['FontFinderDialog', finderDlg],
-  ['WandColorMatch', wandMatchSrc]
+  ['WandColorMatch', wandMatchSrc],
+  ['KerningDialog', kernDlg]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');

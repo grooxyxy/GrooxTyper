@@ -104,7 +104,7 @@ object TextRenderer {
         var contentW = 0f
         val widths = FloatArray(lines.size)
         for (i in lines.indices) {
-            val w = TextBox.spacedWidth(paint, lines[i], extra, wordExtra)
+            val w = TextBox.spacedWidth(paint, lines[i], extra, wordExtra, box.kernPairs)
             widths[i] = w
             if (w > contentW) contentW = w
         }
@@ -176,7 +176,7 @@ object TextRenderer {
             StrokePosition.OUTSIDE -> {
                 // 1. Outline dulu (tanpa bayangan) agar tajam, 2. isi + bayangan.
                 if (outline != null) {
-                    for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, outline, extra, wordExtra)
+                    for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, outline, extra, wordExtra, box.kernPairs)
                 }
                 drawFillWithShadow(canvas, layouts, box, fill, extra, wordExtra)
             }
@@ -184,7 +184,7 @@ object TextRenderer {
                 // Isi dulu, stroke menimpa tepat di tepi glif.
                 drawFillWithShadow(canvas, layouts, box, fill, extra, wordExtra)
                 if (outline != null) {
-                    for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, outline, extra, wordExtra)
+                    for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, outline, extra, wordExtra, box.kernPairs)
                 }
             }
             StrokePosition.INSIDE -> {
@@ -223,7 +223,8 @@ object TextRenderer {
             val w = TextBox.spacedWidth(
                 paint, line,
                 box.letterSpacing * box.scale,
-                box.wordSpacing * box.scale
+                box.wordSpacing * box.scale,
+                box.kernPairs
             )
             if (w > maxW) maxW = w
         }
@@ -833,7 +834,7 @@ object TextRenderer {
                 glowColor
             )
         }
-        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, glowPaint, extra, wordExtra)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, glowPaint, extra, wordExtra, box.kernPairs)
     }
 
     /** Bevel/emboss murah: salinan terang gelap di atas-bawah, isi menutup tengah. */
@@ -859,11 +860,11 @@ object TextRenderer {
         val light = Paint(dark).apply { color = Color.WHITE }
         canvas.save()
         canvas.translate(d, d)
-        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, dark, extra, wordExtra)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, dark, extra, wordExtra, box.kernPairs)
         canvas.restore()
         canvas.save()
         canvas.translate(-d, -d)
-        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, light, extra, wordExtra)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, light, extra, wordExtra, box.kernPairs)
         canvas.restore()
         // Isi normal menutup tengah agar hanya rim yang menyala.
         val clean = Paint(fill).apply {
@@ -871,7 +872,7 @@ object TextRenderer {
             strokeWidth = 0f
             clearShadowLayer()
         }
-        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, clean, extra, wordExtra)
+        for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, clean, extra, wordExtra, box.kernPairs)
     }
 
     /** Underline & strikethrough mengikuti lebar tiap baris. */
@@ -925,7 +926,7 @@ object TextRenderer {
         if (s == null) {
             fill.clearShadowLayer()
             fill.strokeWidth = 0f
-            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fill, extra, wordExtra)
+            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fill, extra, wordExtra, box.kernPairs)
             return
         }
         val shadowColor = withAlpha(s.color, s.opacity)
@@ -945,18 +946,18 @@ object TextRenderer {
                 alpha = (Color.alpha(shadowColor) * box.textOpacity).toInt().coerceIn(0, 255)
                 setShadowLayer(s.blur * box.scale, s.dx * box.scale, s.dy * box.scale, shadowColor)
             }
-            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fat, extra, wordExtra)
+            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fat, extra, wordExtra, box.kernPairs)
             val clean = Paint(fill).apply {
                 style = Paint.Style.FILL
                 strokeWidth = 0f
                 clearShadowLayer()
             }
-            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, clean, extra, wordExtra)
+            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, clean, extra, wordExtra, box.kernPairs)
         } else {
             fill.style = Paint.Style.FILL
             fill.strokeWidth = 0f
             fill.setShadowLayer(s.blur * box.scale, s.dx * box.scale, s.dy * box.scale, shadowColor)
-            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fill, extra, wordExtra)
+            for (l in layouts) drawSpaced(canvas, l.text, l.x0, l.baseline, fill, extra, wordExtra, box.kernPairs)
         }
     }
 
@@ -990,13 +991,13 @@ object TextRenderer {
             style = Paint.Style.FILL
             color = Color.BLACK
         }
-        for (l in layouts) drawSpaced(maskCanvas, l.text, l.x0, l.baseline, maskPaint, extra, wordExtra)
+        for (l in layouts) drawSpaced(maskCanvas, l.text, l.x0, l.baseline, maskPaint, extra, wordExtra, box.kernPairs)
 
         val strokeBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val strokeCanvas = Canvas(strokeBmp)
         strokeCanvas.translate(ox, oy)
         val noShadow = Paint(strokePaint).apply { clearShadowLayer() }
-        for (l in layouts) drawSpaced(strokeCanvas, l.text, l.x0, l.baseline, noShadow, extra, wordExtra)
+        for (l in layouts) drawSpaced(strokeCanvas, l.text, l.x0, l.baseline, noShadow, extra, wordExtra, box.kernPairs)
 
         val dstIn = Paint().apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN) }
         Canvas(strokeBmp).drawBitmap(mask, 0f, 0f, dstIn)
@@ -1061,19 +1062,27 @@ object TextRenderer {
         y: Float,
         paint: Paint,
         extraPerChar: Float,
-        wordExtra: Float = 0f
+        wordExtra: Float = 0f,
+        kern: Map<String, Float>? = null
     ) {
         if (line.isEmpty()) return
-        if (extraPerChar == 0f && wordExtra == 0f) {
+        if (extraPerChar == 0f && wordExtra == 0f && kern.isNullOrEmpty()) {
             canvas.drawText(line, x0, y, paint)
             return
         }
         var x = x0
+        var prev: Char? = null
         for (ch in line) {
             val s = ch.toString()
+            // Kerning per-pasangan (ala Photoshop): geser huruf ini
+            // sebesar nilai pasangan "sebelum-sekarang".
+            if (prev != null && kern != null) {
+                x += kern["$prev$ch"] ?: 0f
+            }
             canvas.drawText(s, x, y, paint)
             x += paint.measureText(s) + extraPerChar
             if (ch == ' ') x += wordExtra
+            prev = ch
         }
     }
 
