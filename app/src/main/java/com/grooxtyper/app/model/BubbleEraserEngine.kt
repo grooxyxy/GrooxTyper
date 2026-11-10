@@ -109,7 +109,7 @@ class BubbleEraserEngine {
         // (panel), atau berisi patch putih besar (wajah) BUKAN gelembung.
         // Tanpa cek ini, bubble eraser bisa menghapus teks di area gambar.
         val looksBubble = com.grooxtyper.app.model.selection.BubbleSeparator.looksLikeBubble(
-            map = map,
+            mask = map,
             left = bounds.left,
             top = bounds.top,
             canvasWidth = canvasWidth,

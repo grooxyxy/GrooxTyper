@@ -189,6 +189,9 @@ fun TextEditorPanel(
     var perspY by remember(box.id, styleVersion) { mutableFloatStateOf(box.perspY) }
     var uppercase by remember(box.id, styleVersion) { mutableStateOf(box.uppercase) }
     var verticalText by remember(box.id, styleVersion) { mutableStateOf(box.verticalText) }
+    var baselineShift by remember(box.id, styleVersion) { mutableFloatStateOf(box.baselineShift) }
+    var fauxBold by remember(box.id, styleVersion) { mutableStateOf(box.fauxBold) }
+    var fauxItalic by remember(box.id, styleVersion) { mutableStateOf(box.fauxItalic) }
     var underline by remember(box.id, styleVersion) { mutableStateOf(box.underline) }
     var strike by remember(box.id, styleVersion) { mutableStateOf(box.strikethrough) }
 
@@ -257,6 +260,7 @@ fun TextEditorPanel(
         shadowOn, shadowColor, shadowOpacity, shadowDist, shadowAngle, shadowSize, shadowSpread,
         letterSp, wordSp, lineSp, scaleX, styleVersion,
         textOpacity, textBlur, uppercase, underline, strike, verticalText,
+        baselineShift, fauxBold, fauxItalic,
         glowOn, glowColor, glowOpacity, glowSize, glowSpread,
         bevelOn, bevelSize, bevelOpacity
     ) {
@@ -290,6 +294,9 @@ fun TextEditorPanel(
                 textBlur = textBlur,
                 uppercase = uppercase,
                 verticalText = verticalText,
+                baselineShift = baselineShift,
+                fauxBold = fauxBold,
+                fauxItalic = fauxItalic,
                 underline = underline,
                 strikethrough = strike,
                 glow = if (glowOn) TextGlowSpec(glowColor, glowSize, glowSpread, glowOpacity) else null,
@@ -536,6 +543,12 @@ fun TextEditorPanel(
                         onUppercase = { uppercase = it; box.uppercase = it; push() },
                         verticalText = verticalText,
                         onVerticalText = { verticalText = it; box.verticalText = it; push() },
+                        baselineShift = baselineShift,
+                        onBaselineShift = { baselineShift = it; box.baselineShift = it; push() },
+                        fauxBold = fauxBold,
+                        onFauxBold = { fauxBold = it; box.fauxBold = it; push() },
+                        fauxItalic = fauxItalic,
+                        onFauxItalic = { fauxItalic = it; box.fauxItalic = it; push() },
                         underline = underline,
                         onUnderline = { underline = it; box.underline = it; push() },
                         strike = strike,
@@ -1018,6 +1031,12 @@ private fun EffectTab(
     onUppercase: (Boolean) -> Unit,
     verticalText: Boolean,
     onVerticalText: (Boolean) -> Unit,
+    baselineShift: Float,
+    onBaselineShift: (Float) -> Unit,
+    fauxBold: Boolean,
+    onFauxBold: (Boolean) -> Unit,
+    fauxItalic: Boolean,
+    onFauxItalic: (Boolean) -> Unit,
     underline: Boolean,
     onUnderline: (Boolean) -> Unit,
     strike: Boolean,
@@ -1145,6 +1164,33 @@ private fun EffectTab(
             colors = SwitchDefaults.colors(checkedThumbColor = Accent)
         )
     }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Tebal sintetis", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = fauxBold,
+            onCheckedChange = onFauxBold,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("Miring sintetis", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
+        Switch(
+            checked = fauxItalic,
+            onCheckedChange = onFauxItalic,
+            colors = SwitchDefaults.colors(checkedThumbColor = Accent)
+        )
+    }
+    Text(
+        "Naik/turunkan baseline ${baselineShift.toInt()} px",
+        color = Color.Gray,
+        fontSize = 12.sp
+    )
+    Slider(
+        value = baselineShift,
+        onValueChange = onBaselineShift,
+        valueRange = -80f..80f,
+        colors = SliderDefaults.colors(thumbColor = Accent, activeTrackColor = Accent)
+    )
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text("Garis bawah", color = Color.White, fontSize = 13.sp, modifier = Modifier.weight(1f))
         Switch(

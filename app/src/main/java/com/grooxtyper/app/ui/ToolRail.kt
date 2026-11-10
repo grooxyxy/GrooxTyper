@@ -131,7 +131,7 @@ fun RetouchFamilyButton(
         )
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
-                text = { Text("Hapus Objek") },
+                text = { Text("Spot Healing (isi sekitar)") },
                 leadingIcon = { Icon(Icons.Default.Delete, null) },
                 onClick = {
                     menuOpen = false

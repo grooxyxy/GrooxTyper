@@ -158,6 +158,48 @@ class SelectionEngine(val width: Int, val height: Int) {
     }
 
     /**
+     * Terapkan sapuan kuas ke seleksi - inti **Quick Mask**.
+     *
+     * Dalam mode quick mask, kuas tak menggambar piksel: ia mengubah
+     * **mask seleksi**. Warna putih menambah area ke seleksi, hitam
+     * menguranginya (ala Photoshop).
+     *
+     * @param stroke jalur sapuan (pDn) dalam koordinat kanvas.
+     * @param brushWidth lebar kuas (px kanvas) untuk stroking.
+     * @param add true = putih (tambah), false = hitam (kurangi).
+     * @return true bila seleksi berubah.
+     */
+    fun paintMaskStroke(stroke: Path, brushWidth: Float, add: Boolean): Boolean {
+        if (stroke.isEmpty) return false
+        // Sapuan kuas jadi PIHAYAL (outline) supaya bisa digabung dengan
+        // path seleksi memakai operasi Path.
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = brushWidth.coerceAtLeast(1f)
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val fragment = Path()
+        fillPaint.getFillPath(stroke, fragment)
+        if (fragment.isEmpty) return false
+
+        val result = Path(selectionPath)
+        val op = if (add) Path.Op.UNION else Path.Op.DIFFERENCE
+        if (!result.op(fragment, op)) return false
+
+        regions.clear()
+        regionBounds.clear()
+        val b = RectF()
+        result.computeBounds(b, true)
+        if (!b.isEmpty) {
+            regions.add(result)
+            regionBounds.add(b)
+        }
+        rebuildUnion()
+        return hasSelection
+    }
+
+    /**
      * Path gabungan seleksi saat ini (salinan), supaya tool di luar
      * (mis. refine edge) bisa memprosesnya tanpa menyentuh daftar region.
      */

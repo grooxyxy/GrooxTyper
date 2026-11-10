@@ -93,6 +93,9 @@ fun SelectionOptionsBar(
     onInvert: () -> Unit,
     onRefine: () -> Unit,
     onActions: () -> Unit,
+    /** Mode quick mask: kuas mengubah mask seleksi, bukan piksel. */
+    quickMask: Boolean = false,
+    onQuickMask: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -181,6 +184,7 @@ fun SelectionOptionsBar(
                 )
             }
             SelectionChip("Aksi", false, true, onActions)
+            SelectionChip("Quick Mask", quickMask, true) { onQuickMask(!quickMask) }
         }
 
         if (advanced && tool == ActiveTool.SELECT_WAND) {

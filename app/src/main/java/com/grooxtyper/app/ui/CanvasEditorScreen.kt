@@ -491,6 +491,11 @@ private class EditorUiState {
     var showLassoMenu by mutableStateOf(false)
     /** Opsi lanjutan Magic Wand (toleransi, anti-alias, sample merged, dll.). */
     var showSelectionAdvanced by mutableStateOf(false)
+    /**
+     * Mode Quick Mask: kuas mengubah mask seleksi (putih = tambah, hitam =
+     * kurang) alih-alih menggambar piksel.
+     */
+    var quickMaskMode by mutableStateOf(false)
     /** Dialog Refine Edge untuk seleksi wand. */
     var showSelectionRefine by mutableStateOf(false)
     var showQuickSlider by mutableStateOf(true)
@@ -977,6 +982,12 @@ fun CanvasEditorScreen(
     var exportResult by remember { mutableStateOf<String?>(null) }
     var showLassoMenu by uiState::showLassoMenu
     var showSelectionAdvanced by uiState::showSelectionAdvanced
+    /**
+     * Mode Quick Mask: kuas tak menggambar piksel, tapi mengubah mask
+     * seleksi (putih = tambah, hitam = kurang). Seleksi ditampilkan
+     * sebagai tint merah ala Photoshop.
+     */
+    var quickMaskMode by uiState::quickMaskMode
     var showSelectionRefine by uiState::showSelectionRefine
     // Tool seleksi terakhir yang dipakai — rail menampilkan ikon ini,
     // jadi user tahu tool aktif walau menunya tertutup.
@@ -1327,6 +1338,8 @@ fun CanvasEditorScreen(
     // Bila true, ketuk bubble di kanvas menghapusnya (bukan seleksi).
     var bubbleEraseMode by uiState::bubbleEraseMode
     var lassoPath by remember { mutableStateOf<Path?>(null) }
+    // Jalur sapuan kuas untuk mode Quick Mask (mask seleksi, bukan piksel).
+    var quickMaskStroke by remember { mutableStateOf<Path?>(null) }
     // Gradient: titik awal & akhir seret (koordinat kanvas).
     var gradientStart by remember { mutableStateOf<Offset?>(null) }
     var gradientEnd by remember { mutableStateOf<Offset?>(null) }
@@ -4927,6 +4940,22 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     } else if (activeTool == ActiveTool.BRUSH || activeTool == ActiveTool.ERASER) {
+                                        if (quickMaskMode) {
+                                            // QUICK MASK: kuas tak menggambar piksel, tapi
+                                            // mengubah MASK SELEKSI (putih = tambah,
+                                            // hitam = kurang). Jalur sapuan dikumpulkan
+                                            // lalu digabung ke seleksi saat jari lepas.
+                                            if (lastCanvasPoint == null) {
+                                                quickMaskStroke = Path().apply {
+                                                    moveTo(touchCanvasPos.x, touchCanvasPos.y)
+                                                }
+                                            } else {
+                                                quickMaskStroke?.lineTo(touchCanvasPos.x, touchCanvasPos.y)
+                                            }
+                                            lastCanvasPoint = touchCanvasPos
+                                            refreshComposite()
+                                            change.consume()
+                                        } else {
                                         // Hapus Objek / Heal MiGAN via tool BRUSH: alihkan ke
                                         // akumulasi mask inpaint agar berfungsi di kedua tool.
                                         if (brushEngine.brushType == BrushType.OBJECT_ERASER ||
@@ -5075,9 +5104,10 @@ fun CanvasEditorScreen(
                                             }
                                         }
                                     }
+                                    } // tutup cabang quick-mask
                                     lastCanvasPoint = touchCanvasPos
                                     change.consume()
-                                    } // else twoFingerActive
+                                } // else twoFingerActive
                                 } else {
                                     // Sesi pipet: commit warna terakhir saat jari lepas.
                                     if (eyeCtl.active) {
@@ -5167,6 +5197,20 @@ fun CanvasEditorScreen(
                                     // sentuh baru.
                                     if (activeTool == ActiveTool.CLONE_STAMP) {
                                         cloneStamp.endStroke()
+                                    }
+                                    // Quick mask: sapuan jadi perubahan mask seleksi.
+                                    // Eraser = hitam (kurangi), brush = putih (tambah).
+                                    quickMaskStroke?.let { qms ->
+                                        val tambah = activeTool != ActiveTool.ERASER
+                                        if (selectionEngine.paintMaskStroke(
+                                                qms,
+                                                brushEngine.size,
+                                                tambah
+                                            )
+                                        ) {
+                                            refreshComposite()
+                                        }
+                                        quickMaskStroke = null
                                     }
                                     // Gradient: isi gradasi saat jari lepas.
                                     if (activeTool == ActiveTool.GRADIENT) {
@@ -5502,13 +5546,30 @@ fun CanvasEditorScreen(
                 }
 
                 if (selectionEngine.hasSelection) {
-                    val marchPaint = android.graphics.Paint().apply {
-                        style = android.graphics.Paint.Style.STROKE
-                        strokeWidth = 3f
-                        color = android.graphics.Color.YELLOW
-                        pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                    if (quickMaskMode) {
+                        // Quick mask: seleksi ditutup tint merah (ala Photoshop)
+                        // supaya jelas mana yang terpilih & mana yang belum.
+                        val maskPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.FILL
+                            color = 0x66FF0000.toInt()
+                        }
+                        drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, maskPaint)
+                        // Garis tepi tetap digambar agar batasnya tajam.
+                        val edgePaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f / viewState.scale
+                            color = android.graphics.Color.YELLOW
+                        }
+                        drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, edgePaint)
+                    } else {
+                        val marchPaint = android.graphics.Paint().apply {
+                            style = android.graphics.Paint.Style.STROKE
+                            strokeWidth = 3f
+                            color = android.graphics.Color.YELLOW
+                            pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
+                        }
+                        drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, marchPaint)
                     }
-                    drawContext.canvas.nativeCanvas.drawPath(selectionEngine.selectionPath, marchPaint)
                 }
 
                 if (showBubbleOverlay && detectedBubbles.isNotEmpty()) {
@@ -6921,7 +6982,9 @@ fun CanvasEditorScreen(
                 onDeselect = { clearSelectionEverywhere() },
                 onInvert = { invertSelectionEverywhere() },
                 onRefine = { showSelectionRefine = true },
-                onActions = { showLassoMenu = true }
+                onActions = { showLassoMenu = true },
+                quickMask = quickMaskMode,
+                onQuickMask = { quickMaskMode = it }
             )
         }
 

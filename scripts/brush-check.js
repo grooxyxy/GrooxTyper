@@ -938,6 +938,30 @@ assert(bubbleSep.includes('BUBBLE_INNER_WHITE = 0.0015'), 'bubble: patch putih b
 assert(bubbleSep.includes('fun labelPatch('), 'bubble: label patch terhubung untuk cek lubang');
 assert(bubbleEraser.includes('looksLikeBubble('), 'bubble eraser: pakai verifikasi bubble TypeR sebelum menghapus teks');
 
+// -- Tipografi lanjut ala TypeR (baseline shift, faux bold/italic) --
+assert(textBoxSrc.includes('var baselineShift: Float = 0f'), 'tipografi: baseline shift ada di TextBox');
+assert(textBoxSrc.includes('var fauxBold: Boolean = false'), 'tipografi: faux bold ada di TextBox');
+assert(textBoxSrc.includes('var fauxItalic: Boolean = false'), 'tipografi: faux italic ada di TextBox');
+assert(textBoxSrc.includes('put("baselineShift"') && textBoxSrc.includes('optBoolean("fauxBold"'),
+  'tipografi: field baru ikut diserialisasi');
+assert(renderer.includes('box.baselineShift'), 'tipografi: baseline shift dipakai renderer');
+assert(renderer.includes('box.fauxBold'), 'tipografi: faux bold dipakai renderer');
+assert(renderer.includes('box.fauxItalic'), 'tipografi: faux italic dipakai renderer');
+assert(renderer.includes('FILL_AND_STROKE'), 'tipografi: faux bold digambar dengan sapuan (bukan cuma typeface)');
+assert(textEditor.includes('onBaselineShift') && textEditor.includes('onFauxBold') && textEditor.includes('onFauxItalic'),
+  'UI: kendali tipografi lanjut ada di panel teks');
+
+// -- Quick Mask (ala Photoshop) --
+assert(selectEng.includes('fun paintMaskStroke('), 'quick mask: kuas bisa mengubah mask seleksi');
+assert(selectEng.includes('Path.Op.UNION') && selectEng.includes('Path.Op.DIFFERENCE'),
+  'quick mask: brush putih menambah, hitam mengurangi');
+assert(editor.includes('quickMaskMode') && editor.includes('quickMaskStroke'), 'editor: mode quick mask ada');
+assert(editor.includes('paintMaskStroke('), 'editor: sapuan quick mask diterapkan ke seleksi');
+assert(selPanel.includes('Quick Mask'), 'UI: toggle quick mask di options bar seleksi');
+
+// -- Spot Healing (nama ala TypeR untuk content-aware fill) --
+assert(rail.includes('Spot Healing'), 'rail: Spot Healing (ala TypeR) ada di keluarga retouch');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],

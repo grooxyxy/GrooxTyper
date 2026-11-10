@@ -63,6 +63,15 @@ object TextRenderer {
         canvas.save()
         canvas.translate(box.position.x, box.position.y)
         if (box.rotation != 0f) canvas.rotate(box.rotation)
+        // Faux italic (oblique): teks dicondongkan; pivot digeser biar
+        // pangkal baris tetap di tempat.
+        if (box.fauxItalic) {
+            val slant = -0.28f
+            val pivot = -(contentWidthHint(box) / 2f)
+            canvas.translate(pivot, 0f)
+            canvas.skew(slant, 0f)
+            canvas.translate(-pivot, 0f)
+        }
 
         // Mode SFX: render per-huruf di busur parabola dengan jitter
         // deterministik (lettering komik, bukan font diketik lurus).
@@ -111,8 +120,10 @@ object TextRenderer {
         // (sumber tunggal: PerspectiveGrid — sama dengan overlay grid).
         PerspectiveGrid.matrix(box, contentW, contentH)?.let { canvas.concat(it) }
 
+        // Baseline shift: naik/turunkan baseline (ala Photoshop).
+        val shiftY = box.baselineShift * box.scale
         val layouts = lines.mapIndexed { i, line ->
-            val baseline = -contentH / 2f - fm.ascent + i * lineH
+            val baseline = -contentH / 2f - fm.ascent + i * lineH + shiftY
             val x0 = when (box.align) {
                 TextAlignMode.LEFT -> -contentW / 2f
                 TextAlignMode.CENTER -> -widths[i] / 2f
@@ -135,7 +146,16 @@ object TextRenderer {
         } else null
 
         val fill = Paint(paint).apply {
-            style = Paint.Style.FILL
+            if (box.fauxBold) {
+                // Faux bold: glif digambar ulang dengan sapuan tipis, jadi
+                // font yang sudah Bold pun bisa ditebalkan.
+                style = Paint.Style.FILL_AND_STROKE
+                strokeWidth = box.fontSize * box.scale * 0.055f
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+            } else {
+                style = Paint.Style.FILL
+            }
             if (box.fillType == TextFillType.GRADIENT) {
                 shader = gradientShader(box, contentW, contentH)
                 color = Color.WHITE
@@ -188,6 +208,29 @@ object TextRenderer {
     }
 
     /**
+     * Perkiraan lebar konten teks (px kanvas).
+     *
+     * Dipakai sebagai pivot untuk kemiringan faux italic, supaya pangkal
+     * baris tetap di tempat saat teks dicondongkan.
+     */
+    private fun contentWidthHint(box: TextBox): Float {
+        val bw = box.boxWidth
+        if (bw != null && bw.isFinite() && bw > 0f) return bw * box.scale
+        val paint = box.basePaint()
+        val lines = box.displayText().split("\n").ifEmpty { listOf("") }
+        var maxW = 0f
+        for (line in lines) {
+            val w = TextBox.spacedWidth(
+                paint, line,
+                box.letterSpacing * box.scale,
+                box.wordSpacing * box.scale
+            )
+            if (w > maxW) maxW = w
+        }
+        return maxW
+    }
+
+    /**
      * Render teks VERTIKAL (ala manga Jepang).
      *
      * Huruf disusun ke bawah per kolom; kolom dibaca dari kanan ke kiri
@@ -215,6 +258,7 @@ object TextRenderer {
         if (totalW <= 0f || totalH <= 0f) return
 
         val topY = -totalH / 2f
+        val shiftY = box.baselineShift * box.scale
 
         // Perspektif: pakai kotak konten (lebar x tinggi).
         PerspectiveGrid.matrix(box, totalW, totalH)?.let { canvas.concat(it) }
@@ -233,7 +277,14 @@ object TextRenderer {
         } else null
 
         val fill = Paint(paint).apply {
-            style = Paint.Style.FILL
+            if (box.fauxBold) {
+                style = Paint.Style.FILL_AND_STROKE
+                strokeWidth = box.fontSize * box.scale * 0.055f
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+            } else {
+                style = Paint.Style.FILL
+            }
             if (box.fillType == TextFillType.GRADIENT) {
                 shader = gradientShader(box, totalW, totalH)
                 color = Color.WHITE
@@ -260,7 +311,7 @@ object TextRenderer {
         // Kolom digambar dari kanan ke kiri supaya kolom pertama di kanan.
         for (ci in lines.indices.reversed()) {
             val x = totalW / 2f - stepX * (ci + 0.5f)
-            var y = topY + fm.ascent
+            var y = topY + fm.ascent + shiftY
             for (ch in lines[ci]) {
                 val glyph = ch.toString()
                 val gx = x - paint.measureText(glyph) / 2f
@@ -280,7 +331,7 @@ object TextRenderer {
             val underlineDy = fm.descent + box.letterSpacing * box.scale * 0.35f
             for (ci in lines.indices.reversed()) {
                 val x = totalW / 2f - stepX * (ci + 0.5f)
-                var y = topY + fm.ascent
+                var y = topY + fm.ascent + shiftY
                 for (ch in lines[ci]) {
                     val glyph = ch.toString()
                     val gw = paint.measureText(glyph)

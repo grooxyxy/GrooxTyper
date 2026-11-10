@@ -302,6 +302,26 @@ class TextBox(
     var underline: Boolean = false,
     var strikethrough: Boolean = false,
     /**
+     * Naikkan/turunkan baseline teks (px pada skala 1).
+     *
+     * Positif = naik, negatif = turun. Berguna untuk SFX yang harus
+     * duduk sedikit di atas garis (ala Photoshop "Baseline Shift").
+     */
+    var baselineShift: Float = 0f,
+    /**
+     * Tebalkan sintetis (faux bold) tanpa font yang tebal.
+     *
+     * Menggambar glif dua kali dengan sapuan tipis, jadi huruf tetap
+     * terbaca walau fontnya cuma punya Regular.
+     */
+    var fauxBold: Boolean = false,
+    /**
+     * Miringkan sintetis (faux italic) tanpa font miring.
+     *
+     * Disebut "oblique" di Photoshop.
+     */
+    var fauxItalic: Boolean = false,
+    /**
      * Tulisan VERTIKAL (ala manga Jepang): huruf disusun ke bawah per
      * kolom, kolom dibaca dari kanan ke kiri.
      *
@@ -562,7 +582,11 @@ class TextBox(
         boxWidth = null
     }
     fun effectiveTypeface(): Typeface {
-        val style = (if (bold) Typeface.BOLD else 0) or (if (italic) Typeface.ITALIC else 0)
+        // fauxBold TIDAK ikut di sini: penebalannya dilakukan renderer
+        // dengan sapuan (stroke), supaya tetap menebalkan font yang
+        // sudah punya weight Bold.
+        val style = (if (bold) Typeface.BOLD else 0) or
+            (if (italic) Typeface.ITALIC else 0)
         return try {
             Typeface.create(typeface, style) ?: typeface
         } catch (e: Exception) {
@@ -680,6 +704,9 @@ class TextBox(
         textBlur = o.textBlur
         uppercase = o.uppercase
         verticalText = o.verticalText
+        baselineShift = o.baselineShift
+        fauxBold = o.fauxBold
+        fauxItalic = o.fauxItalic
         underline = o.underline
         strikethrough = o.strikethrough
         glow = o.glow?.copy()
@@ -1075,6 +1102,9 @@ class TextBox(
         textBlur = textBlur,
         uppercase = uppercase,
         verticalText = verticalText,
+        baselineShift = baselineShift,
+        fauxBold = fauxBold,
+        fauxItalic = fauxItalic,
         underline = underline,
         strikethrough = strikethrough,
         glow = glow?.copy(),
@@ -1121,6 +1151,9 @@ class TextBox(
         textBlur = o.textBlur
         uppercase = o.uppercase
         verticalText = o.verticalText
+        baselineShift = o.baselineShift
+        fauxBold = o.fauxBold
+        fauxItalic = o.fauxItalic
         underline = o.underline
         strikethrough = o.strikethrough
         glow = o.glow?.copy()
@@ -1167,6 +1200,9 @@ class TextBox(
             textBlur == o.textBlur &&
             uppercase == o.uppercase &&
             verticalText == o.verticalText &&
+            baselineShift == o.baselineShift &&
+            fauxBold == o.fauxBold &&
+            fauxItalic == o.fauxItalic &&
             underline == o.underline &&
             strikethrough == o.strikethrough &&
             glow == o.glow &&
@@ -1293,6 +1329,9 @@ class TextBox(
             put("textOpacity", textOpacity.toDouble())
             put("uppercase", uppercase)
             put("verticalText", verticalText)
+            put("baselineShift", baselineShift.toDouble())
+            put("fauxBold", fauxBold)
+            put("fauxItalic", fauxItalic)
             put("underline", underline)
             put("strikethrough", strikethrough)
             glow?.let { g ->
@@ -1473,6 +1512,9 @@ class TextBox(
                 textOpacity = o.optDouble("textOpacity", 1.0).toFloat(),
                 uppercase = o.optBoolean("uppercase", false),
                 verticalText = o.optBoolean("verticalText", false),
+                baselineShift = o.optDouble("baselineShift", 0.0).toFloat(),
+                fauxBold = o.optBoolean("fauxBold", false),
+                fauxItalic = o.optBoolean("fauxItalic", false),
                 underline = o.optBoolean("underline", false),
                 strikethrough = o.optBoolean("strikethrough", false),
                 glow = glowObj?.let { g ->
