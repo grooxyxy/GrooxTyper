@@ -876,6 +876,30 @@ assert(editor.includes('gradientEngine.apply('), 'editor: gradient dipakai dari 
 assert(gradBar.includes('fun GradientOptionsBar('), 'UI: options bar gradient ada');
 assert(gradBar.includes('Linear') && gradBar.includes('Radial'), 'UI: gradient punya linear/radial');
 
+// -- Magic Eraser + Bubble Eraser (ala TypeR) --
+const bubbleEraser = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/BubbleEraserEngine.kt'));
+const eraserBar = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/ui/MagicEraserOptionsBar.kt'));
+assert(editor.includes('fun runMagicEraserAt('), 'magic eraser: eksekusi dari editor ada');
+assert(editor.includes('selectionEngine.clearSelectedArea(active)'), 'magic eraser: area terpilih jadi transparan');
+assert(editor.includes('ActiveTool.MAGIC_ERASER'), 'editor: ActiveTool.MAGIC_ERASER terdaftar');
+assert(eraserBar.includes('fun MagicEraserOptionsBar('), 'UI: options bar magic eraser ada');
+assert(eraserBar.includes('Toleransi') && eraserBar.includes('Sample merged') && eraserBar.includes('Anti-alias'),
+  'UI: magic eraser punya toleransi/sample merged/anti-alias (setelan TypeR)');
+assert(bubbleEraser.includes('class BubbleEraserEngine'), 'bubble eraser: mesin bubble cleaner ada');
+assert(bubbleEraser.includes('HugeWandEngine'), 'bubble eraser: flood interior pakai mesin wand (peta sparse)');
+assert(bubbleEraser.includes('bubbleColor') || bubbleEraser.includes('val bubbleColor'),
+  'bubble eraser: warna bubble diambil dari histogram interior');
+assert(bubbleEraser.includes('growInside'), 'bubble eraser: margin teased di dalam interior');
+assert(editor.includes('fun runBubbleEraserAt('), 'bubble eraser: eksekusi dari editor ada');
+assert(editor.includes('ActiveTool.BUBBLE_ERASER'), 'editor: ActiveTool.BUBBLE_ERASER terdaftar');
+assert(eraserBar.includes('fun BubbleEraserOptionsBar('), 'UI: options bar bubble eraser ada');
+assert(eraserBar.includes('Margin'), 'UI: bubble eraser punya margin (ala TypeR)');
+
+// -- Live selection wand (ala Photoshop) --
+assert(editor.includes('wandLastSeed'), 'wand: titik seed tersimpan untuk live selection');
+assert(editor.includes('onToleranceCommit'), 'wand: slider toleransi memicu live selection');
+assert(selPanel.includes('onToleranceCommit'), 'UI: slider toleransi punya callback commit');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -884,7 +908,9 @@ for (const [nm, tx] of [
   ['GradientOptionsBar', gradBar],
   ['SelectionRefiner', refiner],
   ['CloneStampEngine', cloneEngine],
-  ['GradientEngine', gradEngine]
+  ['GradientEngine', gradEngine],
+  ['BubbleEraserEngine', bubbleEraser],
+  ['MagicEraserOptionsBar', eraserBar]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');

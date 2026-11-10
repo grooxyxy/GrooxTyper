@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoFixHigh
+import androidx.compose.material.icons.filled.BubbleChart
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -153,6 +154,22 @@ fun RetouchFamilyButton(
                     onPick(RetouchKind.CLONE_STAMP)
                 }
             )
+            DropdownMenuItem(
+                text = { Text("Magic Eraser") },
+                leadingIcon = { Icon(Icons.Default.AutoFixHigh, null) },
+                onClick = {
+                    menuOpen = false
+                    onPick(RetouchKind.MAGIC_ERASER)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Bubble Eraser") },
+                leadingIcon = { Icon(Icons.Default.BubbleChart, null) },
+                onClick = {
+                    menuOpen = false
+                    onPick(RetouchKind.BUBBLE_ERASER)
+                }
+            )
         }
     }
 }
@@ -192,7 +209,11 @@ enum class RetouchKind {
     /** Heal MiGAN on-device (lokal, tanpa cloud). */
     HEAL_MIGAN,
     /** Clone stamp: salin piksel dari sumber yang ditetapkan. */
-    CLONE_STAMP
+    CLONE_STAMP,
+    /** Magic eraser: ketuk = langsung hapus area warna mirip. */
+    MAGIC_ERASER,
+    /** Bubble eraser: ketuk dalam gelembung = teks hilang, warna bubble. */
+    BUBBLE_ERASER
 }
 
 /** True bila tool ini anggota keluarga seleksi. */
@@ -227,6 +248,8 @@ fun retouchIcon(kind: RetouchKind): ImageVector = when (kind) {
     RetouchKind.OBJECT_ERASER -> Icons.Default.Delete
     RetouchKind.HEAL_MIGAN -> Icons.Default.Healing
     RetouchKind.CLONE_STAMP -> Icons.Default.ContentCopy
+    RetouchKind.MAGIC_ERASER -> Icons.Default.AutoFixHigh
+    RetouchKind.BUBBLE_ERASER -> Icons.Default.BubbleChart
 }
 
 /** Label pendek untuk anggota keluarga retouch. */
@@ -234,4 +257,6 @@ fun retouchShortLabel(kind: RetouchKind): String = when (kind) {
     RetouchKind.OBJECT_ERASER -> "Hapus"
     RetouchKind.HEAL_MIGAN -> "Heal"
     RetouchKind.CLONE_STAMP -> "Clone"
+    RetouchKind.MAGIC_ERASER -> "Eraser"
+    RetouchKind.BUBBLE_ERASER -> "Bubble"
 }

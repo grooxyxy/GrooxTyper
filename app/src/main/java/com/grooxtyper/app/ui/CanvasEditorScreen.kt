@@ -174,6 +174,8 @@ enum class ActiveTool {
     ERASER,
     INPAINT,
     CLONE_STAMP,
+    MAGIC_ERASER,
+    BUBBLE_ERASER,
     GRADIENT,
     LASSO,
     POLYGON_LASSO,
@@ -583,6 +585,7 @@ fun CanvasEditorScreen(
     val layerManager = remember { LayerManager(canvasWidth, canvasHeight) }
     val brushEngine = remember { BrushEngine() }
     val cloneStamp = remember { com.grooxtyper.app.model.CloneStampEngine() }
+    val bubbleEraser = remember { com.grooxtyper.app.model.BubbleEraserEngine() }
     val gradientEngine = remember { com.grooxtyper.app.model.GradientEngine() }
     val selectionEngine = remember { SelectionEngine(canvasWidth, canvasHeight) }
     val fontRegistry = remember { FontRegistry(context) }
@@ -2360,6 +2363,14 @@ fun CanvasEditorScreen(
     val wandMacro = remember { com.grooxtyper.app.model.selection.MacroRecorder() }
     var wandJob by remember { mutableStateOf<Job?>(null) }
     var wandPixelCount by remember { mutableStateOf(0L) }
+    /**
+     * Titik seed wand terakhir (koordinat layar).
+     *
+     * Untuk "live selection" ala Photoshop/TypeR: begitu user menggeser
+     * slider toleransi, seleksi dihitung ULANG di titik yang sama —
+     * tanpa perlu mengetuk ulang. Hanya berlaku selama tool wand aktif.
+     */
+    var wandLastSeed by remember { mutableStateOf<Offset?>(null) }
     var wandScriptApi by remember {
         mutableStateOf<com.grooxtyper.app.model.selection.HugeWandScriptApi?>(null)
     }
@@ -2367,6 +2378,11 @@ fun CanvasEditorScreen(
     var bubbleAreaMode by uiState::bubbleAreaMode
     var showBubbleAreaPanel by uiState::showBubbleAreaPanel
     var wandPressStart by remember { mutableStateOf<Offset?>(null) }
+    // Bubble Eraser (ala TypeR "Bubble Cleaner"): toleransi + margin tinta.
+    var bubbleEraserTolerance by mutableFloatStateOf(24f)
+    var bubbleEraserMargin by mutableFloatStateOf(2f)
+    /** Jumlah piksel terakhir yang dibersihkan (info di options bar). */
+    var bubbleEraserLastCount by mutableIntStateOf(0)
 
     /** Selesaikan lasso poligon menjadi satu region seleksi. */
     fun commitPolygonSelection() {
@@ -2767,6 +2783,157 @@ fun CanvasEditorScreen(
      * konsisten. Ketukan baru membatalkan hitungan lama (cancellable),
      * viewport dipakai untuk overlay supaya kanvas 720x16000 tetap ringan.
      */
+    /**
+     * Magic Eraser (ala Photoshop/TypeR): SATU ketukan langsung menghapus
+     * area warna mirip — tanpa langkah seleksi terpisah.
+     *
+     * Pakai mesin wand yang sama (span flood fill + anti-alias GIMP), lalu
+     * hasil seleksi langsung dihapus dari layer aktif. Toleransi, sample
+     * merged, dan feather memakai setelan wand yang sudah ada.
+     */
+    fun runMagicEraserAt(screenPos: Offset) {
+        if (wandBusy) return
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
+        val active = layerManager.getActiveLayer() ?: run {
+            healError = "Pilih layer gambar dulu untuk magic eraser"
+            return
+        }
+        val tol = wandTolerance.toInt().coerceIn(0, 255)
+        val merged = wandSampleMerged
+        // Snapshot undo diambil di Main thread (undoRedoManager menyimpan
+        // Compose state; aman hanya di thread utama).
+        undoRedoManager.saveSnapshot(active)
+        wandJob?.cancel()
+        wandBusy = true
+        wandJob = scope.launch(Dispatchers.Default) {
+            var ok = false
+            var err: String? = null
+            try {
+                val src = if (merged) {
+                    compositeBitmap
+                } else {
+                    active.getPersistentBitmap()
+                }
+                val provider = com.grooxtyper.app.model.selection.HugePixelProvider(src)
+                val api = com.grooxtyper.app.model.selection.HugeWandScriptApi(
+                    com.grooxtyper.app.model.selection.HugeWandEngine(provider),
+                    wandAdapter, canvasWidth, canvasHeight
+                ) { ad ->
+                    ad.pushToEngine(selectionEngine, canvasWidth, canvasHeight)
+                }
+                val cmd = com.grooxtyper.app.model.selection.CanvasCommand.WandSelectCommand(
+                    x = cx, y = cy, tolerance = tol,
+                    contiguous = true, bubbleAware = false,
+                    antialias = wandAntialias,
+                    mode = com.grooxtyper.app.model.selection.SelectionMode.NEW
+                )
+                val runner = com.grooxtyper.app.model.selection.CanvasCommandRunner(
+                    provider,
+                    { com.grooxtyper.app.model.selection.HugeWandEngine(provider) },
+                    wandAdapter, selectionEngine, canvasWidth, canvasHeight
+                ) { layerManager.getActiveLayer() }
+                val info = runner.run(cmd)
+                if (info == null) {
+                    err = "Magic eraser: tak ada area warna mirip di titik itu - naikkan toleransi"
+                } else {
+                    selectionEngine.clearSelectedArea(active)
+                    selectionEngine.clearSelection()
+                    wandAdapter.clear()
+                    wandPixelCount = 0L
+                    ok = true
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Magic eraser OOM - kurangi toleransi"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Magic eraser gagal: ${e.message ?: "error"}"
+            } finally {
+                val msg = err
+                val berhasil = ok
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) healError = msg
+                    if (berhasil) refreshComposite()
+                }
+            }
+        }
+    }
+
+    /**
+     * Bubble Eraser (ala TypeR "Bubble Cleaner"): ketuk dalam gelembung →
+     * teksnya hilang, diganti warna gelembung itu sendiri.
+     *
+     * Memakai mesin flood yang sama dengan wand (peta tile sparse), lalu
+     * cari teks di dalam interior gelembung dan timpa dengan warna bubble.
+     * Outline gelembung tidak ikut terhapus karena flood berhenti di
+     * garis outline.
+     */
+    fun runBubbleEraserAt(screenPos: Offset) {
+        if (wandBusy) return
+        val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
+        val cx = cp.x.toInt()
+        val cy = cp.y.toInt()
+        if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
+        val active = layerManager.getActiveLayer() ?: run {
+            healError = "Pilih layer gambar dulu untuk bubble eraser"
+            return
+        }
+        val tol = bubbleEraserTolerance.toInt().coerceIn(0, 255)
+        val margin = bubbleEraserMargin.toInt().coerceIn(0, 20)
+        val merged = wandSampleMerged
+        // Snapshot undo di Main thread (undoRedoManager menyimpan Compose state).
+        undoRedoManager.saveSnapshot(active)
+        wandJob?.cancel()
+        wandBusy = true
+        wandJob = scope.launch(Dispatchers.Default) {
+            var ok = false
+            var err: String? = null
+            var painted = 0
+            try {
+                val src = if (merged) {
+                    compositeBitmap
+                } else {
+                    active.getPersistentBitmap()
+                }
+                val provider = com.grooxtyper.app.model.selection.HugePixelProvider(src)
+                val plan = bubbleEraser.plan(
+                    provider, canvasWidth, canvasHeight, cx, cy,
+                    tolerance = tol, margin = margin
+                )
+                if (plan == null) {
+                    err = "Bubble eraser: ketuk di dalam gelembung (area putih), bukan di teks atau outline"
+                } else {
+                    painted = bubbleEraser.apply(active, plan)
+                    ok = true
+                }
+            } catch (e: OutOfMemoryError) {
+                e.printStackTrace()
+                err = "Bubble eraser OOM - kurangi toleransi"
+            } catch (e: Exception) {
+                e.printStackTrace()
+                err = "Bubble eraser gagal: ${e.message ?: "error"}"
+            } finally {
+                val msg = err
+                val berhasil = ok
+                val n = painted
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    wandBusy = false
+                    if (msg != null) healError = msg
+                    else if (berhasil) {
+                        healError = null
+                        bubbleEraserLastCount = n
+                    }
+                    if (berhasil) refreshComposite()
+                }
+            }
+        }
+    }
+
     fun runWandAt(screenPos: Offset, merge: Boolean = false) {
         if (wandBusy) return
         val cp = screenToCanvasCoordinates(screenPos.x, screenPos.y)
@@ -2780,6 +2947,9 @@ fun CanvasEditorScreen(
         val cy = cp.y.toInt()
         if (cx !in 0 until canvasWidth || cy !in 0 until canvasHeight) return
         if (compositeBitmap.width <= 0 || compositeBitmap.height <= 0) return
+        // Simpan titik seed supaya slider toleransi bisa menghitung ulang
+        // seleksi di titik yang sama (live selection ala Photoshop).
+        wandLastSeed = screenPos
         val tol = wandTolerance.toInt().coerceIn(0, 255)
         val mode = if (merge) {
             com.grooxtyper.app.model.selection.SelectionMode.ADD
@@ -4660,6 +4830,15 @@ fun CanvasEditorScreen(
                                         if (wandPressStart == null && !wandBusy) {
                                             wandPressStart = change.position
                                         }
+                                    } else if (activeTool == ActiveTool.MAGIC_ERASER ||
+                                        activeTool == ActiveTool.BUBBLE_ERASER
+                                    ) {
+                                        // Magic eraser / bubble eraser: cukup
+                                        // ketuk (tanpa geser). Aksi jalan saat
+                                        // jari lepas (lihat blok release).
+                                        if (wandPressStart == null && !wandBusy) {
+                                            wandPressStart = change.position
+                                        }
                                     } else if (activeTool == ActiveTool.GRADIENT) {
                                         // Gradient: seret dari A ke B, isi saat
                                         // jari lepas. Kalau ada seleksi, isi
@@ -5014,6 +5193,30 @@ fun CanvasEditorScreen(
                                             (change.position - start).getDistance() <= 24f
                                         ) {
                                             runWandAt(start)
+                                            change.consume()
+                                        }
+                                    }
+                                    // Magic eraser: ketuk = langsung hapus area
+                                    // warna mirip (tanpa langkah seleksi).
+                                    if (activeTool == ActiveTool.MAGIC_ERASER) {
+                                        val start = wandPressStart
+                                        wandPressStart = null
+                                        if (start != null && !wandBusy &&
+                                            (change.position - start).getDistance() <= 24f
+                                        ) {
+                                            runMagicEraserAt(start)
+                                            change.consume()
+                                        }
+                                    }
+                                    // Bubble eraser: ketuk dalam gelembung ->
+                                    // teks hilang, diganti warna bubble.
+                                    if (activeTool == ActiveTool.BUBBLE_ERASER) {
+                                        val start = wandPressStart
+                                        wandPressStart = null
+                                        if (start != null && !wandBusy &&
+                                            (change.position - start).getDistance() <= 24f
+                                        ) {
+                                            runBubbleEraserAt(start)
                                             change.consume()
                                         }
                                     }
@@ -6537,6 +6740,39 @@ fun CanvasEditorScreen(
             }
         }
 
+        // Options bar magic eraser (toleransi + sample merged + anti-alias).
+        if (activeTool == ActiveTool.MAGIC_ERASER) {
+            MagicEraserOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 4.dp, end = 4.dp),
+                tolerance = wandTolerance,
+                onTolerance = { wandTolerance = it },
+                sampleMerged = wandSampleMerged,
+                onSampleMerged = { wandSampleMerged = it },
+                antialias = wandAntialias,
+                onAntialias = { wandAntialias = it },
+                busy = wandBusy
+            )
+        }
+
+        // Options bar bubble eraser (toleransi + margin, ala TypeR).
+        if (activeTool == ActiveTool.BUBBLE_ERASER) {
+            BubbleEraserOptionsBar(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 52.dp, start = 4.dp, end = 4.dp),
+                tolerance = bubbleEraserTolerance,
+                onTolerance = { bubbleEraserTolerance = it },
+                margin = bubbleEraserMargin,
+                onMargin = { bubbleEraserMargin = it },
+                sampleMerged = wandSampleMerged,
+                onSampleMerged = { wandSampleMerged = it },
+                busy = wandBusy,
+                lastPixels = bubbleEraserLastCount
+            )
+        }
+
         // Options bar gradient (mode linear/radial, warna akhir, opacity).
         if (activeTool == ActiveTool.GRADIENT) {
             GradientOptionsBar(
@@ -6618,6 +6854,13 @@ fun CanvasEditorScreen(
                 },
                 tolerance = wandTolerance,
                 onTolerance = { wandTolerance = it },
+                // Live selection ala Photoshop: lepas slider toleransi ->
+                // wand dihitung ulang di titik seed yang sama, tanpa ketuk ulang.
+                onToleranceCommit = {
+                    if (activeTool == ActiveTool.SELECT_WAND && !wandBusy) {
+                        wandLastSeed?.let { seed -> runWandAt(seed) }
+                    }
+                },
                 contiguous = wandContiguous,
                 onContiguous = { wandContiguous = it },
                 antialias = wandAntialias,
@@ -6799,6 +7042,12 @@ fun CanvasEditorScreen(
                         RetouchKind.CLONE_STAMP -> {
                             activeTool = ActiveTool.CLONE_STAMP
                             cloneStamp.clearSource()
+                        }
+                        RetouchKind.MAGIC_ERASER -> {
+                            activeTool = ActiveTool.MAGIC_ERASER
+                        }
+                        RetouchKind.BUBBLE_ERASER -> {
+                            activeTool = ActiveTool.BUBBLE_ERASER
                         }
                     }
                     showBrushSettings = false

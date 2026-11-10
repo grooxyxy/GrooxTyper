@@ -62,6 +62,12 @@ fun SelectionOptionsBar(
     onMode: (SelectionMode) -> Unit,
     tolerance: Float,
     onTolerance: (Float) -> Unit,
+    /**
+     * Dipanggil saat slider toleransi dilepas. Editor memakai ini untuk
+     * live selection: mengulang wand di titik seed yang sama tanpa
+     * perlu ketuk ulang (ala Photoshop/TypeR).
+     */
+    onToleranceCommit: () -> Unit = {},
     contiguous: Boolean,
     onContiguous: (Boolean) -> Unit,
     antialias: Boolean,
@@ -183,7 +189,8 @@ fun SelectionOptionsBar(
                 value = tolerance,
                 onValue = onTolerance,
                 range = 0f..255f,
-                valueText = "${tolerance.toInt()}"
+                valueText = "${tolerance.toInt()}",
+                onValueChangeFinished = onToleranceCommit
             )
             SelectionSliderRow(
                 label = "Feather",
@@ -219,7 +226,8 @@ private fun SelectionSliderRow(
     value: Float,
     onValue: (Float) -> Unit,
     range: ClosedFloatingPointRange<Float>,
-    valueText: String
+    valueText: String,
+    onValueChangeFinished: () -> Unit = {}
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
@@ -232,6 +240,7 @@ private fun SelectionSliderRow(
         Slider(
             value = value,
             onValueChange = onValue,
+            onValueChangeFinished = onValueChangeFinished,
             valueRange = range,
             modifier = Modifier.weight(1f),
             colors = SliderDefaults.colors(
