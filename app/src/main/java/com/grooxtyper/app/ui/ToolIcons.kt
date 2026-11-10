@@ -5,10 +5,6 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.PathClose
-import androidx.compose.ui.graphics.vector.PathCurveTo
-import androidx.compose.ui.graphics.vector.PathLineTo
-import androidx.compose.ui.graphics.vector.PathMoveTo
 import androidx.compose.ui.graphics.vector.PathNode
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -316,21 +312,21 @@ object ToolIcons {
                 'M' -> {
                     val x = num()
                     val y = num()
-                    nodes.add(PathMoveTo(x, y))
+                    nodes.add(PathNode.MoveTo(x, y))
                     cmd = 'L'
                 }
                 'L' -> {
                     val x = num()
                     val y = num()
-                    nodes.add(PathLineTo(x, y))
+                    nodes.add(PathNode.LineTo(x, y))
                 }
                 'C' -> {
                     val x1 = num(); val y1 = num()
                     val x2 = num(); val y2 = num()
                     val x3 = num(); val y3 = num()
-                    nodes.add(PathCurveTo(x1, y1, x2, y2, x3, y3))
+                    nodes.add(PathNode.CurveTo(x1, y1, x2, y2, x3, y3))
                 }
-                'Z' -> nodes.add(PathClose())
+                'Z' -> nodes.add(PathNode.Close())
                 else -> i++
             }
         }

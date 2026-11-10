@@ -34,7 +34,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -196,6 +195,16 @@ fun isSelectionTool(tool: ActiveTool): Boolean = tool == ActiveTool.SELECT_BOX |
     tool == ActiveTool.LASSO ||
     tool == ActiveTool.POLYGON_LASSO ||
     tool == ActiveTool.SELECT_WAND
+
+/** Nama ikon SVG untuk tool seleksi (lihat ToolIcons). */
+fun selectionToolIconName(tool: ActiveTool): String = when (tool) {
+    ActiveTool.SELECT_BOX -> "marquee"
+    ActiveTool.SELECT_ELLIPSE -> "ellipse"
+    ActiveTool.LASSO -> "lasso"
+    ActiveTool.POLYGON_LASSO -> "polygon"
+    ActiveTool.SELECT_WAND -> "wand"
+    else -> "marquee"
+}
 
 /** Label pendek untuk rail. */
 fun selectionToolShortLabel(tool: ActiveTool): String = when (tool) {
