@@ -37,43 +37,36 @@ import kotlin.math.min
  */
 object WandEngine {
 
-    /** Tabel linear-light sRGB (inverse EOTF), dihitung sekali. */
-    private val LIN = FloatArray(256).also { lut ->
-        for (i in 0..255) {
-            val c = i / 255.0
-            lut[i] = if (c <= 0.04045) (c / 12.92).toFloat()
-            else Math.pow((c + 0.055) / 1.055, 2.4).toFloat()
-        }
-    }
-
     private const val SQRT2 = 1.41421356f
     private const val BIG = 1e9f
 
-    private fun absF(v: Float): Float = if (v < 0f) -v else v
-
     /**
-     * Ubah ambang "jarak RGB" yang dipakai penggeser UI menjadi ambang di
-     * metrik linear-light GIMP.
+     * Ubah toleransi slider UI menjadi ambang per-kanal.
      *
-     * Menyamakan ambang secara naif (ambang x yang sama) akan mengubah rasa
-     * tongkat sihir: jarak 32/255 di ruang sRGB berarti jarak linear ~0.26
-     * pada warna terang, sehingga ambang yang sama jauh lebih longgar.
-     * Jadi ambang dihitung dari nilai seed: ambil kanal seed, turunkan
-     * sebesar [maxDist], lalu ukur jarak linear-lightnya.
+     * Sejak aturan warna diganti ke gaya TypeR/Photoshop (selisih absolut
+     * per-kanal terhadap warna seed), angka slider **dipakai langsung**:
+     * toleransi 32 berarti "tiap kanal boleh beda paling jauh 32".
+     *
+     * Dulu fungsi ini menurunkan ambang ke ruang linear-light GIMP —
+     * dan itulah yang bikin wand "jelek": untuk seed gelap (garis arang
+     * 0,0,0) ambangnya jatuh ke ~1/255, jadi mengetuk garis hitam
+     * dengan toleransi 32 praktis tak milih apa pun.
+     *
+     * @param maxDist toleransi slider (0..255).
+     * @param seedArgb warna seed (tak dipakai lagi, disimpan biar API tak berubah).
      */
     fun thresholdForSrgb(maxDist: Float, seedArgb: Int): Int {
-        val r = (seedArgb shr 16) and 0xFF
-        val g = (seedArgb shr 8) and 0xFF
-        val b = seedArgb and 0xFF
-        val v = maxOf(r, g, b)
-        val lo = (v - maxDist).coerceIn(0f, 255f)
-        val d = absF(LIN[v] - LIN[lo.toInt()])
-        return (d * 255f).toInt().coerceIn(1, 255)
+        return maxDist.toInt().coerceIn(0, 255)
     }
 
-    /** Setelan tongkat sihir. Ambang default 15/255 mengikuti GIMP. */
+    /**
+     * Setelan tongkat sihir.
+     *
+     * [threshold] sekarang berarti **toleransi per-kanal 0..255** (ala
+     * TypeR/Photoshop), bukan ambang di ruang linear-light.
+     */
     data class Params(
-        val threshold: Int = 15,
+        val threshold: Int = 32,
         val antialias: Boolean = true,
         /** true = hanya piksel terhubung ke seed (Grow Contiguous). */
         val contiguous: Boolean = true,
@@ -135,30 +128,14 @@ object WandEngine {
     private fun coverageOf(
         px: IntArray, idx: Int,
         seedR: Int, seedG: Int, seedB: Int,
-        thr: Float, antialias: Boolean
+        tol: Int, antialias: Boolean
     ): Float {
         val p = px[idx]
         // Piksel transparan tak pernah terpilih (GIMP: select_transparent).
         if ((p ushr 24) == 0) return 0f
-        var d = LIN[(p shr 16) and 0xFF] - LIN[seedR]
-        if (d < 0f) d = -d
-        val e = LIN[(p shr 8) and 0xFF] - LIN[seedG]
-        if (e < 0f) {
-            if (-e > d) d = -e
-        } else if (e > d) d = e
-        val f = LIN[p and 0xFF] - LIN[seedB]
-        if (f < 0f) {
-            if (-f > d) d = -f
-        } else if (f > d) d = f
-        // d = jarak Chebyshev di ruang linear-light.
-        if (!antialias) return if (d <= thr) 1f else 0f
-        if (thr <= 0f) return if (d <= 0f) 1f else 0f
-        val aa = 1.5f - (d / thr)
-        return when {
-            aa <= 0f -> 0f
-            aa < 0.5f -> aa * 2f
-            else -> 1f
-        }
+        // Aturan TypeR/Photoshop: selisih absolut per-kanal vs seed.
+        val d = WandColorMatch.distance(p, seedR, seedG, seedB)
+        return WandColorMatch.coverage(d, tol, antialias)
     }
 
     // ------------------------------------------------------------------
@@ -172,7 +149,7 @@ object WandEngine {
         val sr = (seed shr 16) and 0xFF
         val sg = (seed shr 8) and 0xFF
         val sb = seed and 0xFF
-        val thr = p.threshold.coerceIn(0, 255) / 255f
+        val thr = p.threshold.coerceIn(0, 255)
         val mask = Mask(w, h)
         if (coverageOf(px, seedY * w + seedX, sr, sg, sb, thr, p.antialias) <= 0f) return null
 

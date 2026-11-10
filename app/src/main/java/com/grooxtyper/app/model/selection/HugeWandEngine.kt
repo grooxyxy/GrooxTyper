@@ -119,7 +119,6 @@ class HugeWandEngine(
         val sr = (seed shr 16) and 0xFF
         val sg = (seed shr 8) and 0xFF
         val sb = seed and 0xFF
-        val thr2 = tol * tol
         val map = SelectionTileMap(tileSize)
         // Span stack: 3 int per entri (y, dari, sampaiEksklusif).
         var stack = IntArray(3 * 1024)
@@ -152,7 +151,7 @@ class HugeWandEngine(
                     x++
                     continue
                 }
-                if (!matchRow(rows, y, x, sr, sg, sb, thr2, bubbleAware)) {
+                if (!matchRow(rows, y, x, sr, sg, sb, tol, bubbleAware)) {
                     map.setPixel(x, y, 1, canvasWidth, canvasHeight)
                     x++
                     continue
@@ -160,14 +159,14 @@ class HugeWandEngine(
                 // Lebar ke kiri.
                 var kiri = x
                 while (kiri > 0 && map.getPixel(kiri - 1, y) == 0 &&
-                    matchRow(rows, y, kiri - 1, sr, sg, sb, thr2, bubbleAware)
+                    matchRow(rows, y, kiri - 1, sr, sg, sb, tol, bubbleAware)
                 ) {
                     kiri--
                 }
                 // Lebar ke kanan.
                 var kanan = x + 1
                 while (kanan < canvasWidth && map.getPixel(kanan, y) == 0 &&
-                    matchRow(rows, y, kanan, sr, sg, sb, thr2, bubbleAware)
+                    matchRow(rows, y, kanan, sr, sg, sb, tol, bubbleAware)
                 ) {
                     kanan++
                 }
@@ -201,7 +200,6 @@ class HugeWandEngine(
         val sr = (seed shr 16) and 0xFF
         val sg = (seed shr 8) and 0xFF
         val sb = seed and 0xFF
-        val thr2 = tol * tol
         val map = SelectionTileMap(tileSize)
         var count = 0L
         val tilesX = (canvasWidth + tileSize - 1) / tileSize
@@ -219,10 +217,8 @@ class HugeWandEngine(
                     if (count > maxPixels) return FloodOut(map, count)
                     val p = px[i]
                     if ((p ushr 24) and 0xFF == 0) continue
-                    val dr = ((p shr 16) and 0xFF) - sr
-                    val dg = ((p shr 8) and 0xFF) - sg
-                    val db = (p and 0xFF) - sb
-                    if (dr * dr + dg * dg + db * db > thr2) continue
+                    // Aturan TypeR/Photoshop: selisih per-kanal.
+                    if (WandColorMatch.distance(p, sr, sg, sb) > tol) continue
                     if (bubbleAware && isBlocked(p, x0 + i % w, y0 + i / w)) continue
                     map.setPixel(x0 + i % w, y0 + i / w, 255, canvasWidth, canvasHeight)
                     count++
@@ -252,16 +248,14 @@ class HugeWandEngine(
     /** True bila piksel baris cocok (warna mirip dan bukan dinding saat bubbleAware). */
     private fun matchRow(
         rows: RowCache, y: Int, x: Int,
-        sr: Int, sg: Int, sb: Int, thr2: Int, bubbleAware: Boolean
+        sr: Int, sg: Int, sb: Int, tol: Int, bubbleAware: Boolean
     ): Boolean {
         val baris = rows.row(y) ?: return false
         if (x !in baris.indices) return false
         val p = baris[x]
         if ((p ushr 24) and 0xFF == 0) return false
-        val dr = ((p shr 16) and 0xFF) - sr
-        val dg = ((p shr 8) and 0xFF) - sg
-        val db = (p and 0xFF) - sb
-        if (dr * dr + dg * dg + db * db > thr2) return false
+        // Aturan TypeR/Photoshop: tiap kanal boleh beda paling jauh tol.
+        if (WandColorMatch.distance(p, sr, sg, sb) > tol) return false
         if (bubbleAware && isBlocked(p, x, y)) return false
         return true
     }
@@ -359,21 +353,27 @@ class HugeWandEngine(
                     map.getPixel(x, y - 1) == 0 || map.getPixel(x, y + 1) == 0
                 if (!tetanggaLuar) continue
                 val p = provider.getPixel(x, y)
-                val dr = ((p shr 16) and 0xFF) - sr
-                val dg = ((p shr 8) and 0xFF) - sg
-                val db = (p and 0xFF) - sb
-                val d = sqrt((dr * dr + dg * dg + db * db).toDouble()).toFloat()
-                val v = ((1f - d / tol.coerceAtLeast(1)) * 255f).toInt().coerceIn(64, 255)
+                val d = WandColorMatch.distance(p, sr, sg, sb)
+                val v = (WandColorMatch.coverage(d, tol, true) * 255f).toInt().coerceIn(1, 255)
                 map.setPixel(x, y, v, canvasWidth, canvasHeight)
             }
         }
     }
 
-    /** Jarak warna RGB Euclidean 0..442 antara dua piksel. */
+    /**
+     * Jarak warna per-kanal 0..255 antara dua piksel (ala TypeR:
+     * max(|dr|, |dg|, |db|) di ruang sRGB).
+     *
+     * Ini yang dipakai mesin flood, jadi slider "Toleransi" berarti
+     * "tiap kanal boleh beda paling jauh segitu" — bisa diprediksi.
+     */
     fun colorDistance(a: Int, b: Int): Int {
-        val dr = ((a shr 16) and 0xFF) - ((b shr 16) and 0xFF)
-        val dg = ((a shr 8) and 0xFF) - ((b shr 8) and 0xFF)
-        val db = (a and 0xFF) - (b and 0xFF)
-        return sqrt((dr * dr + dg * dg + db * db).toDouble()).toInt()
+        val sr = (a shr 16) and 0xFF
+        val sg = (a shr 8) and 0xFF
+        val sb = a and 0xFF
+        val br = (b shr 16) and 0xFF
+        val bg = (b shr 8) and 0xFF
+        val bb = b and 0xFF
+        return WandColorMatch.distance(br, bg, bb, sr, sg, sb)
     }
 }

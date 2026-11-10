@@ -586,12 +586,12 @@ const selEng = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/
   const c = (wandEng.match(/}/g) || []).length;
   assert(o === c, 'WandEngine braces balanced (' + o + '/' + c + ')');
 }
-assert(wandEng.includes('val aa = 1.5f - (d / thr)'), 'wand: ramp anti-alias GIMP (aa = 1.5 - d/threshold)');
-assert(wandEng.includes('aa < 0.5f -> aa * 2f') && wandEng.includes('aa <= 0f -> 0f'), 'wand: bentuk tiga tahap ramp anti-alias persis GIMP');
+// Aturan warna wand diganti ke gaya TypeR/Photoshop (selisih per-kanal vs
+// seed). Assertion lama (linear-light + ramp GIMP) tak berlaku lagi.
+assert(wandEng.includes('WandColorMatch.distance(p, seedR, seedG, seedB)'), 'wand: aturan warna TypeR (jarak per-kanal vs seed)');
+assert(wandEng.includes('WandColorMatch.coverage(d, tol, antialias)'), 'wand: coverage dari aturan warna yang sama');
 assert(wandEng.includes('val cov = ByteArray(w * h)'), 'wand: mask coverage 0..255 (bukan boolean) - hilangkan white fringing');
 assert(wandEng.includes('fun toBinary(threshold: Int = 128)'), 'wand: kontur diambil pada coverage 50% (tepi falls di tepi asli)');
-assert(wandEng.includes('val LIN = FloatArray(256)') && wandEng.includes('1.055'), 'wand: metrik dihitung di ruang linear-light (GIMP_PRECISION_FLOAT_GAMMA)');
-assert(wandEng.includes('if (-e > d) d = -e') && wandEng.includes('(-f > d) d = -f'), 'wand: jarak Chebyshev (L-infinity), bukan Euclidean RGB');
 assert(wandEng.includes('var stack = IntArray(3 * 4096)'), 'wand: stack span IntArray (tanpa boxing per piksel)');
 assert(wandEng.includes('stack[sp++] = y'), 'wand: entri stack adalah rentang (y, dari, sampai) ala GIMP');
 assert(wandEng.includes('val pushFrom = if (p.diagonal && start > 0) start - 1 else start'), 'wand: opsi diagonal = memperlebar span (bukan probe diagonal)');
@@ -926,6 +926,18 @@ assert(renderer.includes('fun renderVertical('), 'teks vertikal: renderer vertik
 assert(renderer.includes('if (box.verticalText)'), 'teks vertikal: jalur render vertikal dipicu');
 assert(textEditor.includes('onVerticalText'), 'UI: toggle tulisan vertikal di panel teks');
 
+const wandMatchSrc = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandColorMatch.kt'));
+
+// -- Verifikasi bubble ala TypeR (looksLikeBubble) --
+const bubbleSep = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/selection/BubbleSeparator.kt'));
+assert(bubbleSep.includes('fun looksLikeBubble('), 'bubble: verifikasi "ini bubble?" ala TypeR ada');
+assert(bubbleSep.includes('BUBBLE_MOST = 0.15'), 'bubble: batas luas 15% halaman (ala TypeR)');
+assert(bubbleSep.includes('BUBBLE_AT_EDGE = 0.08'), 'bubble: batas di tepi halaman 8% (ala TypeR)');
+assert(bubbleSep.includes('BUBBLE_HOLE = 0.004'), 'bubble: lubang tertutup besar = bukan bubble (ala TypeR)');
+assert(bubbleSep.includes('BUBBLE_INNER_WHITE = 0.0015'), 'bubble: patch putih besar = bukan bubble (ala TypeR)');
+assert(bubbleSep.includes('fun labelPatch('), 'bubble: label patch terhubung untuk cek lubang');
+assert(bubbleEraser.includes('looksLikeBubble('), 'bubble eraser: pakai verifikasi bubble TypeR sebelum menghapus teks');
+
 console.log('\n== TypeR-like: braces & karakter asing ==');
 for (const [nm, tx] of [
   ['ToolRail', rail],
@@ -938,7 +950,8 @@ for (const [nm, tx] of [
   ['BubbleEraserEngine', bubbleEraser],
   ['MagicEraserOptionsBar', eraserBar],
   ['FontFinder', finder],
-  ['FontFinderDialog', finderDlg]
+  ['FontFinderDialog', finderDlg],
+  ['WandColorMatch', wandMatchSrc]
 ]) {
   const o = (tx.match(/\{/g) || []).length, c = (tx.match(/\}/g) || []).length;
   assert(o === c, nm + ' braces balanced (' + o + '/' + c + ')');
@@ -1106,6 +1119,19 @@ const selDir = 'app/src/main/java/com/grooxtyper/app/model/selection';
 const provider = read(path.join(ROOT, selDir + '/CanvasPixelProvider.kt'));
 const hugeProvider = read(path.join(ROOT, selDir + '/HugePixelProvider.kt'));
 const hugeEngine = read(path.join(ROOT, selDir + '/HugeWandEngine.kt'));
+
+// -- Aturan warna wand ala TypeR (satu sumber kebenaran) --
+const wandMatch = read(path.join(ROOT, 'app/src/main/java/com/grooxtyper/app/model/WandColorMatch.kt'));
+assert(wandMatch.includes('object WandColorMatch'), 'wand: sumber kebenaran aturan warna ada');
+assert(wandMatch.includes('maxOf(adr, adg, adb)'), 'wand: jarak = max selisih per-kanal (Chebyshev sRGB, ala TypeR)');
+assert(wandMatch.includes('fun coverage('), 'wand: coverage dihitung dari aturan yang sama');
+assert(wandMatch.includes('d > tol'), 'wand: batas keras tepat di toleransi (ala TypeR)');
+assert(hugeEngine.includes('WandColorMatch.distance(p, sr, sg, sb) > tol'), 'wand huge: flood pakai aturan TypeR');
+assert(hugeEngine.includes('WandColorMatch.coverage(d, tol, true)'), 'wand huge: tepi anti-alias dari aturan yang sama');
+assert(!/dr \* dr \+ dg \* dg \+ db \* db > thr2/.test(hugeEngine), 'wand huge: Euclidean RGB lama dibuang');
+assert(!/val LIN = FloatArray\(256\)/.test(wandEng), 'wand: metrik linear-light lama dibuang (bikin seed gelap tak milih apa-apa)');
+assert(wandEng.includes('thresholdForSrgb'), 'wand: API thresholdForSrgb tetap ada (kcompatibilitas)');
+
 const tile = read(path.join(ROOT, selDir + '/SelectionTile.kt'));
 const tileMap = read(path.join(ROOT, selDir + '/SelectionTileMap.kt'));
 const wandResult = read(path.join(ROOT, selDir + '/WandResult.kt'));
@@ -1129,7 +1155,7 @@ assert(wandResult.includes('data class WandResult'), 'wand: WandResult ada');
 assert(wandResult.includes('bounds') && wandResult.includes('pixelCount'), 'wand: hasil bawa batas + jumlah piksel');
 assert(!/val path: Path/.test(wandResult), 'wand: hasil tak menyimpan Path sebagai sumber data');
 assert(selMode.includes('NEW') && selMode.includes('ADD') && selMode.includes('SUBTRACT') && selMode.includes('INTERSECT'), 'wand: enum mode NEW/ADD/SUBTRACT/INTERSECT');
-assert(hugeEngine.includes('fun colorDistance(') && hugeEngine.includes('dr * dr + dg * dg + db * db'), 'wand: cocok warna RGB langsung (tanpa Lab per piksel)');
+assert(hugeEngine.includes('fun colorDistance(') && hugeEngine.includes('WandColorMatch.distance(br, bg, bb, sr, sg, sb)'), 'wand: cocok warna RGB langsung per-kanal (tanpa Lab per piksel)');
 assert(hugeEngine.includes('tolerance.coerceIn(0, 255)') || hugeEngine.includes('coerceIn(0, 255)'), 'wand: toleransi 0..255 default 32');
 assert(editor.includes('wandContiguous') && editor.includes('wandAntialias') && editor.includes('wandSampleMerged'), 'editor: state Contiguous/Anti-alias/SampleMerged');
 assert(editor.includes('wandFeather') && editor.includes('wandBubbleAware') && editor.includes('wandSelMode'), 'editor: state Feather/BubbleAware/Mode');

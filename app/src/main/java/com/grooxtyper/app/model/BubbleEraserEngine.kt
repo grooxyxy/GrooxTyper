@@ -103,6 +103,23 @@ class BubbleEraserEngine {
             }
         }
         if (interiorCount < 64) return null
+
+        // Verifikasi "ini bubble?" ala TypeR (`looksLikeBubble`): wilayah
+        // yang terlalu luas, menyentuh tepi halaman, berlubang besar
+        // (panel), atau berisi patch putih besar (wajah) BUKAN gelembung.
+        // Tanpa cek ini, bubble eraser bisa menghapus teks di area gambar.
+        val looksBubble = com.grooxtyper.app.model.selection.BubbleSeparator.looksLikeBubble(
+            map = map,
+            left = bounds.left,
+            top = bounds.top,
+            canvasWidth = canvasWidth,
+            canvasHeight = canvasHeight,
+            lumaAt = { cx, cy ->
+                com.grooxtyper.app.model.selection.BubbleSeparator.luma(provider.getPixel(cx, cy))
+            }
+        )
+        if (!looksBubble) return null
+
         var bestKey = -1
         var bestCount = 0
         for (i in bins.indices) {

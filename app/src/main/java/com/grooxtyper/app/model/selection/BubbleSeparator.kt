@@ -210,4 +210,171 @@ object BubbleSeparator {
         if (perimeter <= 0) return 0f
         return (wallHits.toFloat() / perimeter.toFloat()).coerceIn(0f, 1f)
     }
+
+    // ------------------------------------------------------------------
+    // Verifikasi "ini bubble?" — ala TypeR `looksLikeBubble`
+    // ------------------------------------------------------------------
+
+    /** Luas maksimum wilayah yang masih dianggap bubble (15% halaman). */
+    const val BUBBLE_MOST = 0.15
+
+    /** Batas lebih ketat bila wilayahnya menyentuh tepi halaman (8%). */
+    const val BUBBLE_AT_EDGE = 0.08
+
+    /** Lubang tertutup lebih besar dari ini → bukan bubble, tapi panel. */
+    const val BUBBLE_HOLE = 0.004
+
+    /** Patch putih tertutup lebih besar dari ini → bukan bubble (wajah/panel). */
+    const val BUBBLE_INNER_WHITE = 0.0015
+
+    /** Ambang luminansi untuk dianggap "putih" (ala TypeR: >= 200). */
+    private const val WHITE_LEVEL = 200
+
+    /**
+     * True bila wilayah hasil wand **memang bubble** — bukan panel, bukan
+     * latar, bukan wajah.
+     *
+     * Mengikuti TypeR (`photoshop.js` → `looksLikeBubble`):
+     *
+     *  1. Luas wilayah tak boleh melebihi 15% halaman; kalau menyentuh tepi
+     *     halaman, batasnya lebih ketat (8%).
+     *  2. **Lubang tertutup** yang besar di dalam wilayah means "panel"
+     *     (gambar di dalam panel), bukan bubble.
+     *  3. **Patch putih tertutup** yang besar di dalam wilayah means wajah
+     *     atau area gambar — bukan gelembung.
+     *
+     * dipakai Bubble Eraser supaya tak menghapus teks di area yang bukan
+     * gelembung, dan sebagai pemeriksaan "pemisahan bubble".
+     *
+     * @param mask peta seleksi (1 = terpilih).
+     * @param left koordinat kanvas X kotak mask.
+     * @param top koordinat kanvas Y kotak mask.
+     * @param canvasWidth lebar halaman.
+     * @param canvasHeight tinggi halaman.
+     * @param lumaAt luminance piksel kanvas pada (x, y) absolut.
+     */
+    fun looksLikeBubble(
+        mask: SelectionTileMap,
+        left: Int,
+        top: Int,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        lumaAt: (Int, Int) -> Float
+    ): Boolean {
+        val bounds = mask.getBounds() ?: return true
+        val w = bounds.width()
+        val h = bounds.height()
+        if (w <= 0 || h <= 0) return true
+        val page = canvasWidth.toLong() * canvasHeight.toLong()
+        if (page <= 0) return true
+
+        // 1) Luas.
+        var area = 0L
+        mask.forEachTile { _, _, tile ->
+            for (v in tile.mask) {
+                if ((v.toInt() and 0xFF) > 0) area++
+            }
+        }
+        if (area <= 0) return true
+        if (area > page * BUBBLE_MOST) return false
+        val atEdge = left <= 0 || top <= 0 ||
+            left + w >= canvasWidth || top + h >= canvasHeight
+        if (atEdge && area > page * BUBBLE_AT_EDGE) return false
+
+        // Peta lokal (kotak mask) supaya label patch murah.
+        val inside = BooleanArray(w * h)
+        val white = BooleanArray(w * h)
+        mask.forEachTile { tx, ty, tile ->
+            val ox = tx * mask.tileSize - left
+            val oy = ty * mask.tileSize - top
+            for (ty2 in 0 until tile.height) {
+                val cy = oy + ty2
+                if (cy !in 0 until h) continue
+                val row = ty2 * tile.width
+                for (tx2 in 0 until tile.width) {
+                    if ((tile.mask[row + tx2].toInt() and 0xFF) == 0) continue
+                    val cx = ox + tx2
+                    if (cx !in 0 until w) continue
+                    inside[cy * w + cx] = true
+                }
+            }
+        }
+        // Patch putih = piksel DI LUAR seleksi yang terang.
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                if (inside[y * w + x]) continue
+                if (lumaAt(left + x, top + y) >= WHITE_LEVEL) white[y * w + x] = true
+            }
+        }
+
+        // Stack label dipakai ulang antar patch (satu alokasi saja).
+        val stack = IntArray(w * h)
+
+        // 2) Lubang tertutup yang besar → panel, bukan bubble.
+        var seen = BooleanArray(w * h)
+        var ok = true
+        for (i in 0 until w * h) {
+            if (inside[i] || seen[i]) continue
+            val patch = labelPatch(i, w, h, seen, stack) { !inside[it] }
+            if (!patch.open && patch.size > page * BUBBLE_HOLE) { ok = false; break }
+        }
+        if (!ok) return false
+
+        // 3) Patch putih tertutup yang besar → wajah / gambar, bukan bubble.
+        seen = BooleanArray(w * h)
+        for (i in 0 until w * h) {
+            if (!white[i] || seen[i]) continue
+            val patch = labelPatch(i, w, h, seen, stack) { white[it] }
+            if (!patch.open && patch.size > page * BUBBLE_INNER_WHITE) return false
+        }
+        return true
+    }
+
+    /** Hasil label satu patch terhubung. */
+    private data class Patch(val size: Long, val open: Boolean)
+
+    /**
+     * Label satu patch terhubung (4-arah) di kotak w*h.
+     *
+     * @param within syarat piksel masih bagian patch ini.
+     * @param seen penanda piksel yang sudah dilabeli.
+     */
+    private fun labelPatch(
+        start: Int,
+        w: Int,
+        h: Int,
+        seen: BooleanArray,
+        stack: IntArray,
+        within: (Int) -> Boolean
+    ): Patch {
+        var sp = 0
+        stack[sp++] = start
+        seen[start] = true
+        var size = 0L
+        var open = false
+        while (sp > 0) {
+            val i = stack[--sp]
+            size++
+            val x = i % w
+            val y = i / w
+            if (x == 0 || x == w - 1 || y == 0 || y == h - 1) open = true
+            if (x > 0) {
+                val j = i - 1
+                if (!seen[j] && within(j)) { seen[j] = true; stack[sp++] = j }
+            }
+            if (x < w - 1) {
+                val j = i + 1
+                if (!seen[j] && within(j)) { seen[j] = true; stack[sp++] = j }
+            }
+            if (y > 0) {
+                val j = i - w
+                if (!seen[j] && within(j)) { seen[j] = true; stack[sp++] = j }
+            }
+            if (y < h - 1) {
+                val j = i + w
+                if (!seen[j] && within(j)) { seen[j] = true; stack[sp++] = j }
+            }
+        }
+        return Patch(size, open)
+    }
 }
