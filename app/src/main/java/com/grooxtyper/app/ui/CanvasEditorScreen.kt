@@ -2417,9 +2417,9 @@ fun CanvasEditorScreen(
         val b = box.bubble ?: return emptyList()
         if (b.bubbleW <= 0f || b.bubbleH <= 0f) return emptyList()
         if (b.outline.isNotEmpty()) return box.bubbleOutlinePointsPx()
-        // Bentuk default: pakai outline parametrik sementara.
-        val tmp = box.copy(bubble = b.copy(outline = box.defaultBubbleOutline()))
-        return tmp.bubbleOutlinePointsPx()
+        // Belum ada outline kustom: pakai titik-titik bentuk parametrik
+        // (tanpa mengubah state).
+        return box.defaultBubbleOutlinePointsPx()
     }
 
     /**
@@ -2440,8 +2440,10 @@ fun CanvasEditorScreen(
         val dx = canvasPos.x - box.position.x
         val dy = canvasPos.y - box.position.y
         val rad = Math.toRadians((-box.rotation).toDouble())
-        val lx = dx * kotlin.math.cos(rad) - dy * kotlin.math.sin(rad)
-        val ly = dx * kotlin.math.sin(rad) + dy * kotlin.math.cos(rad)
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        val lx = dx * cosR - dy * sinR
+        val ly = dx * sinR + dy * cosR
         val nx = ((lx + w / 2f) / w).coerceIn(-0.6f, 1.6f)
         val ny = ((ly + h / 2f) / h).coerceIn(-0.6f, 1.6f)
         val baru = pts.toMutableList()

@@ -126,8 +126,8 @@ object LayerAlignEngine {
         val target = acuan ?: unionOf(movable.map { it.second })
         var moved = 0
         for ((layer, rect) in movable) {
-            val dx: Float
-            val dy: Float
+            var dx = 0f
+            var dy = 0f
             when (mode) {
                 Align.LEFT -> dx = target.left - rect.left
                 Align.CENTER_H -> dx = target.centerX() - rect.centerX()
@@ -163,7 +163,9 @@ object LayerAlignEngine {
         } else {
             last.bottom - first.top
         }
-        val spanSum = sorted.sumOf { if (horizontal) it.second.width() else it.second.height() }
+        val spanSum = sorted.fold(0f) { acc, e ->
+            acc + (if (horizontal) e.second.width() else e.second.height())
+        }
         val gap = (total - spanSum) / (sorted.size - 1)
         var moved = 0
         var cursor = if (horizontal) first.left else first.top
@@ -230,11 +232,8 @@ object LayerAlignEngine {
             if (layer.id == ref.id) continue
             val rect = contentRect(layer) ?: continue
             val cov = coverageMap(layer.bitmap, rect) ?: continue
-            val best = bestShift(refEdge, cov, rect, refRect) ?: run {
-                failed++
-                continue
-            }
-            if (best.score <= 0f) {
+            val best = bestShift(refEdge, cov, rect, refRect)
+            if (best == null || best.score <= 0f) {
                 failed++
                 continue
             }

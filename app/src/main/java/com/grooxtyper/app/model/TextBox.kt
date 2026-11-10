@@ -535,6 +535,31 @@ class TextBox(
     }
 
     /**
+     * Titik-titik outline default (bentuk parametrik) dalam koordinat
+     * KANVAS absolut — tanpa mengubah state.
+     *
+     * Dipakai Bubble Reshaper saat gelembung belum punya outline kustom.
+     */
+    fun defaultBubbleOutlinePointsPx(): List<Offset> {
+        val b = bubble ?: return emptyList()
+        if (b.bubbleW <= 0f || b.bubbleH <= 0f) return emptyList()
+        val w = b.bubbleW * scale
+        val h = b.bubbleH * scale
+        if (!w.isFinite() || !h.isFinite() || w < 4f || h < 4f) return emptyList()
+        val rad = Math.toRadians(rotation.toDouble())
+        val cosR = kotlin.math.cos(rad).toFloat()
+        val sinR = kotlin.math.sin(rad).toFloat()
+        return defaultBubbleOutline().map { o ->
+            val lx = -w / 2f + o.x * w
+            val ly = -h / 2f + o.y * h
+            Offset(
+                position.x + lx * cosR - ly * sinR,
+                position.y + lx * sinR + ly * cosR
+            )
+        }
+    }
+
+    /**
      * Outline default dari bentuk parametrik saat ini (elips atau persegi
      * bulat), dalam koordinat normal 0..1.
      *
