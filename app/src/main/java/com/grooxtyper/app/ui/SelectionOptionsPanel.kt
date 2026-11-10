@@ -17,16 +17,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoFixHigh
-import androidx.compose.material.icons.filled.Circle
-import androidx.compose.material.icons.filled.Gesture
-import androidx.compose.material.icons.filled.OpenInFull
-import androidx.compose.material.icons.filled.Polyline
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -418,15 +414,6 @@ private fun selectionToolLabel(tool: ActiveTool): String = when (tool) {
     ActiveTool.SELECT_ELLIPSE -> "Marquee Elips"
     ActiveTool.SELECT_WAND -> "Magic Wand"
     else -> "Seleksi"
-}
-
-private fun selectionToolIcon(tool: ActiveTool): ImageVector = when (tool) {
-    ActiveTool.LASSO -> Icons.Default.Gesture
-    ActiveTool.POLYGON_LASSO -> Icons.Default.Polyline
-    ActiveTool.SELECT_BOX -> Icons.Default.OpenInFull
-    ActiveTool.SELECT_ELLIPSE -> Icons.Default.Circle
-    ActiveTool.SELECT_WAND -> Icons.Default.AutoFixHigh
-    else -> Icons.Default.OpenInFull
 }
 
 private fun formatPixelCount(n: Long): String = when {

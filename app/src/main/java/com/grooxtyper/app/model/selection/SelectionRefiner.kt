@@ -1,9 +1,9 @@
 package com.grooxtyper.app.model.selection
 
 import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.MaskFilter
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
@@ -156,14 +156,14 @@ object SelectionRefiner {
         c.drawPath(path, p)
     }
 
-    /** Isi + garis setebal [strokeWidth] (ROUND) → siluet melebar. */
-    private fun unionWithStroke(base: Bitmap, path: Path, strokeWidth: Int): Bitmap {
+    /** Isi + garis setebal [strokePx] (ROUND) → siluet melebar. */
+    private fun unionWithStroke(base: Bitmap, path: Path, strokePx: Int): Bitmap {
         val out = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         c.drawBitmap(base, 0f, 0f, null)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = strokeWidth.toFloat()
+            strokeWidth = strokePx.toFloat()
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
             color = Color.WHITE
@@ -175,13 +175,13 @@ object SelectionRefiner {
     }
 
     /** Isi dikurangi pita garis (PorterDuff CLEAR) → siluet menyempit. */
-    private fun subtractStroke(base: Bitmap, path: Path, strokeWidth: Int): Bitmap {
+    private fun subtractStroke(base: Bitmap, path: Path, strokePx: Int): Bitmap {
         val out = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
         c.drawBitmap(base, 0f, 0f, null)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = strokeWidth.toFloat()
+            strokeWidth = strokePx.toFloat()
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
             color = Color.WHITE
@@ -195,12 +195,12 @@ object SelectionRefiner {
     }
 
     /** Garis saja (tanpa isi) → pita/cincin. */
-    private fun drawStroked(target: Bitmap, path: Path, strokeWidth: Float) {
+    private fun drawStroked(target: Bitmap, path: Path, strokePx: Float) {
         val c = Canvas(target)
         c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = strokeWidth
+            strokeWidth = strokePx
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
             color = Color.WHITE
@@ -215,7 +215,7 @@ object SelectionRefiner {
         val c = Canvas(out)
         val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
-            maskFilter = MaskFilter.BlurMaskFilter(r, MaskFilter.Blur.NORMAL)
+            maskFilter = BlurMaskFilter(r, BlurMaskFilter.Blur.NORMAL)
         }
         c.drawBitmap(base, 0f, 0f, p)
         // BlurMaskFilter cuma pasti mengaburkan ALPHA; RGB bisa ternoda

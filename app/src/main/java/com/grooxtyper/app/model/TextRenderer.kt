@@ -600,12 +600,16 @@ object TextRenderer {
                 Paint(fill).apply { color = ca }
             } else fill
             val glyphOutline = if (sp?.outlineWidth != null || sp?.outlineColor != null) {
+                // Salin ke val lokal: [outlineColor] properti mutable, jadi
+                // smart cast tak berlaku di dalam lambda Paint(...).
+                val spOutlineColor = sp?.outlineColor
+                val spOutlineWidth = sp?.outlineWidth
                 outline?.let {
                     Paint(it).apply {
-                        strokeWidth = (sp.outlineWidth ?: box.outlineWidth) * box.scale
-                        if (sp.outlineColor != null) {
+                        strokeWidth = (spOutlineWidth ?: box.outlineWidth) * box.scale
+                        if (spOutlineColor != null) {
                             shader = null
-                            color = withAlpha(sp.outlineColor, box.strokeOpacity)
+                            color = withAlpha(spOutlineColor, box.strokeOpacity)
                             alpha = (255 * box.textOpacity).toInt().coerceIn(0, 255)
                         }
                     }
